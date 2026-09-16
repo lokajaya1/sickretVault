@@ -232,7 +232,8 @@ function OutfitState.wearBundle(
 	bundleId: number,
 	parts: { BundlePart },
 	partIds: { number }?,
-	scales: { [string]: number }?
+	scales: { [string]: number }?,
+	maxPerType: { [string]: number }?
 ): (OutfitState, { string })
 	local wanted: { [number]: boolean }? = nil
 	if partIds then
@@ -246,7 +247,7 @@ function OutfitState.wearBundle(
 	local errors = {}
 	for _, p in parts do
 		if p.kind ~= "unknown" and (wanted == nil or (wanted :: { [number]: boolean })[p.assetId]) then
-			local nextState, err = OutfitState.wear(s, p.assetId, p.assetType, bundleId)
+			local nextState, err = OutfitState.wear(s, p.assetId, p.assetType, bundleId, maxPerType)
 			s = nextState
 			if err then
 				table.insert(errors, err)

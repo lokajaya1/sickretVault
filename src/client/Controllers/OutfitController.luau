@@ -7,6 +7,7 @@
 --   outfit:onNotify(function(msg) ... end)  -- msg = { code, op? }
 --   outfit:toggle(item)                     -- kartu katalog: pakai / lepas
 --   outfit:isWorn(assetId) -> boolean
+--   outfit:isBundleWorn(bundleId) -> boolean   -- ada part bundle itu yang sedang dipakai
 -- `deps` bisa diganti saat test (tanpa remote).
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -33,6 +34,7 @@ export type OutfitController = typeof(setmetatable(
 		_deps: Deps,
 		_state: any?,
 		_worn: { [number]: boolean },
+		_bundles: { [number]: boolean },
 		_listeners: { (any) -> () },
 		_noticeListeners: { (Notice) -> () },
 		_conns: { any },
@@ -77,6 +79,7 @@ function OutfitController.new(deps: Deps?): OutfitController
 		_deps = d,
 		_state = nil,
 		_worn = {},
+		_bundles = {},
 		_listeners = {},
 		_noticeListeners = {},
 		_conns = {},
@@ -109,6 +112,36 @@ local function collectWorn(state: any): { [number]: boolean }
 	return worn
 end
 
+-- Kumpulan bundleId yang sedang dipakai (minimal satu part ber-source bundle itu).
+local function collectBundles(state: any): { [number]: boolean }
+	local out: { [number]: boolean } = {}
+	if type(state) ~= "table" then
+		return out
+	end
+	local function add(src: any)
+		if type(src) == "number" then
+			out[src] = true
+		end
+	end
+	if type(state.accessories) == "table" then
+		for _, a in state.accessories do
+			if type(a) == "table" then
+				add(a.source)
+			end
+		end
+	end
+	for _, group in { state.bodyParts, state.animations, state.classic } do
+		if type(group) == "table" then
+			for _, v in group do
+				if type(v) == "table" and type(v.id) == "number" and v.id ~= 0 then
+					add(v.source)
+				end
+			end
+		end
+	end
+	return out
+end
+
 local function emit(list: { any }, value: any)
 	for _, fn in table.clone(list) do
 		local ok, err = pcall(fn, value)
@@ -124,6 +157,7 @@ function OutfitController._setState(self: OutfitController, state: any)
 	end
 	self._state = state
 	self._worn = collectWorn(state)
+	self._bundles = collectBundles(state)
 	emit(self._listeners, state)
 end
 
@@ -173,6 +207,10 @@ function OutfitController.isWorn(self: OutfitController, assetId: number): boole
 	return self._worn[assetId] == true
 end
 
+function OutfitController.isBundleWorn(self: OutfitController, bundleId: number): boolean
+	return self._bundles[bundleId] == true
+end
+
 local function subscribe(list: { any }, fn: any): () -> ()
 	table.insert(list, fn)
 	return function()
@@ -198,13 +236,17 @@ function OutfitController.send(self: OutfitController, intent: { [string]: any }
 	end
 end
 
--- Kartu katalog diklik: aset -> pakai/lepas, bundle -> wearBundle (server: menyusul).
+-- Kartu katalog diklik: pakai / lepas (aset maupun bundle).
 function OutfitController.toggle(self: OutfitController, item: any)
 	if type(item) ~= "table" or type(item.id) ~= "number" then
 		return
 	end
 	if item.itemType == "Bundle" then
-		self:send({ op = "wearBundle", bundleId = item.id })
+		if self:isBundleWorn(item.id) then
+			self:send({ op = "removeBundle", bundleId = item.id })
+		else
+			self:send({ op = "wearBundle", bundleId = item.id })
+		end
 	elseif self:isWorn(item.id) then
 		self:send({ op = "remove", assetId = item.id })
 	else

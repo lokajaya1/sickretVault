@@ -1,6 +1,6 @@
 --!strict
 -- Layanan avatar (server): simpan OutfitState per pemain, jalankan intent, terapkan ke karakter.
---   local avatar = AvatarService.new({ api = api, itemInfo = itemInfo, onState = kirimKeClient })
+--   local avatar = AvatarService.new({ api = api, itemInfo = itemInfo, bundles = bundles, onState = kirimKeClient })
 --   avatar:attach(player)                        -- saat PlayerAdded (yield: ambil avatar asli)
 --   local ok, code = avatar:handle(player, intent) -- intent SUDAH lolos IntentValidator
 --   avatar:detach(player)                        -- saat PlayerRemoving
@@ -35,6 +35,7 @@ export type Deps = {
 	api: any, -- RobloxApi (getDescriptionFromUserId, applyDescription)
 	itemInfo: any, -- ItemInfoService
 	rules: any?, -- AvatarRules (batas per tipe); nil = tanpa batas per tipe
+	bundles: any?, -- BundleService (get); nil = bundle belum didukung (NOT_IMPLEMENTED)
 	onState: ((player: any, state: State) -> ())?, -- kirim StateChanged
 	onError: ((player: any, code: string) -> ())?, -- kirim Notify
 	-- engine (default Roblox; diganti saat test)
@@ -66,6 +67,7 @@ export type AvatarService = typeof(setmetatable(
 		_api: any,
 		_itemInfo: any,
 		_rules: any?,
+		_bundles: any?,
 		_onState: (any, State) -> (),
 		_onError: (any, string) -> (),
 		_build: (State) -> any,
@@ -99,6 +101,7 @@ function AvatarService.new(deps: Deps): AvatarService
 		_api = deps.api,
 		_itemInfo = deps.itemInfo,
 		_rules = deps.rules,
+		_bundles = deps.bundles,
 		_onState = deps.onState or function() end,
 		_onError = deps.onError or function() end,
 		_build = deps.build or defaultBuild,
@@ -214,6 +217,24 @@ end
 
 -- ===== Intent =====
 
+-- Ada part bundle yang bisa dipakai (tipe dikenal & termasuk partIds bila diberikan)?
+local function hasWearablePart(parts: { Types.BundlePart }, partIds: { number }?): boolean
+	local wanted: { [number]: boolean }? = nil
+	if partIds then
+		local set: { [number]: boolean } = {}
+		for _, id in partIds do
+			set[id] = true
+		end
+		wanted = set
+	end
+	for _, p in parts do
+		if p.kind ~= "unknown" and (wanted == nil or (wanted :: { [number]: boolean })[p.assetId]) then
+			return true
+		end
+	end
+	return false
+end
+
 local function commit(self: AvatarService, player: any, session: Session, nextState: State)
 	table.insert(session.undo, session.state)
 	while #session.undo > Limits.UndoDepth do
@@ -287,8 +308,45 @@ function AvatarService.handle(self: AvatarService, player: any, intent: Types.In
 		self._onState(player, target)
 		self:_schedule(player)
 		return true, nil
-	elseif op == "wearBundle" or op == "removeBundle" then
-		return false, "NOT_IMPLEMENTED" -- feature/bundle-partial
+	elseif op == "wearBundle" then
+		if self._bundles == nil then
+			return false, "NOT_IMPLEMENTED"
+		end
+		local ok, info = self._bundles:get(i.bundleId) -- yield
+		if self._sessions[player] ~= session then
+			return false, "NOT_READY"
+		end
+		if not ok then
+			return false, if info and info.code == "FAILED" then "FAILED" else "NOT_FOUND"
+		end
+		if not hasWearablePart(info.parts, i.partIds) then
+			return false, "UNSUPPORTED_TYPE"
+		end
+		local limits = if self._rules then self._rules:maxPerType() else nil -- bisa yield (sekali)
+		if self._sessions[player] ~= session then
+			return false, "NOT_READY"
+		end
+		-- skala bundle hanya bila diminta (editor avatar Roblox juga tidak mengubah skala saat pakai bundle)
+		local scales = if i.useBundleScales == true then info.outfitScales else nil
+		local nextState, errors =
+			OutfitState.wearBundle(session.state, info.bundleId, info.parts, i.partIds, scales, limits)
+		if sameLook(nextState, session.state) then
+			-- tidak ada yang berubah: laporkan error pertama (mis. LIMIT_TYPE), atau sudah dipakai
+			return false, (errors[1] or "NOTHING") :: any
+		end
+		if #errors > 0 then
+			log.debug("sebagian part bundle dilewati", info.bundleId, table.concat(errors, ","))
+		end
+		commit(self, player, session, nextState)
+		return true, nil
+	elseif op == "removeBundle" then
+		-- catatan: skala tidak dikembalikan (P0 tidak memakai skala bundle secara default)
+		local nextState = OutfitState.removeBundle(session.state, i.bundleId, session.baseline)
+		if sameLook(nextState, session.state) then
+			return false, "NOTHING"
+		end
+		commit(self, player, session, nextState)
+		return true, nil
 	end
 	return false, "BAD_OP"
 end

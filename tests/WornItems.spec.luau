@@ -60,6 +60,22 @@ return function()
 	end
 	eq(#WornItems.removable({}), 0, "kosong aman")
 
+	-- 6b. part tubuh/animasi dari bundle bisa dilepas satu per satu; bawaan avatar tidak
+	local b = OS.empty()
+	b.bodyParts.Head = { id = 600 } -- bawaan avatar
+	b.bodyParts.Torso = { id = 702, source = 700 }
+	b.bodyParts.LeftArm = { id = 703, source = 700 }
+	b.animations.RunAnimation = { id = 801, source = 800 }
+	local bl = WornItems.list(b)
+	eq(#bl, 4, "semua slot terisi tampil di list")
+	local br = WornItems.removable(bl)
+	eq(#br, 3, "removable = Torso + LeftArm + Run (Head bawaan tidak)")
+	eq(br[1].name, "Torso", "nama slot Torso")
+	eq(br[1].source, 700, "source bundle ikut")
+	eq(br[2].name, "Left Arm", "nama ramah Left Arm")
+	eq(br[3].group, "animation", "animasi bundle bisa dilepas")
+	eq(br[3].name, "Run Animation", "nama ramah animasi")
+
 	-- 7. nama ramah
 	eq(WornItems.friendlyName("EyebrowAccessory"), "Eyebrow", "eyebrow")
 	eq(WornItems.friendlyName("LeftShoeAccessory"), "Left Shoe", "sepatu kiri")
