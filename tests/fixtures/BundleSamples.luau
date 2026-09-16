@@ -1,10 +1,107 @@
 --!strict
--- Contoh respons GetBundleDetailsAsync (SEMENTARA, dibuat tangan).
--- Ganti dengan data asli dari server/Dev/Inspect setelah verifikasi API (docs/API_VERIFICATION.md).
+-- Contoh respons GetBundleDetailsAsync.
+--   M.RealBody : data ASLI dari server/Dev/Inspect (Studio, 16 Sep 2026) -> docs/API_VERIFICATION.md
+--   M.Body/Shoes/Broken/Invalid : buatan tangan untuk kasus tepi (skala asing, id string, respons rusak)
 
 local M = {}
 
--- Bundle tubuh lengkap: dynamic head + 5 body part + outfit
+-- ASLI: bundle 104915988289001 "Tallest male can shoes 3.0".
+-- 7 aset + 2 UserOutfit (#1 = OutfitType "Avatar", #2 = "DynamicHead").
+M.RealBody = {
+	raw = {
+		BundleType = "BodyParts",
+		Description = "version 3.0",
+		Id = 104915988289001,
+		Items = {
+			{
+				AssetType = "RightArm",
+				Id = 108248819544910,
+				Name = "Tallest male can shoes 3.0 - แขนขวา",
+				Type = "Asset",
+			},
+			{
+				AssetType = "Torso",
+				Id = 99377734100872,
+				Name = "Tallest male can shoes 3.0 - ลำตัว",
+				Type = "Asset",
+			},
+			{
+				AssetType = "LeftLeg",
+				Id = 72234257632785,
+				Name = "Tallest male can shoes 3.0 - ขาซ้าย",
+				Type = "Asset",
+			},
+			{
+				AssetType = "LeftArm",
+				Id = 83468903837271,
+				Name = "Tallest male can shoes 3.0 - แขนซ้าย",
+				Type = "Asset",
+			},
+			{ AssetType = "MoodAnimation", Id = 14618207727, Name = "Default Mood", Type = "Asset" },
+			{
+				AssetType = "RightLeg",
+				Id = 106894876305910,
+				Name = "Tallest male can shoes 3.0 - ขาขวา",
+				Type = "Asset",
+			},
+			{
+				AssetType = "DynamicHead",
+				Id = 110446883733723,
+				Name = "Tallest male can shoes 3.0 - ศีรษะไดนามิก",
+				SupportsHeadShapes = false,
+				Type = "Asset",
+			},
+			{ Id = 6016977565474900, Name = "Tallest male can shoes 3.0", Type = "UserOutfit" },
+			{ Id = 5533792516890598, Name = "Tallest male can shoes 3.0", Type = "UserOutfit" },
+		},
+		Name = "Tallest male can shoes 3.0",
+		PriceDiscountDetails = {
+			{ AmountInRobux = 20, Percent = 10, Type = "RobloxPlusSubscription" },
+		},
+		UserBasePriceInRobux = 200,
+	},
+	-- dari GetBatchItemDetailsAsync (AssetType)
+	assetTypes = {
+		[14618207727] = "MoodAnimation",
+		[72234257632785] = "LeftLeg",
+		[83468903837271] = "LeftArm",
+		[99377734100872] = "Torso",
+		[106894876305910] = "RightLeg",
+		[108248819544910] = "RightArm",
+		[110446883733723] = "DynamicHead",
+	},
+	-- GetOutfitDetailsAsync (diringkas: hanya field yang dipakai). Id outfit berupa STRING.
+	outfits = {
+		["6016977565474900"] = {
+			Id = "6016977565474900",
+			OutfitType = "Avatar",
+			InventoryType = "Body",
+			PlayerAvatarType = "R15",
+			Scale = { BodyType = 0, Depth = 1, Head = 1, Height = 1, Proportion = 0, Width = 1 },
+		},
+		["5533792516890598"] = {
+			Id = "5533792516890598",
+			OutfitType = "DynamicHead",
+			InventoryType = "DynamicHead",
+			PlayerAvatarType = "R15",
+			Scale = { BodyType = 0, Depth = 1, Head = 1, Height = 1, Proportion = 0, Width = 1 },
+		},
+	},
+	-- hasil adapter Scale outfit #1 -> nama ScaleSlots (dikerjakan BundleService nanti)
+	enrichment = {
+		scales = {
+			HeightScale = 1,
+			WidthScale = 1,
+			DepthScale = 1,
+			HeadScale = 1,
+			BodyTypeScale = 0,
+			ProportionScale = 0,
+		},
+		moodAnimation = 14618207727, -- sudah ada di bundle -> tidak boleh dobel
+	},
+}
+
+-- BUATAN TANGAN: bundle tubuh dengan skala asing & mood yang belum ada di bundle
 M.Body = {
 	raw = {
 		Id = 1001,
