@@ -1,8 +1,11 @@
 --!strict
 -- Kartu item katalog: thumbnail + nama + harga + pil "Worn". Ukuran diatur UIGridLayout induknya.
---   local card = ItemCard.new({ item = item, onActivated = function(item) ... end })
+-- Tap kartu -> onActivated (CatalogPanel lalu memanggil setArmed(true)).
+-- Kartu "armed" menampilkan overlay di atas gambar: TRY/REMOVE, BUY, tombol ⓘ (detail).
+-- Tap bagian kosong overlay -> onDismiss.
+--   local card = ItemCard.new({ item = item, onActivated = fn, onTry = fn, onBuy = fn, onInfo = fn, onDismiss = fn })
 --   card.instance.Parent = grid
---   card:setItem(itemLain)   card:setSelected(true)   card:destroy()
+--   card:setItem(itemLain)   card:setSelected(true)   card:setArmed(true)   card:destroy()
 
 local Tokens = require(script.Parent.Parent.Theme.Tokens)
 
@@ -16,11 +19,20 @@ export type Item = {
 	creatorName: string?,
 }
 
+type Callback = ((Item) -> ())?
+
 export type Props = {
 	item: Item,
 	layoutOrder: number?,
-	onActivated: ((Item) -> ())?,
+	onActivated: Callback, -- tap kartu (belum armed)
+	onTry: Callback,
+	onBuy: Callback,
+	onInfo: Callback,
+	onDismiss: Callback, -- tap bagian kosong overlay
 }
+
+local TEXT_AREA = 34 -- nama + harga di bawah gambar
+local INFO_SIZE = 26
 
 local ItemCard = {}
 ItemCard.__index = ItemCard
@@ -34,7 +46,11 @@ export type ItemCard = typeof(setmetatable(
 		_price: TextLabel,
 		_stroke: UIStroke,
 		_badge: TextLabel,
-		_conn: RBXScriptConnection,
+		_overlay: TextButton,
+		_try: TextButton,
+		_buy: TextButton,
+		_selected: boolean,
+		_conns: { RBXScriptConnection },
 	},
 	ItemCard
 ))
@@ -67,6 +83,39 @@ local function label(name: string, parent: Instance, font: Font, size: number, c
 	return l
 end
 
+-- Tombol besar di overlay (TRY / BUY): tinggi mengikuti ukuran kartu, teks menyesuaikan.
+local function overlayButton(name: string, text: string, color: Color3, order: number, parent: Instance): TextButton
+	local b = Instance.new("TextButton")
+	b.Name = name
+	b.Text = text
+	b.FontFace = Tokens.Font.Bold
+	b.TextScaled = true
+	b.TextColor3 = Tokens.Color.AccentText
+	b.BackgroundColor3 = color
+	b.BorderSizePixel = 0
+	b.AutoButtonColor = true
+	b.LayoutOrder = order
+	b.Size = UDim2.new(1, 0, 0.36, 0)
+	b.ZIndex = Tokens.ZIndex.Panel + 3
+
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = Tokens.Radius.Small
+	corner.Parent = b
+
+	local limit = Instance.new("UITextSizeConstraint")
+	limit.MinTextSize = 10
+	limit.MaxTextSize = Tokens.TextSize.Button
+	limit.Parent = b
+
+	local pad = Instance.new("UIPadding")
+	pad.PaddingTop = UDim.new(0, 4)
+	pad.PaddingBottom = UDim.new(0, 4)
+	pad.Parent = b
+
+	b.Parent = parent
+	return b
+end
+
 function ItemCard.new(props: Props): ItemCard
 	local pad = Tokens.Space.S
 
@@ -96,7 +145,7 @@ function ItemCard.new(props: Props): ItemCard
 	image.BackgroundTransparency = 1
 	image.AnchorPoint = Vector2.new(0.5, 0)
 	image.Position = UDim2.new(0.5, 0, 0, pad)
-	image.Size = UDim2.new(1, -pad * 2, 1, -pad * 2 - 34)
+	image.Size = UDim2.new(1, -pad * 2, 1, -pad * 2 - TEXT_AREA)
 	image.ScaleType = Enum.ScaleType.Fit
 	image.ZIndex = Tokens.ZIndex.Panel
 	image.Parent = button
@@ -136,6 +185,70 @@ function ItemCard.new(props: Props): ItemCard
 	badgePad.PaddingRight = UDim.new(0, Tokens.Space.S)
 	badgePad.Parent = badge
 
+	-- Overlay aksi (menutupi area gambar). TextButton kosong -> menahan tap ke kartu.
+	local overlay = Instance.new("TextButton")
+	overlay.Name = "Actions"
+	overlay.Text = ""
+	overlay.AutoButtonColor = false
+	overlay.BackgroundColor3 = Tokens.Color.Background
+	overlay.BackgroundTransparency = 0.25
+	overlay.BorderSizePixel = 0
+	overlay.Position = UDim2.fromOffset(0, 0)
+	overlay.Size = UDim2.new(1, 0, 1, -TEXT_AREA)
+	overlay.ZIndex = Tokens.ZIndex.Panel + 2
+	overlay.Visible = false
+	overlay.Parent = button
+
+	local overlayCorner = Instance.new("UICorner")
+	overlayCorner.CornerRadius = Tokens.Radius.Medium
+	overlayCorner.Parent = overlay
+
+	-- TRY / BUY ditumpuk di tengah, menyisakan ruang atas untuk tombol ⓘ.
+	local stack = Instance.new("Frame")
+	stack.Name = "Stack"
+	stack.BackgroundTransparency = 1
+	stack.AnchorPoint = Vector2.new(0.5, 1)
+	stack.Position = UDim2.new(0.5, 0, 1, -pad)
+	stack.Size = UDim2.new(1, -pad * 2, 1, -(INFO_SIZE + pad + 4))
+	stack.ZIndex = Tokens.ZIndex.Panel + 2
+	stack.Parent = overlay
+
+	local list = Instance.new("UIListLayout")
+	list.FillDirection = Enum.FillDirection.Vertical
+	list.VerticalAlignment = Enum.VerticalAlignment.Bottom
+	list.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	list.SortOrder = Enum.SortOrder.LayoutOrder
+	list.Padding = UDim.new(0.06, 0)
+	list.Parent = stack
+
+	local try = overlayButton("Try", "TRY", Tokens.Color.Accent, 1, stack)
+	local buy = overlayButton("Buy", "BUY", Tokens.Color.Robux, 2, stack)
+
+	local info = Instance.new("TextButton")
+	info.Name = "Info"
+	info.Text = "i"
+	info.FontFace = Tokens.Font.Bold
+	info.TextSize = Tokens.TextSize.Body
+	info.TextColor3 = Tokens.Color.Text
+	info.BackgroundColor3 = Tokens.Color.PanelRaised
+	info.BorderSizePixel = 0
+	info.AutoButtonColor = true
+	info.AnchorPoint = Vector2.new(1, 0)
+	info.Position = UDim2.new(1, -4, 0, 4)
+	info.Size = UDim2.fromOffset(INFO_SIZE, INFO_SIZE)
+	info.ZIndex = Tokens.ZIndex.Panel + 3
+	info.Parent = overlay
+
+	local infoCorner = Instance.new("UICorner")
+	infoCorner.CornerRadius = Tokens.Radius.Pill
+	infoCorner.Parent = info
+
+	local infoStroke = Instance.new("UIStroke")
+	infoStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	infoStroke.Color = Tokens.Color.Stroke
+	infoStroke.Transparency = 0.5
+	infoStroke.Parent = info
+
 	local self = setmetatable({
 		instance = button,
 		item = props.item,
@@ -144,15 +257,30 @@ function ItemCard.new(props: Props): ItemCard
 		_price = price,
 		_stroke = stroke,
 		_badge = badge,
-		_conn = (nil :: any) :: RBXScriptConnection,
+		_overlay = overlay,
+		_try = try,
+		_buy = buy,
+		_selected = false,
+		_conns = {},
 	}, ItemCard)
 
-	local onActivated = props.onActivated
-	self._conn = button.Activated:Connect(function()
-		if onActivated then
-			onActivated(self.item)
-		end
+	local function hook(b: GuiButton, fn: Callback, enabled: (() -> boolean)?)
+		table.insert(
+			self._conns,
+			b.Activated:Connect(function()
+				if fn and (enabled == nil or enabled()) then
+					fn(self.item)
+				end
+			end)
+		)
+	end
+	hook(button, props.onActivated)
+	hook(overlay, props.onDismiss)
+	hook(try, props.onTry)
+	hook(buy, props.onBuy, function()
+		return self.item.price ~= nil
 	end)
+	hook(info, props.onInfo)
 
 	self:setItem(props.item)
 	return self
@@ -165,16 +293,37 @@ function ItemCard.setItem(self: ItemCard, item: Item)
 	self._name.Text = item.name
 	self._price.Text = priceText(item.price)
 	self._price.TextColor3 = if item.price and item.price > 0 then Tokens.Color.Robux else Tokens.Color.TextMuted
+	-- BUY: tidak dijual -> abu-abu & tidak bereaksi
+	local forSale = item.price ~= nil
+	self._buy.Text = if forSale then "BUY" else "OFF SALE"
+	self._buy.BackgroundColor3 = if forSale then Tokens.Color.Robux else Tokens.Color.PanelRaised
+	self._buy.TextColor3 = if forSale then Tokens.Color.AccentText else Tokens.Color.TextMuted
+	self._buy.AutoButtonColor = forSale
+	self:setArmed(false) -- kartu dipakai ulang untuk item lain
 end
 
 function ItemCard.setSelected(self: ItemCard, selected: boolean)
+	self._selected = selected
 	self._badge.Visible = selected
 	self._stroke.Color = if selected then Tokens.Color.Accent else Tokens.Color.Stroke
 	self._stroke.Transparency = if selected then 0.4 else Tokens.Transparency.Stroke
+	self._try.Text = if selected then "REMOVE" else "TRY"
+	self._try.BackgroundColor3 = if selected then Tokens.Color.Danger else Tokens.Color.Accent
+end
+
+function ItemCard.setArmed(self: ItemCard, armed: boolean)
+	self._overlay.Visible = armed
+end
+
+function ItemCard.isArmed(self: ItemCard): boolean
+	return self._overlay.Visible
 end
 
 function ItemCard.destroy(self: ItemCard)
-	self._conn:Disconnect()
+	for _, c in self._conns do
+		c:Disconnect()
+	end
+	table.clear(self._conns)
 	self.instance:Destroy()
 end
 
