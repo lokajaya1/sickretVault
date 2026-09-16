@@ -35,16 +35,9 @@ local details = ItemDetailService.new({ api = api, bundles = bundles }) -- panel
 
 local stateChanged = Remotes.event(RemoteNames.Events.StateChanged)
 local notify = Remotes.event(RemoteNames.Events.Notify)
-local checkoutResult = Remotes.event(RemoteNames.Events.CheckoutResult)
 
--- Checkout keranjang: PromptBulkPurchase dari server, hasil akhir -> CheckoutResult (hanya untuk UI).
-local checkout = CheckoutService.new({
-	onResult = function(player: Player, summary)
-		if player.Parent == Players then
-			checkoutResult:FireClient(player, summary)
-		end
-	end,
-})
+-- Checkout keranjang: PromptBulkPurchase HARUS dari server; hasilnya didengarkan client.
+local checkout = CheckoutService.new()
 
 local avatar = AvatarService.new({
 	api = api,
@@ -170,7 +163,7 @@ Remotes.func(RemoteNames.Functions.GetItemDetail).OnServerInvoke = function(play
 end
 
 -- 5c. Checkout: { { id, itemType } } -> { ok = true } | { ok = false, code }.
--- ok = true artinya prompt tampil; hasil pembelian menyusul lewat event CheckoutResult.
+-- ok = true artinya prompt tampil; hasil (PromptBulkPurchaseFinished) didengarkan di client.
 Remotes.func(RemoteNames.Functions.Checkout).OnServerInvoke = function(player: Player, raw: any)
 	if not checkoutLimiter:take(player.UserId) then
 		return { ok = false, code = "RATE_LIMITED" }
@@ -201,7 +194,6 @@ end
 
 Players.PlayerRemoving:Connect(function(player: Player)
 	avatar:detach(player)
-	checkout:release(player)
 	intentLimiter:reset(player.UserId)
 	searchLimiter:reset(player.UserId)
 	stateLimiter:reset(player.UserId)
