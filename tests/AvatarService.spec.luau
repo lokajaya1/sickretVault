@@ -317,5 +317,24 @@ return function()
 	eq(svc5:isBaseline(player), false, "isBaseline false")
 	eq(svc5:isBaseline({ UserId = 2 }), false, "tanpa sesi")
 
+	-- 17. wearOutfit (slot wardrobe): boleh setelah pemain mengubah outfit, bisa di-Undo
+	local svc6, t6 = setup()
+	eq(codeOf(svc6:wearOutfit(player, OutfitState.empty())), "NOT_READY", "wearOutfit sebelum load")
+	assert(svc6:load(player), "load 6")
+	assert(svc6:handle(player, { op = "wear", assetId = 2 }), "wear dulu (6)")
+	local prev6 = svc6:getState(player) :: any
+	eq(codeOf(svc6:wearOutfit(player, prev6)), "NOTHING", "outfit sama")
+	local slot = OutfitState.wear(OutfitState.clone(prev6), 1, "Hat")
+	local sent = #t6.states
+	assert(svc6:wearOutfit(player, slot), "wearOutfit ok")
+	eq(#t6.states, sent + 1, "state dikirim")
+	eq(svc6:getState(player) ~= slot, true, "state disalin")
+	eq((svc6:getState(player) :: any).accessories["1"] ~= nil, true, "isi slot terpasang")
+	t6.flushTimers()
+	eq(#t6.applied > 0, true, "diterapkan")
+	assert(svc6:handle(player, { op = "undo" }), "undo wearOutfit")
+	eq((svc6:getState(player) :: any).accessories["1"], nil, "undo -> outfit sebelumnya")
+	eq((svc6:getState(player) :: any).accessories["2"] ~= nil, true, "item sebelumnya kembali")
+
 	print("PASS AvatarService.spec")
 end
