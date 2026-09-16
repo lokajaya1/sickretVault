@@ -4,11 +4,16 @@
 --   -- known: { [assetId] = item katalog yang pernah dilihat client } (opsional, untuk nama/harga)
 -- Urutan: aksesori terbaru dulu, lalu pakaian klasik, bagian tubuh, animasi.
 -- Item yang tidak ada di `known` diberi nama slot/tipe (mis. "Shirt", "HatAccessory").
+-- item.group: "accessory" | "classic" | "body" | "animation" (strip Wearing hanya menampilkan
+-- accessory + classic, karena body/animation tidak bisa "dilepas", hanya kembali ke avatar asal).
 
 local Map = require(script.Parent.AssetTypeMap)
 
+export type Group = "accessory" | "classic" | "body" | "animation"
+
 export type Item = {
 	id: number,
+	group: Group,
 	itemType: string, -- selalu "Asset"
 	name: string,
 	assetType: string?,
@@ -22,11 +27,18 @@ local function validId(v: any): boolean
 	return type(v) == "number" and v > 0
 end
 
-local function makeItem(id: number, fallbackName: string, assetType: string?, known: { [number]: any }?): Item
+local function makeItem(
+	id: number,
+	group: Group,
+	fallbackName: string,
+	assetType: string?,
+	known: { [number]: any }?
+): Item
 	local k = if known then known[id] else nil
 	if type(k) == "table" and type(k.name) == "string" and k.name ~= "" then
 		return {
 			id = id,
+			group = group,
 			itemType = "Asset",
 			name = k.name,
 			assetType = k.assetType or assetType,
@@ -34,7 +46,18 @@ local function makeItem(id: number, fallbackName: string, assetType: string?, kn
 			creatorName = k.creatorName,
 		}
 	end
-	return { id = id, itemType = "Asset", name = fallbackName, assetType = assetType }
+	return { id = id, group = group, itemType = "Asset", name = fallbackName, assetType = assetType }
+end
+
+-- Hanya item yang bisa dilepas pemain (aksesori + pakaian klasik).
+function WornItems.removable(items: { Item }): { Item }
+	local out = {}
+	for _, it in items do
+		if it.group == "accessory" or it.group == "classic" then
+			table.insert(out, it)
+		end
+	end
+	return out
 end
 
 function WornItems.list(state: any, known: { [number]: any }?): { Item }
@@ -68,22 +91,22 @@ function WornItems.list(state: any, known: { [number]: any }?): { Item }
 	end)
 	for _, a in accs do
 		local t = if type(a.assetType) == "string" then a.assetType else "Accessory"
-		push(makeItem(a.assetId, t, t, known))
+		push(makeItem(a.assetId, "accessory", t, t, known))
 	end
 
 	-- 2. Slot: urutan tetap dari AssetTypeMap.
-	local groups = {
-		{ state.classic, Map.ClassicSlots },
-		{ state.bodyParts, Map.BodyPartSlots },
-		{ state.animations, Map.AnimationSlots },
+	local groups: { { any } } = {
+		{ state.classic, Map.ClassicSlots, "classic" },
+		{ state.bodyParts, Map.BodyPartSlots, "body" },
+		{ state.animations, Map.AnimationSlots, "animation" },
 	}
 	for _, g in groups do
-		local group, slots = g[1], g[2]
-		if type(group) == "table" then
+		local values, slots, groupName = g[1], g[2], g[3]
+		if type(values) == "table" then
 			for _, slot in slots do
-				local v = group[slot]
+				local v = values[slot]
 				if type(v) == "table" and validId(v.id) then
-					push(makeItem(v.id, slot, nil, known))
+					push(makeItem(v.id, groupName, slot, nil, known))
 				end
 			end
 		end

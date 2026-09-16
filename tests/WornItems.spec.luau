@@ -47,5 +47,18 @@ return function()
 	s.classic.GraphicTShirt = { id = 0 }
 	eq(#WornItems.list(s), 7, "tanpa duplikat")
 
+	-- 6. group + removable: body & animasi tidak ikut strip
+	local g = WornItems.list(s)
+	eq(g[1].group, "accessory", "group aksesori")
+	eq(g[4].group, "classic", "group klasik")
+	eq(g[6].group, "body", "group tubuh")
+	eq(g[7].group, "animation", "group animasi")
+	local r = WornItems.removable(g)
+	eq(#r, 5, "removable = 3 aksesori + 2 klasik")
+	for _, it in r do
+		assert(it.group == "accessory" or it.group == "classic", "hanya bisa dilepas")
+	end
+	eq(#WornItems.removable({}), 0, "kosong aman")
+
 	print("PASS WornItems.spec")
 end
