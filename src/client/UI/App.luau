@@ -1,5 +1,5 @@
 --!strict
--- Akar UI: ScreenGui + tombol atas (Catalog, Stores) + panel katalog.
+-- Akar UI: ScreenGui + tombol atas (Catalog, Stores) + tombol aksi (Undo/Redo/Reset) + panel katalog.
 --   local app = App.mount({ onItemActivated = function(item) ... end })
 --   app:toggleCatalog()   app.toast:show("Hello", "info")   app:destroy()
 
@@ -8,6 +8,7 @@ local Players = game:GetService("Players")
 local Tokens = require(script.Parent.Theme.Tokens)
 local CatalogPanel = require(script.Parent.Components.CatalogPanel)
 local Toast = require(script.Parent.Components.Toast)
+local ActionBar = require(script.Parent.Components.ActionBar)
 local CatalogController = require(script.Parent.Parent.Controllers.CatalogController)
 local OutfitController = require(script.Parent.Parent.Controllers.OutfitController)
 
@@ -25,6 +26,7 @@ export type App = typeof(setmetatable(
 		outfit: OutfitController.OutfitController,
 		panel: CatalogPanel.CatalogPanel,
 		toast: Toast.Toast,
+		actions: ActionBar.ActionBar,
 		_catalogButton: TextButton,
 		_conns: { RBXScriptConnection },
 	},
@@ -103,6 +105,14 @@ function App.mount(opts: Options?): App
 	local outfit = OutfitController.new()
 	local self: App
 
+	-- Kanan atas: Undo / Redo / Reset -> diteruskan ke server lewat OutfitController.
+	local actions = ActionBar.new({
+		parent = gui,
+		onAction = function(op)
+			outfit:send({ op = op })
+		end,
+	})
+
 	local panel = CatalogPanel.new({
 		controller = catalog,
 		parent = gui,
@@ -121,6 +131,7 @@ function App.mount(opts: Options?): App
 		outfit = outfit,
 		panel = panel,
 		toast = toast,
+		actions = actions,
 		_catalogButton = catalogButton,
 		_conns = {},
 	}, App)
@@ -170,6 +181,7 @@ function App.destroy(self: App)
 	self.outfit:stop()
 	self.panel:destroy()
 	self.toast:destroy()
+	self.actions:destroy()
 	self.gui:Destroy()
 end
 
