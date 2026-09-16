@@ -15,6 +15,7 @@
 local Shared = game:GetService("ReplicatedStorage"):WaitForChild("Shared")
 local ItemDetail = require(Shared.Domain.ItemDetail)
 local Tokens = require(script.Parent.Parent.Theme.Tokens)
+local CartIcon = require(script.Parent.Parent.Util.CartIcon)
 
 local THUMB_SIZE = 420 -- rbxthumb besar untuk panel detail
 local HEADER_H = 36
@@ -360,7 +361,7 @@ function ItemDetailPanel.new(props: Props): ItemDetailPanel
 		Visible = hasBuy,
 		Parent = actions,
 	})
-	local cart = button("🛒+", {
+	local cart = button("", {
 		Name = "Cart",
 		AnchorPoint = Vector2.new(1, 0),
 		Position = UDim2.fromScale(1, 0),
@@ -682,12 +683,8 @@ function ItemDetailPanel.refreshCart(self: ItemDetailPanel)
 	local can = ItemDetailPanel.canCart(d)
 	local isIn = self._props.isInCart ~= nil and (self._props.isInCart :: any)(d) == true
 	local cart = self._cart
-	cart.Text = if isIn then "🛒✓" else "🛒+"
-	cart.BackgroundColor3 = if isIn then Tokens.Color.Accent else Tokens.Color.PanelRaised
-	cart.TextColor3 = if not can
-		then Tokens.Color.TextMuted
-		elseif isIn then Tokens.Color.AccentText
-		else Tokens.Color.Text
+	local color = if not can then Tokens.Color.TextMuted elseif isIn then Tokens.Color.Accent else Tokens.Color.Text
+	CartIcon.apply(cart, if isIn then "check" else "add", color)
 	cart.AutoButtonColor = can
 end
 

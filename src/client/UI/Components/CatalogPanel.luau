@@ -15,6 +15,7 @@ local PanelLayout = require(Shared.Util.PanelLayout)
 local ItemLink = require(Shared.Util.ItemLink)
 local Tokens = require(script.Parent.Parent.Theme.Tokens)
 local ItemCard = require(script.Parent.ItemCard)
+local CartIcon = require(script.Parent.Parent.Util.CartIcon)
 
 local SEARCH_DEBOUNCE = 0.6 -- detik setelah berhenti mengetik
 local HEADER_H = 40
@@ -152,7 +153,7 @@ function CatalogPanel.new(props: Props): CatalogPanel
 	})
 	-- Tombol keranjang (kiri tombol tutup); teks "🛒 n" diatur setCartCount
 	local hasCart = props.onOpenCart ~= nil
-	local cartButton = textButton("🛒 0", {
+	local cartButton = textButton("", {
 		Name = "Cart",
 		AnchorPoint = Vector2.new(1, 0),
 		Position = UDim2.new(1, -(32 + GAP), 0, 4),
@@ -603,8 +604,8 @@ end
 
 -- Keranjang berubah -> angka di tombol header & tanda 🛒 di kartu.
 function CatalogPanel.setCartCount(self: CatalogPanel, count: number)
-	self._cartButton.Text = "🛒 " .. tostring(count)
-	self._cartButton.TextColor3 = if count > 0 then Tokens.Color.Text else Tokens.Color.TextMuted
+	local color = if count > 0 then Tokens.Color.Text else Tokens.Color.TextMuted
+	CartIcon.apply(self._cartButton, "cart", color, tostring(count))
 	for _, card in self._cards do
 		card:setInCart(self:_isInCart(card.item))
 	end
