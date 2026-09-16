@@ -10,6 +10,7 @@ return {
 		AvatarIntent = { capacity = 20, refillPerSec = 8 },
 		CatalogSearch = { capacity = 6, refillPerSec = 1 },
 		GetBundle = { capacity = 10, refillPerSec = 2 },
+		GetState = { capacity = 5, refillPerSec = 1 },
 	},
 	SearchCacheTTL = 600,
 	ItemCacheTTL = 3600,
