@@ -119,3 +119,31 @@ Kunci: `Assets[] { AssetType = { Id, Name }, CurrentVersionId, Id, Name }`,
   (`HeightScale`, `WidthScale`, …) → BundleService butuh adapter sebelum `enrich`.
 - `Items[].AssetType` bisa dipakai sebagai tipe cadangan (tipe resmi tetap dari
   `getBatchItemDetails`).
+
+  ## Temuan feature/tryon-layered (Studio, 16 Sep 2026)
+
+### `HumanoidDescription:SetAccessories(list, true)`
+
+| Entri | Hasil |
+|---|---|
+| rigid, `IsLayered = false`, **tanpa** `Order` | ⚠️ `Input table missing Order!` |
+| rigid, `IsLayered = false`, `Order = 0` | ⚠️ `IsLayered is required to be true for entries where order is specified (or don't set IsLayered, and default value will be used)!` |
+| rigid, **tanpa** `IsLayered`, `Order = 0` | ✅ tanpa warning |
+| layered, `IsLayered = true`, `Order`, `Puffiness` | ✅ |
+
+→ `DescriptionBuilder.toDescription`: rigid = `{ AssetId, AccessoryType, Order = 0 }`,
+layered = `{ AssetId, AccessoryType, IsLayered = true, Order, Puffiness }`.
+
+### Batas aksesori
+
+- `GetAvatarRulesAsync().WearableAssetTypes[].Name` memakai spasi (`"Hair Accessory"`)
+  → pakai `Id` lalu `AssetTypeMap.normalize(Id)`.
+- Batas **per tipe** (Hat = 3, aksesori lain = 1, makeup = 6), tidak ada batas total.
+- `ApplyDescriptionAsync` **tidak** menolak lebih dari batas (7 aksesori dipasang tanpa error)
+  → server harus menegakkan batas sendiri: `AvatarRules` + `OutfitState.wear(..., maxPerType)`
+  mengganti aksesori **tertua** dari tipe yang penuh.
+
+### Remote
+
+- `RemoteEvent:FireClient` sebelum client punya listener **ditahan** dan dikirim saat
+  `OnClientEvent` pertama terhubung (StateChanged awal tetap diterima).

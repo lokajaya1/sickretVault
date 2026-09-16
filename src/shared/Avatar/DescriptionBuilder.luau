@@ -254,13 +254,17 @@ function DescriptionBuilder.toDescription(state: OutfitState): (HumanoidDescript
 	for _, a in spec.accessories do
 		local enum = accessoryEnum(a.AccessoryType)
 		if enum then
-			table.insert(list, {
-				AssetId = a.AssetId,
-				AccessoryType = enum,
-				IsLayered = a.IsLayered,
-				Order = a.Order,
-				Puffiness = a.Puffiness,
-			})
+			-- Aturan SetAccessories (pesan Studio 16 Sep 2026):
+			--   Order wajib di setiap entri ("Input table missing Order!")
+			--   IsLayered=false + Order DITOLAK ("IsLayered is required to be true for entries where
+			--   order is specified (or don't set IsLayered ...)") -> rigid: Order ada, IsLayered tidak diisi.
+			local entry: { [string]: any } = { AssetId = a.AssetId, AccessoryType = enum, Order = 0 }
+			if a.IsLayered then
+				entry.IsLayered = true
+				entry.Order = a.Order or 1
+				entry.Puffiness = a.Puffiness or 1
+			end
+			table.insert(list, entry)
 		else
 			table.insert(skipped, a.AssetId)
 		end

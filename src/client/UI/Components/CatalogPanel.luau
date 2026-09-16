@@ -19,6 +19,7 @@ export type Props = {
 	parent: Instance,
 	onItemActivated: ((item: any) -> ())?,
 	onClose: (() -> ())?,
+	isSelected: ((item: any) -> boolean)?, -- true = kartu diberi sorotan (item sedang dipakai)
 }
 
 local CatalogPanel = {}
@@ -381,6 +382,7 @@ function CatalogPanel._render(self: CatalogPanel, state: any)
 		elseif card.item ~= item then
 			card:setItem(item)
 		end
+		card:setSelected(self:_isSelected(item))
 	end
 	for i = #cards, #state.items + 1, -1 do
 		cards[i]:destroy()
@@ -407,6 +409,19 @@ function CatalogPanel._render(self: CatalogPanel, state: any)
 		task.defer(function()
 			self:_maybeLoadMore()
 		end)
+	end
+end
+
+function CatalogPanel._isSelected(self: CatalogPanel, item: any): boolean
+	local fn = self._props.isSelected
+	return fn ~= nil and fn(item) == true
+end
+
+-- Perbarui sorotan semua kartu (dipanggil saat outfit berubah).
+-- Perbarui sorotan semua kartu (dipanggil saat outfit berubah).
+function CatalogPanel.refreshSelection(self: CatalogPanel)
+	for _, card in self._cards do
+		card:setSelected(self:_isSelected(card.item))
 	end
 end
 

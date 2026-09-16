@@ -8,6 +8,7 @@ local Players = game:GetService("Players")
 local Tokens = require(script.Parent.Theme.Tokens)
 local CatalogPanel = require(script.Parent.Components.CatalogPanel)
 local CatalogController = require(script.Parent.Parent.Controllers.CatalogController)
+local OutfitController = require(script.Parent.Parent.Controllers.OutfitController)
 
 export type Options = {
 	onItemActivated: ((item: any) -> ())?,
@@ -20,6 +21,7 @@ export type App = typeof(setmetatable(
 	{} :: {
 		gui: ScreenGui,
 		catalog: CatalogController.CatalogController,
+		outfit: OutfitController.OutfitController,
 		panel: CatalogPanel.CatalogPanel,
 		_catalogButton: TextButton,
 		_conns: { RBXScriptConnection },
@@ -94,6 +96,7 @@ function App.mount(opts: Options?): App
 	storesButton.TextColor3 = Tokens.Color.TextMuted -- P1: belum aktif
 
 	local catalog = CatalogController.new()
+	local outfit = OutfitController.new()
 	local self: App
 
 	local panel = CatalogPanel.new({
@@ -103,11 +106,15 @@ function App.mount(opts: Options?): App
 		onClose = function()
 			self:_refreshButtons()
 		end,
+		isSelected = function(item)
+			return item.itemType ~= "Bundle" and outfit:isWorn(item.id)
+		end,
 	})
 
 	self = setmetatable({
 		gui = gui,
 		catalog = catalog,
+		outfit = outfit,
 		panel = panel,
 		_catalogButton = catalogButton,
 		_conns = {},
@@ -129,6 +136,13 @@ function App.mount(opts: Options?): App
 		end)
 	)
 
+	-- Outfit berubah (dari server) -> perbarui sorotan kartu.
+	local unsubscribe = outfit:onChanged(function()
+		panel:refreshSelection()
+	end)
+	table.insert(self._conns, { Disconnect = unsubscribe } :: any)
+	task.spawn(outfit.start, outfit) -- yield (GetState)
+
 	self:_refreshButtons()
 	return self
 end
@@ -148,6 +162,7 @@ function App.destroy(self: App)
 	for _, c in self._conns do
 		c:Disconnect()
 	end
+	self.outfit:stop()
 	self.panel:destroy()
 	self.gui:Destroy()
 end
