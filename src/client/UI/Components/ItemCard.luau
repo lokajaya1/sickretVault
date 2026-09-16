@@ -1,11 +1,12 @@
 --!strict
 -- Kartu item katalog: thumbnail + nama + harga + pil "Worn". Ukuran diatur UIGridLayout induknya.
 -- Tap kartu -> onActivated (CatalogPanel lalu memanggil setArmed(true)).
--- Kartu "armed" menampilkan overlay di atas gambar: TRY/REMOVE, BUY, tombol ⓘ (detail).
+-- Kartu "armed" menampilkan overlay di atas gambar: TRY/REMOVE, BUY, tombol ⓘ (detail),
+-- dan tombol keranjang 🛒 di kiri atas (bila props.onCart ada & item dijual).
 -- Tap bagian kosong overlay -> onDismiss. Klik kanan (PC) / tahan (HP) di kartu -> onInfo (detail).
 --   local card = ItemCard.new({ item = item, onActivated = fn, onTry = fn, onBuy = fn, onInfo = fn, onDismiss = fn })
 --   card.instance.Parent = grid
---   card:setItem(itemLain)   card:setSelected(true)   card:setArmed(true)   card:destroy()
+--   card:setItem(itemLain)   card:setSelected(true)   card:setArmed(true)   card:setInCart(true)   card:destroy()
 
 local Tokens = require(script.Parent.Parent.Theme.Tokens)
 local SecondaryAction = require(script.Parent.Parent.Util.SecondaryAction)
@@ -29,11 +30,15 @@ export type Props = {
 	onTry: Callback,
 	onBuy: Callback,
 	onInfo: Callback,
+	onCart: Callback, -- tombol 🛒 (tambah / buang dari keranjang); nil = tombol disembunyikan
 	onDismiss: Callback, -- tap bagian kosong overlay
 }
 
 local TEXT_AREA = 34 -- nama + harga di bawah gambar
 local INFO_SIZE = 26
+local CART_W = 40
+local CART_ADD = "🛒+"
+local CART_IN = "🛒✓"
 
 local ItemCard = {}
 ItemCard.__index = ItemCard
@@ -50,6 +55,8 @@ export type ItemCard = typeof(setmetatable(
 		_overlay: TextButton,
 		_try: TextButton,
 		_buy: TextButton,
+		_cart: TextButton,
+		_hasCart: boolean,
 		_selected: boolean,
 		_conns: { RBXScriptConnection },
 	},
@@ -250,6 +257,32 @@ function ItemCard.new(props: Props): ItemCard
 	infoStroke.Transparency = 0.5
 	infoStroke.Parent = info
 
+	-- Tombol keranjang (kiri atas overlay): 🛒+ = tambah, 🛒✓ = sudah di keranjang (tap -> buang)
+	local cart = Instance.new("TextButton")
+	cart.Name = "Cart"
+	cart.Text = CART_ADD
+	cart.FontFace = Tokens.Font.Bold
+	cart.TextSize = Tokens.TextSize.Caption
+	cart.TextColor3 = Tokens.Color.Text
+	cart.BackgroundColor3 = Tokens.Color.PanelRaised
+	cart.BorderSizePixel = 0
+	cart.AutoButtonColor = true
+	cart.Position = UDim2.fromOffset(4, 4)
+	cart.Size = UDim2.fromOffset(CART_W, INFO_SIZE)
+	cart.ZIndex = Tokens.ZIndex.Panel + 3
+	cart.Visible = false
+	cart.Parent = overlay
+
+	local cartCorner = Instance.new("UICorner")
+	cartCorner.CornerRadius = Tokens.Radius.Pill
+	cartCorner.Parent = cart
+
+	local cartStroke = Instance.new("UIStroke")
+	cartStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	cartStroke.Color = Tokens.Color.Stroke
+	cartStroke.Transparency = 0.5
+	cartStroke.Parent = cart
+
 	local self = setmetatable({
 		instance = button,
 		item = props.item,
@@ -261,6 +294,8 @@ function ItemCard.new(props: Props): ItemCard
 		_overlay = overlay,
 		_try = try,
 		_buy = buy,
+		_cart = cart,
+		_hasCart = props.onCart ~= nil,
 		_selected = false,
 		_conns = {},
 	}, ItemCard)
@@ -307,6 +342,9 @@ function ItemCard.new(props: Props): ItemCard
 		return self.item.price ~= nil
 	end)
 	hook(info, props.onInfo)
+	hook(cart, props.onCart, function()
+		return self.item.price ~= nil
+	end)
 
 	self:setItem(props.item)
 	return self
@@ -325,6 +363,8 @@ function ItemCard.setItem(self: ItemCard, item: Item)
 	self._buy.BackgroundColor3 = if forSale then Tokens.Color.Robux else Tokens.Color.PanelRaised
 	self._buy.TextColor3 = if forSale then Tokens.Color.AccentText else Tokens.Color.TextMuted
 	self._buy.AutoButtonColor = forSale
+	self._cart.Visible = self._hasCart and forSale
+	self:setInCart(false) -- pemanggil (CatalogPanel) mengatur ulang sesudah setItem
 	self:setArmed(false) -- kartu dipakai ulang untuk item lain
 end
 
@@ -335,6 +375,13 @@ function ItemCard.setSelected(self: ItemCard, selected: boolean)
 	self._stroke.Transparency = if selected then 0.4 else Tokens.Transparency.Stroke
 	self._try.Text = if selected then "REMOVE" else "TRY"
 	self._try.BackgroundColor3 = if selected then Tokens.Color.Danger else Tokens.Color.Accent
+end
+
+-- Tampilan tombol 🛒: sudah di keranjang -> warna aksen + centang.
+function ItemCard.setInCart(self: ItemCard, inCart: boolean)
+	self._cart.Text = if inCart then CART_IN else CART_ADD
+	self._cart.BackgroundColor3 = if inCart then Tokens.Color.Accent else Tokens.Color.PanelRaised
+	self._cart.TextColor3 = if inCart then Tokens.Color.AccentText else Tokens.Color.Text
 end
 
 function ItemCard.setArmed(self: ItemCard, armed: boolean)
