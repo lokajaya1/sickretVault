@@ -10,6 +10,7 @@
 
 local Tokens = require(script.Parent.Parent.Theme.Tokens)
 local SecondaryAction = require(script.Parent.Parent.Util.SecondaryAction)
+local CartIcon = require(script.Parent.Parent.Util.CartIcon)
 
 export type Item = {
 	id: number,
@@ -36,9 +37,7 @@ export type Props = {
 
 local TEXT_AREA = 34 -- nama + harga di bawah gambar
 local INFO_SIZE = 26
-local CART_W = 40
-local CART_ADD = "🛒+"
-local CART_IN = "🛒✓"
+local CART_W = 36
 
 local ItemCard = {}
 ItemCard.__index = ItemCard
@@ -257,10 +256,10 @@ function ItemCard.new(props: Props): ItemCard
 	infoStroke.Transparency = 0.5
 	infoStroke.Parent = info
 
-	-- Tombol keranjang (kiri atas overlay): 🛒+ = tambah, 🛒✓ = sudah di keranjang (tap -> buang)
+	-- Tombol keranjang (kiri atas overlay): ikon + = tambah, ikon ✓ biru = sudah di keranjang (tap -> buang)
 	local cart = Instance.new("TextButton")
 	cart.Name = "Cart"
-	cart.Text = CART_ADD
+	cart.Text = ""
 	cart.FontFace = Tokens.Font.Bold
 	cart.TextSize = Tokens.TextSize.Caption
 	cart.TextColor3 = Tokens.Color.Text
@@ -377,11 +376,13 @@ function ItemCard.setSelected(self: ItemCard, selected: boolean)
 	self._try.BackgroundColor3 = if selected then Tokens.Color.Danger else Tokens.Color.Accent
 end
 
--- Tampilan tombol 🛒: sudah di keranjang -> warna aksen + centang.
+-- Tampilan tombol 🛒: sudah di keranjang -> ikon centang berwarna aksen.
 function ItemCard.setInCart(self: ItemCard, inCart: boolean)
-	self._cart.Text = if inCart then CART_IN else CART_ADD
-	self._cart.BackgroundColor3 = if inCart then Tokens.Color.Accent else Tokens.Color.PanelRaised
-	self._cart.TextColor3 = if inCart then Tokens.Color.AccentText else Tokens.Color.Text
+	CartIcon.apply(
+		self._cart,
+		if inCart then "check" else "add",
+		if inCart then Tokens.Color.Accent else Tokens.Color.Text
+	)
 end
 
 function ItemCard.setArmed(self: ItemCard, armed: boolean)
