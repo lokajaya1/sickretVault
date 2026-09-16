@@ -16,6 +16,8 @@ local SEARCH_DEBOUNCE = 0.6 -- detik setelah berhenti mengetik
 local HEADER_H = 40
 local GAP = Tokens.Space.S
 local WEARING = "__wearing" -- kunci tab Wearing di _tabs (bukan kategori server)
+local STATUS_H = 28
+local STATUS_H_COMPACT = 20
 
 export type Props = {
 	controller: any, -- CatalogController
@@ -114,8 +116,8 @@ function CatalogPanel.new(props: Props): CatalogPanel
 		}),
 	})
 
-	-- Header: judul + tombol tutup
-	make("TextLabel", {
+	-- Header: judul + tombol tutup (posisi akhir diatur applyLayout)
+	local title: TextLabel = make("TextLabel", {
 		Name = "Title",
 		Text = "Catalog",
 		FontFace = Tokens.Font.Bold,
@@ -223,7 +225,7 @@ function CatalogPanel.new(props: Props): CatalogPanel
 
 	-- Grid item
 	local gridTop = tabsTop + Tokens.Size.TabHeight + 6 + GAP
-	local statusH = 28
+	local statusH = STATUS_H
 	local grid: ScrollingFrame = make("ScrollingFrame", {
 		Name = "Grid",
 		BackgroundTransparency = 1,
@@ -353,6 +355,25 @@ function CatalogPanel.new(props: Props): CatalogPanel
 		root.Position = UDim2.fromOffset(L.x, L.y)
 		root.Size = UDim2.fromOffset(L.w, L.h)
 		gridLayout.CellSize = UDim2.fromOffset(L.cellW, L.cellH)
+
+		-- Header: normal = judul di baris sendiri; compact = judul disembunyikan, cari + tutup satu baris.
+		local c = L.compact
+		local sh = Tokens.Size.SearchHeight
+		title.Visible = not c
+		close.Position = if c then UDim2.fromScale(1, 0) else UDim2.new(1, 0, 0, 4)
+		close.Size = if c then UDim2.fromOffset(sh, sh) else UDim2.fromOffset(32, 32)
+		local sTop = if c then 0 else HEADER_H + GAP
+		search.Position = UDim2.fromOffset(0, sTop)
+		search.Size = if c then UDim2.new(1, -(sh + GAP), 0, sh) else UDim2.new(1, 0, 0, sh)
+		local tTop = sTop + sh + (if c then 6 else GAP)
+		tabBar.Position = UDim2.fromOffset(0, tTop)
+		local gTop = tTop + Tokens.Size.TabHeight + 6 + (if c then 4 else GAP)
+		local stH = if c then STATUS_H_COMPACT else STATUS_H
+		grid.Position = UDim2.fromOffset(0, gTop)
+		grid.Size = UDim2.new(1, 0, 1, -gTop - stH)
+		status.Size = UDim2.new(1, -90, 0, stH)
+		status.TextSize = if c then Tokens.TextSize.Caption else Tokens.TextSize.Body
+		retry.Size = UDim2.fromOffset(80, stH - 4)
 	end
 	applyLayout()
 	table.insert(conns, host:GetPropertyChangedSignal("AbsoluteSize"):Connect(applyLayout))

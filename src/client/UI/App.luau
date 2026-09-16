@@ -33,6 +33,7 @@ export type App = typeof(setmetatable(
 		actions: ActionBar.ActionBar,
 		camera: TryOnCamera.TryOnCamera,
 		_catalogButton: TextButton,
+		_topBar: Frame,
 		_conns: { RBXScriptConnection },
 	},
 	App
@@ -166,6 +167,7 @@ function App.mount(opts: Options?): App
 		actions = actions,
 		camera = camera,
 		_catalogButton = catalogButton,
+		_topBar = bar,
 		_conns = {},
 	}, App)
 
@@ -182,6 +184,14 @@ function App.mount(opts: Options?): App
 			task.delay(1.2, function()
 				storesButton.Text = "Stores"
 			end)
+		end)
+	)
+
+	-- Ukuran layar berubah (putar ponsel / jendela) -> atur ulang tombol atas & bar aksi.
+	table.insert(
+		self._conns,
+		gui:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+			self:_refreshButtons()
 		end)
 	)
 
@@ -204,6 +214,16 @@ function App._refreshButtons(self: App)
 	local open = self.panel:isVisible()
 	self._catalogButton.BackgroundColor3 = if open then Tokens.Color.Accent else Tokens.Color.Panel
 	self._catalogButton.BackgroundTransparency = if open then 0 else Tokens.Transparency.Panel
+	-- Layar pendek (ponsel mendatar) + katalog terbuka: panel setinggi layar ->
+	-- tombol atas disembunyikan (tutup lewat X), bar aksi pindah ke kiri atas.
+	local compact = open and self.panel:getLayout().compact
+	self._topBar.Visible = not compact
+	local bar = self.actions.instance
+	bar.AnchorPoint = if compact then Vector2.new(0, 0) else Vector2.new(1, 0)
+	bar.Position = if compact
+		then UDim2.fromOffset(Tokens.Space.S, Tokens.Space.S)
+		else UDim2.new(1, -Tokens.Space.S, 0, Tokens.Space.S)
+
 	-- Katalog terbuka -> kamera try-on; tertutup -> kamera biasa.
 	if open then
 		self.camera:enable()
