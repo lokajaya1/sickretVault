@@ -1,0 +1,149 @@
+--!strict
+-- Studio: require(game.ReplicatedStorage.Tests["PlayerData.spec"])()
+-- Lokal : lune run tools/run-tests.luau
+local Shared = game:GetService("ReplicatedStorage"):WaitForChild("Shared")
+local PlayerData = require(Shared.Domain.PlayerData)
+local OS = require(Shared.Domain.OutfitState)
+local Limits = require(Shared.Config.Limits)
+
+local function eq(a: any, b: any, msg: string)
+	assert(a == b, ("%s: expected %s, got %s"):format(msg, tostring(b), tostring(a)))
+end
+
+local function sample()
+	local s = OS.empty()
+	s.bodyParts.Head = { id = 111 } -- milik avatar asli
+	s.accessories["5"] = { assetId = 5, assetType = "Hat", isLayered = false } -- avatar asli (tanpa seq)
+	s = OS.wear(s, 20, "JacketAccessory")
+	s = OS.wear(s, 21, "Hat", 900)
+	s = OS.wear(s, 30, "Shirt")
+	s = OS.wear(s, 40, "RunAnimation", 900)
+	s.colors.HeadColor = "FFCC00"
+	s.scales.HeightScale = 1.05
+	return s
+end
+
+return function()
+	-- 1. migrate: data kosong / bukan tabel -> v terbaru + setting default
+	local d, newer = PlayerData.migrate({})
+	eq(d.v, PlayerData.VERSION, "versi")
+	eq(d.settings.restoreOutfit, true, "default restore")
+	eq(newer, false, "bukan data baru")
+	eq(PlayerData.migrate(nil).v, PlayerData.VERSION, "nil -> tabel")
+
+	-- 2. migrate: nilai yang ada dipertahankan, tipe salah diperbaiki
+	d = PlayerData.migrate({ v = 1, settings = { restoreOutfit = false }, lastOutfit = { x = 1 } })
+	eq(d.settings.restoreOutfit, false, "setting dipertahankan")
+	eq(d.lastOutfit.x, 1, "lastOutfit tidak disentuh")
+	eq(PlayerData.migrate({ settings = "rusak" }).settings.restoreOutfit, true, "settings rusak")
+	eq(PlayerData.migrate({ settings = { restoreOutfit = "ya" } }).settings.restoreOutfit, true, "bool salah")
+
+	-- 3. migrate: data dari versi lebih baru tidak diubah
+	local future = { v = PlayerData.VERSION + 1, settings = "format baru" }
+	local same, isNewer = PlayerData.migrate(future)
+	eq(isNewer, true, "newer")
+	eq(same.settings, "format baru", "tidak diubah")
+	eq(same.v, PlayerData.VERSION + 1, "versi tetap")
+
+	-- 4. round trip: encode -> decode = tampilan sama
+	local s = sample()
+	local enc = PlayerData.encodeOutfit(s)
+	eq(enc.bp.Torso, nil, "slot kosong dibuang")
+	eq(#enc.ac, 3, "3 aksesori")
+	eq(enc.ac[1].i, 5, "avatar asli (tanpa seq) paling awal")
+	eq(enc.ac[1].q, nil, "tanpa seq -> q nil")
+	local back, err = PlayerData.decodeOutfit(enc)
+	assert(back, "decode gagal: " .. tostring(err))
+	eq(back.rig, "R15", "rig")
+	eq(back.bodyParts.Head.id, 111, "head")
+	eq(back.bodyParts.Torso.id, 0, "torso kosong")
+	eq(back.classic.Shirt.id, 30, "shirt")
+	eq(back.animations.RunAnimation.source, 900, "source animasi")
+	eq(back.accessories["21"].source, 900, "source aksesori")
+	eq(back.accessories["5"].seq, nil, "seq asli tetap nil")
+	eq(back.accessories["20"].seq, 1, "seq dinomori ulang")
+	eq(back.accessories["21"].seq, 2, "seq urut")
+	eq(back.accessories["20"].isLayered, true, "layered")
+	eq(back.accessories["20"].order, s.accessories["20"].order, "order")
+	eq(back.accessories["20"].puffiness, 1, "puffiness")
+	eq(back.colors.HeadColor, "FFCC00", "warna")
+	eq(back.colors.TorsoColor, "A3A2A5", "warna default")
+	eq(back.scales.HeightScale, 1.05, "skala")
+
+	-- 5. hasil encode aman untuk DataStore: hanya string/number/boolean/tabel, tanpa NaN
+	local function check(v: any, path: string)
+		local t = type(v)
+		if t == "table" then
+			for k, x in v do
+				assert(type(k) == "string" or type(k) == "number", "key aneh di " .. path)
+				check(x, path .. "." .. tostring(k))
+			end
+		else
+			assert(t == "string" or t == "number" or t == "boolean", "tipe aneh di " .. path)
+			assert(v == v, "NaN di " .. path)
+		end
+	end
+	check(enc, "enc")
+
+	-- 6. decode menolak bentuk dasar yang salah
+	eq(select(2, PlayerData.decodeOutfit(nil)), "missing", "nil")
+	eq(select(2, PlayerData.decodeOutfit({ ov = 99, r = "R15" })), "version", "versi outfit")
+	eq(select(2, PlayerData.decodeOutfit({ ov = 1, r = "R99" })), "rig", "rig")
+	eq(select(2, PlayerData.decodeOutfit({ ov = 1, r = "R15", ac = "x" })), "shape", "ac bukan tabel")
+	eq(select(2, PlayerData.decodeOutfit({ ov = 1, r = "R15", bp = 5 })), "shape", "bp bukan tabel")
+
+	-- 7. decode membuang entri rusak satu per satu
+	local dirty = {
+		ov = 1,
+		r = "R6",
+		bp = { Head = { i = -1 }, Torso = { i = 7, s = "x" }, Bogus = { i = 8 } },
+		ac = {
+			{ i = 1, t = "Gear" }, -- tipe bukan aksesori
+			{ i = 2, t = "Shirt" }, -- classic, bukan aksesori
+			{ i = 3.5, t = "Hat" }, -- id pecahan
+			"rusak",
+			{ i = 4, t = "Hat", q = true },
+			{ i = 4, t = "Hat" }, -- duplikat
+			{ i = 6, t = "ShirtAccessory", o = 0 / 0, p = 9 },
+			{ i = 9, t = "PantsAccessory", o = 500, p = -1 },
+		},
+		co = { HeadColor = "zzzzzz", TorsoColor = "ab12cd" },
+		sc = { HeightScale = 0 / 0, WidthScale = 99, DepthScale = 0.9 },
+	}
+	local c = PlayerData.decodeOutfit(dirty)
+	assert(c, "decode dirty")
+	eq(c.rig, "R6", "rig R6")
+	eq(c.bodyParts.Head.id, 0, "id negatif dibuang")
+	eq(c.bodyParts.Torso.id, 7, "torso")
+	eq(c.bodyParts.Torso.source, nil, "source rusak dibuang")
+	eq((c.bodyParts :: any).Bogus, nil, "slot asing dibuang")
+	eq(c.accessories["1"], nil, "gear dibuang")
+	eq(c.accessories["2"], nil, "classic dibuang")
+	eq(c.accessories["4"].seq, 1, "hat seq")
+	eq(c.accessories["4"].order, nil, "rigid tanpa order")
+	eq(c.accessories["6"].order, 2, "order NaN -> LayerOrder default") -- ShirtAccessory = 2 di LayerOrder
+	eq(c.accessories["6"].puffiness, 1, "puffiness dijepit")
+	eq(c.accessories["9"].order, 100, "order dijepit")
+	eq(c.accessories["9"].puffiness, 0, "puffiness negatif dijepit")
+	eq(c.colors.HeadColor, "A3A2A5", "hex rusak -> default")
+	eq(c.colors.TorsoColor, "AB12CD", "hex huruf besar")
+	eq(c.scales.HeightScale, 1, "NaN -> default")
+	eq(c.scales.WidthScale, 1, "terlalu besar -> default")
+	eq(c.scales.DepthScale, 0.9, "skala valid")
+
+	-- 8. batas jumlah aksesori ditegakkan
+	local many = { ov = 1, r = "R15", ac = {} }
+	for i = 1, Limits.MaxRigidAccessories + 5 do
+		table.insert(many.ac, { i = 1000 + i, t = "Hat", q = true })
+	end
+	local m = PlayerData.decodeOutfit(many)
+	assert(m, "decode many")
+	local n = 0
+	for _ in m.accessories do
+		n += 1
+	end
+	eq(n, Limits.MaxRigidAccessories, "dipotong ke batas")
+	eq(m.accessories["1001"] ~= nil, true, "yang awal dipertahankan")
+
+	print("PASS PlayerData.spec")
+end
