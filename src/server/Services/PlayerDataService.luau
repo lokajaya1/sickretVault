@@ -5,6 +5,8 @@
 --   data:load(player)                       -- saat join (YIELD). false = main tanpa simpan
 --   data:getLastOutfit(player)              -- OutfitState? (sudah divalidasi)
 --   data:setLastOutfit(player, state | nil) -- dipanggil setiap state berubah (murah, tanpa yield)
+--   data:setSetting(player, "restoreOutfit", false)  -- toggle "pakai outfit terakhir"
+--   data:addOutfit(player, name?, state) / getOutfit / renameOutfit / deleteOutfit / listOutfits -- wardrobe
 --   data:release(player)                    -- saat PlayerRemoving (ProfileStore menyimpan & melepas lock)
 -- Auto save berkala (AUTO_SAVE_PERIOD, bawaan 300 dtk), simpan saat EndSession & saat server mati
 -- sudah ditangani ProfileStore sendiri.
@@ -14,6 +16,7 @@
 local Shared = game:GetService("ReplicatedStorage"):WaitForChild("Shared")
 local Types = require(Shared.Domain.Types)
 local PlayerData = require(Shared.Domain.PlayerData)
+local Wardrobe = require(Shared.Domain.Wardrobe)
 local Log = require(Shared.Util.Log)
 
 local log = Log.new("PlayerData")
@@ -33,8 +36,10 @@ type Session = {
 local PlayerDataService = {}
 PlayerDataService.__index = PlayerDataService
 
--- Ganti nama store = mulai dari data kosong. Jangan diubah setelah rilis.
-PlayerDataService.STORE_NAME = "PlayerData_v1"
+-- Nama DataStore TANPA nomor versi: versi skema ada di data.v (PlayerData.migrate).
+-- Ganti nama = SEMUA pemain mulai dari data kosong. Jangan diubah setelah rilis
+-- (hanya untuk reset total, mis. "PlayerProfiles_R2").
+PlayerDataService.STORE_NAME = "PlayerProfiles"
 
 export type PlayerDataService = typeof(setmetatable(
 	{} :: {
@@ -56,6 +61,24 @@ function PlayerDataService.new(deps: Deps): PlayerDataService
 		_sessions = {},
 		_loading = {},
 	}, PlayerDataService)
+end
+
+-- Data yang boleh DIBACA (sesi ada & bukan dari versi lebih baru).
+local function readable(self: PlayerDataService, player: any): PlayerData.Data?
+	local session = self._sessions[player]
+	if session == nil or session.newer then
+		return nil
+	end
+	return session.profile.Data
+end
+
+-- Data yang boleh DITULIS (juga profil masih aktif).
+local function writable(self: PlayerDataService, player: any): PlayerData.Data?
+	local session = self._sessions[player]
+	if session == nil or session.newer or not session.profile:IsActive() then
+		return nil
+	end
+	return session.profile.Data
 end
 
 function PlayerDataService.keyFor(userId: number): string
@@ -146,6 +169,112 @@ function PlayerDataService.setLastOutfit(self: PlayerDataService, player: any, s
 	end
 	session.profile.Data.lastOutfit = if state then PlayerData.encodeOutfit(state) else nil
 	return true
+end
+
+-- ===== Setting =====
+
+-- Hanya key yang dikenal & tipe yang sama dengan TEMPLATE. Return (true) | (false, "NOT_LOADED" | "BAD_ARG").
+function PlayerDataService.setSetting(self: PlayerDataService, player: any, key: any, value: any): (boolean, string?)
+	local data = writable(self, player)
+	if data == nil then
+		return false, "NOT_LOADED"
+	end
+	local default = if type(key) == "string" then (PlayerData.TEMPLATE.settings :: any)[key] else nil
+	if default == nil or type(value) ~= type(default) then
+		return false, "BAD_ARG"
+	end
+	(data.settings :: any)[key] = value
+	return true, nil
+end
+
+-- ===== Wardrobe (slot outfit) =====
+-- Semua return (hasil, nil) | (nil/false, kode). Kode: NOT_LOADED | NOT_FOUND | FULL | INVALID.
+
+function PlayerDataService.listOutfits(self: PlayerDataService, player: any): ({ Wardrobe.Summary }?, string?)
+	local data = readable(self, player)
+	if data == nil then
+		return nil, "NOT_LOADED"
+	end
+	return Wardrobe.list(data), nil
+end
+
+-- Info untuk cek awal sebelum filter nama (yield): (penuh?, nama bawaan) | nil bila belum dimuat.
+function PlayerDataService.outfitSlotInfo(self: PlayerDataService, player: any): (boolean?, string?)
+	local data = writable(self, player)
+	if data == nil then
+		return nil, nil
+	end
+	return Wardrobe.isFull(data), Wardrobe.defaultName(data)
+end
+
+-- `name` harus sudah bersih + difilter (atau nama bawaan). nil = nama bawaan "Outfit N".
+function PlayerDataService.addOutfit(
+	self: PlayerDataService,
+	player: any,
+	name: string?,
+	state: State
+): (Wardrobe.Summary?, string?)
+	local data = writable(self, player)
+	if data == nil then
+		return nil, "NOT_LOADED"
+	end
+	local entry, err = Wardrobe.add(data, name or Wardrobe.defaultName(data), PlayerData.encodeOutfit(state), os.time())
+	if entry == nil then
+		return nil, err
+	end
+	return Wardrobe.summarize(entry), nil
+end
+
+function PlayerDataService.overwriteOutfit(
+	self: PlayerDataService,
+	player: any,
+	id: number,
+	state: State
+): (boolean, string?)
+	local data = writable(self, player)
+	if data == nil then
+		return false, "NOT_LOADED"
+	end
+	return Wardrobe.overwrite(data, id, PlayerData.encodeOutfit(state))
+end
+
+-- Outfit di slot (sudah divalidasi ulang). INVALID = data slot rusak / format lama.
+function PlayerDataService.getOutfit(self: PlayerDataService, player: any, id: number): (State?, string?)
+	local data = readable(self, player)
+	if data == nil then
+		return nil, "NOT_LOADED"
+	end
+	local entry = Wardrobe.find(data, id)
+	if entry == nil then
+		return nil, "NOT_FOUND"
+	end
+	local state, err = PlayerData.decodeOutfit(entry.o)
+	if state == nil then
+		log.warn("slot outfit tidak valid", player.Name, id, err)
+		return nil, "INVALID"
+	end
+	return state, nil
+end
+
+function PlayerDataService.renameOutfit(
+	self: PlayerDataService,
+	player: any,
+	id: number,
+	name: string
+): (boolean, string?)
+	local data = writable(self, player)
+	if data == nil then
+		return false, "NOT_LOADED"
+	end
+	return Wardrobe.rename(data, id, name)
+end
+
+function PlayerDataService.deleteOutfit(self: PlayerDataService, player: any, id: number): (boolean, string?)
+	local data = writable(self, player)
+	if data == nil then
+		return false, "NOT_LOADED"
+	end
+	return Wardrobe.remove(data, id)
 end
 
 function PlayerDataService.release(self: PlayerDataService, player: any)
