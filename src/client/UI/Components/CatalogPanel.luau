@@ -5,10 +5,12 @@
 --   local panel = CatalogPanel.new({ controller = catalog, parent = screenGui, onItemActivated = fn })
 --   panel:setVisible(true)   panel:getLayout()   panel:destroy()
 -- Tab "Wearing" (bila props.getWearing ada) menampilkan item yang sedang dipakai, bukan hasil katalog.
+-- Kotak cari juga menerima link/ID item: Enter -> props.onLink(id, kind) (bukan pencarian).
 
 local Shared = game:GetService("ReplicatedStorage"):WaitForChild("Shared")
 local Categories = require(Shared.Config.Categories)
 local PanelLayout = require(Shared.Util.PanelLayout)
+local ItemLink = require(Shared.Util.ItemLink)
 local Tokens = require(script.Parent.Parent.Theme.Tokens)
 local ItemCard = require(script.Parent.ItemCard)
 
@@ -26,6 +28,8 @@ export type Props = {
 	onClose: (() -> ())?,
 	isSelected: ((item: any) -> boolean)?, -- true = kartu diberi sorotan (item sedang dipakai)
 	getWearing: (() -> { any })?, -- daftar item terpakai untuk tab Wearing (nil = tab tidak ditampilkan)
+	-- link/ID ditempel di kotak cari lalu Enter; id = nil bila teks mirip link tapi tidak valid
+	onLink: ((id: number?, kind: ("Asset" | "Bundle")?) -> ())?,
 }
 
 local CatalogPanel = {}
@@ -141,7 +145,7 @@ function CatalogPanel.new(props: Props): CatalogPanel
 	local searchTop = HEADER_H + GAP
 	local search: TextBox = make("TextBox", {
 		Name = "Search",
-		PlaceholderText = "Search catalog...",
+		PlaceholderText = if props.onLink then "Search or paste item link/ID" else "Search catalog...",
 		PlaceholderColor3 = Tokens.Color.TextMuted,
 		Text = "",
 		ClearTextOnFocus = false,
@@ -309,6 +313,7 @@ function CatalogPanel.new(props: Props): CatalogPanel
 	)
 
 	-- Cari: Enter langsung, mengetik -> debounce
+	local skipTextChange = false -- kotak dikosongkan oleh kode (setelah paste link) -> jangan cari
 	local function submitSearch()
 		self._searchToken += 1
 		self:_setWearing(false) -- cari selalu di katalog
@@ -317,15 +322,35 @@ function CatalogPanel.new(props: Props): CatalogPanel
 	table.insert(
 		conns,
 		search.FocusLost:Connect(function(enter: boolean)
-			if enter then
-				submitSearch()
+			if not enter then
+				return
 			end
+			-- Link / ID item -> coba pakai, kotak dikosongkan (tanpa memicu pencarian)
+			local onLink = props.onLink
+			if onLink and ItemLink.looksLikeLink(search.Text) then
+				local id, kind = ItemLink.parse(search.Text)
+				if id then
+					skipTextChange = true
+					search.Text = ""
+				end
+				self._searchToken += 1 -- batalkan pencarian yang tertunda
+				onLink(id, kind)
+				return
+			end
+			submitSearch()
 		end)
 	)
 	table.insert(
 		conns,
 		search:GetPropertyChangedSignal("Text"):Connect(function()
 			self._searchToken += 1
+			if skipTextChange then
+				skipTextChange = false
+				return
+			end
+			if props.onLink and ItemLink.looksLikeLink(search.Text) then
+				return -- sedang menempel link/ID: jangan cari
+			end
 			local token = self._searchToken
 			task.delay(SEARCH_DEBOUNCE, function()
 				if token == self._searchToken then

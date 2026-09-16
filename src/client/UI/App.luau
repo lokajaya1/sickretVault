@@ -149,6 +149,16 @@ function App.mount(opts: Options?): App
 		isSelected = function(item)
 			return item.itemType ~= "Bundle" and outfit:isWorn(item.id)
 		end,
+		-- Link/ID ditempel -> coba pakai (server memvalidasi; gagal -> toast)
+		onLink = function(id, kind)
+			if id == nil then
+				toast:show("That isn't a catalog item link", "warning")
+			elseif kind == "Bundle" then
+				outfit:send({ op = "wearBundle", bundleId = id })
+			else
+				outfit:send({ op = "wear", assetId = id })
+			end
+		end,
 	})
 
 	-- Kamera try-on: karakter di tengah area layar yang tidak tertutup panel.
