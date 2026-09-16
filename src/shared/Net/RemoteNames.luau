@@ -7,10 +7,12 @@ return {
 		AvatarIntent = "AvatarIntent", -- client -> server: Types.Intent
 		StateChanged = "StateChanged", -- server -> client: OutfitState terbaru
 		Notify = "Notify", -- server -> client: { code, message } untuk toast
+		CheckoutResult = "CheckoutResult", -- server -> client: { status, purchased, failed } setelah PromptBulkPurchase
 	},
 	-- RemoteFunction (client menunggu balasan)
 	Functions = {
 		CatalogSearch = "CatalogSearch",
+		Checkout = "Checkout", -- client -> server: { { id, itemType } } -> { ok, code? }
 		GetBundle = "GetBundle",
 		GetItemDetail = "GetItemDetail",
 		GetState = "GetState",
