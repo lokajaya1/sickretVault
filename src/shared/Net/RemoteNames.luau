@@ -12,6 +12,7 @@ return {
 	Functions = {
 		CatalogSearch = "CatalogSearch",
 		GetBundle = "GetBundle",
+		GetItemDetail = "GetItemDetail",
 		GetState = "GetState",
 	},
 }

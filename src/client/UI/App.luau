@@ -1,8 +1,10 @@
 --!strict
--- Akar UI: ScreenGui + tombol atas (Catalog, Stores) + panel katalog + dock (Undo/Redo/Reset + strip Wearing).
---   local app = App.mount({ onItemActivated = function(item) ... end })
---   app:toggleCatalog()   app.toast:show("Hello", "info")   app:destroy()
+-- Akar UI: ScreenGui + tombol atas (Catalog, Stores) + panel katalog + panel detail + dock (Undo/Redo/Reset + strip Wearing).
+--   local app = App.mount({ onItemActivated = function(item) ... end })  -- hook tambahan (log) saat kartu di-tap
+-- Kartu: tap -> overlay TRY / BUY / ⓘ. ⓘ & paste link -> panel detail.
+--   app:toggleCatalog()   app:openDetail(id, "Asset")   app.toast:show("Hello", "info")   app:destroy()
 
+local MarketplaceService = game:GetService("MarketplaceService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
@@ -13,8 +15,10 @@ local CatalogPanel = require(script.Parent.Components.CatalogPanel)
 local Toast = require(script.Parent.Components.Toast)
 local ActionBar = require(script.Parent.Components.ActionBar)
 local WornStrip = require(script.Parent.Components.WornStrip)
+local ItemDetailPanel = require(script.Parent.Components.ItemDetailPanel)
 local CatalogController = require(script.Parent.Parent.Controllers.CatalogController)
 local OutfitController = require(script.Parent.Parent.Controllers.OutfitController)
+local DetailController = require(script.Parent.Parent.Controllers.DetailController)
 local TryOnCamera = require(script.Parent.Parent.Controllers.TryOnCamera)
 
 export type Options = {
@@ -24,12 +28,29 @@ export type Options = {
 local App = {}
 App.__index = App
 
+-- Prompt beli bawaan Roblox (aset / bundle). Gagal -> false.
+local function promptBuy(player: Player, id: number, itemType: string): boolean
+	local ok, err = pcall(function()
+		if itemType == "Bundle" then
+			MarketplaceService:PromptBundlePurchase(player, id)
+		else
+			MarketplaceService:PromptPurchase(player, id)
+		end
+	end)
+	if not ok then
+		warn("[App] prompt beli gagal", itemType, id, err)
+	end
+	return ok
+end
+
 export type App = typeof(setmetatable(
 	{} :: {
 		gui: ScreenGui,
 		catalog: CatalogController.CatalogController,
 		outfit: OutfitController.OutfitController,
+		detail: DetailController.DetailController,
 		panel: CatalogPanel.CatalogPanel,
+		detailPanel: ItemDetailPanel.ItemDetailPanel,
 		toast: Toast.Toast,
 		actions: ActionBar.ActionBar,
 		strip: WornStrip.WornStrip,
@@ -111,6 +132,7 @@ function App.mount(opts: Options?): App
 
 	local catalog = CatalogController.new()
 	local outfit = OutfitController.new()
+	local detail = DetailController.new()
 	local self: App
 
 	-- Dock (kiri bawah, dekat avatar): Undo / Redo / Reset -> server lewat OutfitController.
@@ -121,11 +143,26 @@ function App.mount(opts: Options?): App
 		end,
 	})
 
-	-- Strip item yang sedang dipakai; tap -> Remove.
+	-- Strip item yang sedang dipakai; tap -> Remove / Buy; klik kanan / tahan -> detail.
+	-- Part dari bundle (item.source) -> beli / tampilkan bundle-nya.
 	local strip = WornStrip.new({
 		parent = gui,
 		onRemove = function(item)
 			outfit:send({ op = "remove", assetId = item.id })
+		end,
+		onBuy = function(item)
+			if item.source then
+				self:buy(item.source, "Bundle")
+			else
+				self:buy(item.id, "Asset")
+			end
+		end,
+		onInfo = function(item)
+			if item.source then
+				self:openDetail(item.source, "Bundle")
+			else
+				self:openDetail(item.id, "Asset")
+			end
 		end,
 	})
 
@@ -142,21 +179,55 @@ function App.mount(opts: Options?): App
 	local panel = CatalogPanel.new({
 		controller = catalog,
 		parent = gui,
+		-- Tap kartu -> overlay di kartu (CatalogPanel); aksinya di bawah.
 		onItemActivated = o.onItemActivated,
+		onTry = function(item)
+			outfit:toggle(item)
+		end,
+		onBuy = function(item)
+			self:buy(item.id, item.itemType)
+		end,
+		onInfo = function(item)
+			self:openDetail(item.id, item.itemType)
+		end,
 		onClose = function()
 			self:_refreshButtons()
 		end,
 		isSelected = function(item)
 			return if item.itemType == "Bundle" then outfit:isBundleWorn(item.id) else outfit:isWorn(item.id)
 		end,
-		-- Link/ID ditempel -> coba pakai (server memvalidasi; gagal -> toast)
+		-- Link/ID ditempel -> buka panel detail (server memvalidasi; gagal -> pesan di panel)
 		onLink = function(id, kind)
 			if id == nil then
 				toast:show("That isn't a catalog item link", "warning")
-			elseif kind == "Bundle" then
-				outfit:send({ op = "wearBundle", bundleId = id })
 			else
-				outfit:send({ op = "wear", assetId = id })
+				self:openDetail(id, kind or "Asset")
+			end
+		end,
+	})
+
+	-- Panel detail: menutupi isi panel katalog.
+	local detailPanel = ItemDetailPanel.new({
+		parent = panel.instance,
+		controller = detail,
+		isWorn = function(d)
+			return if d.itemType == "Bundle" then outfit:isBundleWorn(d.id) else outfit:isWorn(d.id)
+		end,
+		isPartWorn = function(assetId)
+			return outfit:isWorn(assetId)
+		end,
+		onToggle = function(d)
+			outfit:toggle({ id = d.id, itemType = d.itemType })
+		end,
+		onBuy = function(d)
+			self:buy(d.id, d.itemType)
+		end,
+		-- Tap part bundle: sedang dipakai -> lepas part itu; belum -> pakai part itu saja.
+		onPartActivated = function(part, d)
+			if outfit:isWorn(part.assetId) then
+				outfit:send({ op = "remove", assetId = part.assetId })
+			else
+				outfit:send({ op = "wearBundle", bundleId = d.id, partIds = { part.assetId } })
 			end
 		end,
 	})
@@ -179,7 +250,9 @@ function App.mount(opts: Options?): App
 		gui = gui,
 		catalog = catalog,
 		outfit = outfit,
+		detail = detail,
 		panel = panel,
+		detailPanel = detailPanel,
 		toast = toast,
 		actions = actions,
 		strip = strip,
@@ -224,9 +297,20 @@ function App.mount(opts: Options?): App
 	end)
 	table.insert(self._conns, { Disconnect = unremember } :: any)
 
-	-- Outfit berubah (dari server) -> perbarui sorotan kartu & strip.
+	-- Detail aset termuat -> nama/harga juga dikenal strip (mis. item dari paste link).
+	local unDetail = detail:onChanged(function(state)
+		local d = state.detail
+		if d and d.itemType == "Asset" and known[d.id] == nil then
+			known[d.id] = d
+			refreshStrip()
+		end
+	end)
+	table.insert(self._conns, { Disconnect = unDetail } :: any)
+
+	-- Outfit berubah (dari server) -> perbarui sorotan kartu, panel detail & strip.
 	local unsubscribe = outfit:onChanged(function()
 		panel:refreshSelection()
+		detailPanel:refreshWorn()
 		refreshStrip()
 	end)
 	table.insert(self._conns, { Disconnect = unsubscribe } :: any)
@@ -239,6 +323,9 @@ end
 
 function App._refreshButtons(self: App)
 	local open = self.panel:isVisible()
+	if not open then
+		self.detail:close() -- katalog ditutup (X / tombol / C) -> detail ikut tertutup
+	end
 	self._catalogButton.BackgroundColor3 = if open then Tokens.Color.Accent else Tokens.Color.Panel
 	self._catalogButton.BackgroundTransparency = if open then 0 else Tokens.Transparency.Panel
 	-- Layar pendek (ponsel mendatar) + katalog terbuka: panel setinggi layar -> tombol atas disembunyikan
@@ -266,12 +353,30 @@ function App.toggleCatalog(self: App)
 	self:_refreshButtons()
 end
 
+-- Buka panel detail (katalog dibuka dulu bila tertutup). Memuat di thread baru (remote yield).
+function App.openDetail(self: App, id: number, itemType: string)
+	if not self.panel:isVisible() then
+		self.panel:setVisible(true)
+		self:_refreshButtons()
+	end
+	task.spawn(self.detail.open, self.detail, id, itemType)
+end
+
+-- Buka prompt beli Roblox; gagal -> toast.
+function App.buy(self: App, id: number, itemType: string)
+	if not promptBuy(Players.LocalPlayer, id, itemType) then
+		self.toast:show("Couldn't open the purchase prompt", "error")
+	end
+end
+
 function App.destroy(self: App)
 	for _, c in self._conns do
 		c:Disconnect()
 	end
 	self.camera:destroy()
 	self.outfit:stop()
+	self.detailPanel:destroy()
+	self.detail:close()
 	self.panel:destroy()
 	self.toast:destroy()
 	self.actions:destroy()

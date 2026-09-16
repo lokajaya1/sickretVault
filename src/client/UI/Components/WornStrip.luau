@@ -1,27 +1,31 @@
 --!strict
 -- WornStrip: deretan item yang sedang dipakai (di bawah avatar).
--- Tap item -> lapisan merah "Remove" muncul DI ATAS item itu + nama item di judul.
--- Tap lapisan itu -> item dilepas. Tap item lain / geser strip / tunggu 3 detik -> batal.
---   local strip = WornStrip.new({ parent = screenGui, onRemove = function(item) ... end })
+-- Tap item -> lapisan "Remove" (atas, merah) + "Buy" (bawah, hijau) DI ATAS item itu + nama item di judul.
+-- Tap Remove -> dilepas; Buy -> props.onBuy. Tap item lain / geser strip / tunggu 4 detik -> batal.
+-- Klik kanan (PC) / tahan (HP) pada item -> props.onInfo (panel detail).
+--   local strip = WornStrip.new({ parent = screenGui, onRemove = fn, onBuy = fn, onInfo = fn })
 --   strip:setItems(items)              -- item: { id, name, ... } (lihat Shared/Domain/WornItems)
 --   strip:setPlacement(x, y, w, h)     -- piksel GUI
 --   strip:setVisible(true)   strip:destroy()
 
 local Tokens = require(script.Parent.Parent.Theme.Tokens)
+local SecondaryAction = require(script.Parent.Parent.Util.SecondaryAction)
 
 local TITLE_H = 16
-local ARM_SECONDS = 3 -- lapisan Remove hilang sendiri setelah ini
+local ARM_SECONDS = 4 -- lapisan Remove/Buy hilang sendiri setelah ini
 
-export type Item = { id: number, name: string }
+export type Item = { id: number, name: string, source: number? }
 
 export type Props = {
 	parent: Instance,
 	onRemove: (item: Item) -> (),
+	onBuy: ((item: Item) -> ())?, -- nil = hanya Remove
+	onInfo: ((item: Item) -> ())?, -- klik kanan / tahan
 }
 
 type Tile = {
 	button: ImageButton,
-	overlay: TextButton,
+	overlay: Frame,
 }
 
 local WornStrip = {}
@@ -179,48 +183,114 @@ function WornStrip._newTile(self: WornStrip, index: number): Tile
 	button.Parent = self._scroll
 	corner(button, Tokens.Radius.Small)
 
-	-- Lapisan Remove menutupi item (tap kedua = lepas)
-	local overlay = Instance.new("TextButton")
-	overlay.Name = "Remove"
-	overlay.Text = "Remove"
+	-- Lapisan aksi menutupi item: Remove (atas) + Buy (bawah)
+	local overlay = Instance.new("Frame")
+	overlay.Name = "Actions"
+	overlay.BackgroundTransparency = 1
 	overlay.Size = UDim2.fromScale(1, 1)
-	overlay.BackgroundColor3 = Tokens.Color.Danger
-	overlay.BackgroundTransparency = 0.15
-	overlay.BorderSizePixel = 0
-	overlay.AutoButtonColor = true
-	overlay.FontFace = Tokens.Font.Bold
-	overlay.TextColor3 = Tokens.Color.Text
-	overlay.TextScaled = true -- muat di tombol 44 px (ponsel) maupun 52 px
 	overlay.Visible = false
 	overlay.ZIndex = Tokens.ZIndex.Hud + 1
 	overlay.Parent = button
-	corner(overlay, Tokens.Radius.Small)
 
-	local sizeLimit = Instance.new("UITextSizeConstraint")
-	sizeLimit.MaxTextSize = Tokens.TextSize.Caption
-	sizeLimit.Parent = overlay
+	local list = Instance.new("UIListLayout")
+	list.FillDirection = Enum.FillDirection.Vertical
+	list.SortOrder = Enum.SortOrder.LayoutOrder
+	list.Padding = UDim.new(0, 2)
+	list.Parent = overlay
 
-	local overlayPad = Instance.new("UIPadding")
-	overlayPad.PaddingLeft = UDim.new(0, 2)
-	overlayPad.PaddingRight = UDim.new(0, 2)
-	overlayPad.Parent = overlay
+	local hasBuy = self._props.onBuy ~= nil
+	local function action(name: string, text: string, color: Color3, order: number): TextButton
+		local b = Instance.new("TextButton")
+		b.Name = name
+		b.Text = text
+		b.LayoutOrder = order
+		b.Size = if hasBuy then UDim2.new(1, 0, 0.5, -1) else UDim2.fromScale(1, 1)
+		b.BackgroundColor3 = color
+		b.BackgroundTransparency = 0.1
+		b.BorderSizePixel = 0
+		b.AutoButtonColor = true
+		b.FontFace = Tokens.Font.Bold
+		b.TextColor3 = Tokens.Color.Text
+		b.TextScaled = true -- muat di tombol 44 px (ponsel) maupun 52 px
+		b.ZIndex = Tokens.ZIndex.Hud + 2
+		b.Parent = overlay
+		corner(b, Tokens.Radius.Small)
+
+		local sizeLimit = Instance.new("UITextSizeConstraint")
+		sizeLimit.MaxTextSize = Tokens.TextSize.Caption
+		sizeLimit.Parent = b
+
+		local bPad = Instance.new("UIPadding")
+		bPad.PaddingLeft = UDim.new(0, 2)
+		bPad.PaddingRight = UDim.new(0, 2)
+		bPad.Parent = b
+		return b
+	end
+	local remove = action("Remove", "Remove", Tokens.Color.Danger, 1)
+	local buy = if hasBuy then action("Buy", "Buy", Tokens.Color.Robux, 2) else nil
+
+	-- Klik kanan / tahan (item maupun tombol di atasnya) -> detail
+	local suppressors: { SecondaryAction.Suppressed } = {}
+	local targets: { GuiButton } = { button, remove }
+	if buy then
+		table.insert(targets, buy)
+	end
+	for _, target in targets do
+		local conns, suppressed = SecondaryAction.bind(target, function()
+			local item = self._items[index]
+			local onInfo = self._props.onInfo
+			if item and onInfo then
+				self:_disarm()
+				onInfo(item)
+			end
+		end)
+		for _, c in conns do
+			table.insert(self._conns, c)
+		end
+		table.insert(suppressors, suppressed)
+	end
+	local function isSuppressed(): boolean
+		for _, f in suppressors do
+			if f() then
+				return true
+			end
+		end
+		return false
+	end
+
+	local function onTap(target: GuiButton, fn: (item: Item) -> ())
+		table.insert(
+			self._conns,
+			target.Activated:Connect(function()
+				if isSuppressed() then
+					return -- jari baru dilepas setelah long-press
+				end
+				local item = self._items[index]
+				self:_disarm()
+				if item then
+					fn(item)
+				end
+			end)
+		)
+	end
 
 	table.insert(
 		self._conns,
 		button.Activated:Connect(function()
-			self:_arm(index)
-		end)
-	)
-	table.insert(
-		self._conns,
-		overlay.Activated:Connect(function()
-			local item = self._items[index]
-			self:_disarm()
-			if item then
-				self._props.onRemove(item)
+			if not isSuppressed() then
+				self:_arm(index)
 			end
 		end)
 	)
+	onTap(remove, self._props.onRemove)
+	if buy then
+		onTap(buy, function(item)
+			local onBuy = self._props.onBuy
+			if onBuy then
+				onBuy(item)
+			end
+		end)
+	end
 	return { button = button, overlay = overlay }
 end
 
