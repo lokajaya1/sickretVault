@@ -375,6 +375,20 @@ function AvatarService.restore(self: AvatarService, player: any, state: State): 
 	return true, nil
 end
 
+-- Pakai outfit dari slot wardrobe (sudah divalidasi PlayerData.decodeOutfit). Bisa di-Undo.
+-- Return (true) | (false, "NOT_READY" | "NOTHING").
+function AvatarService.wearOutfit(self: AvatarService, player: any, state: State): (boolean, Code?)
+	local session = self._sessions[player]
+	if session == nil or not session.ready then
+		return false, "NOT_READY"
+	end
+	if sameLook(state, session.state) then
+		return false, "NOTHING" -- sudah dipakai
+	end
+	commit(self, player, session, OutfitState.clone(state))
+	return true, nil
+end
+
 -- ===== Apply (debounce + satu apply per pemain pada satu waktu) =====
 
 function AvatarService._schedule(self: AvatarService, player: any)
