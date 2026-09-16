@@ -6,6 +6,7 @@
 --   panel:setVisible(true)   panel:getLayout()   panel:destroy()
 -- Tab "Wearing" (bila props.getWearing ada) menampilkan item yang sedang dipakai, bukan hasil katalog.
 -- Kotak cari juga menerima link/ID item: Enter -> props.onLink(id, kind) (bukan pencarian).
+-- Tap kartu -> overlay TRY / BUY / ⓘ di kartu itu (satu kartu saja); gulir / tutup panel -> overlay hilang.
 
 local Shared = game:GetService("ReplicatedStorage"):WaitForChild("Shared")
 local Categories = require(Shared.Config.Categories)
@@ -24,7 +25,10 @@ local STATUS_H_COMPACT = 20
 export type Props = {
 	controller: any, -- CatalogController
 	parent: Instance,
-	onItemActivated: ((item: any) -> ())?,
+	onItemActivated: ((item: any) -> ())?, -- kartu di-tap (overlay dibuka)
+	onTry: ((item: any) -> ())?,
+	onBuy: ((item: any) -> ())?,
+	onInfo: ((item: any) -> ())?, -- tombol ⓘ -> panel detail
 	onClose: (() -> ())?,
 	isSelected: ((item: any) -> boolean)?, -- true = kartu diberi sorotan (item sedang dipakai)
 	getWearing: (() -> { any })?, -- daftar item terpakai untuk tab Wearing (nil = tab tidak ditampilkan)
@@ -360,10 +364,11 @@ function CatalogPanel.new(props: Props): CatalogPanel
 		end)
 	)
 
-	-- Infinite scroll
+	-- Infinite scroll (+ gulir menutup overlay kartu)
 	table.insert(
 		conns,
 		grid:GetPropertyChangedSignal("CanvasPosition"):Connect(function()
+			self:disarm()
 			self:_maybeLoadMore()
 		end)
 	)
@@ -436,13 +441,56 @@ function CatalogPanel._setWearing(self: CatalogPanel, on: boolean)
 	self:_render(self._props.controller:getState())
 end
 
+-- Tutup overlay semua kartu.
+function CatalogPanel.disarm(self: CatalogPanel)
+	for _, card in self._cards do
+		if card:isArmed() then
+			card:setArmed(false)
+		end
+	end
+end
+
+-- Buat kartu baru; aksi overlay diteruskan ke props.
+function CatalogPanel._newCard(self: CatalogPanel, item: any, order: number): ItemCard.ItemCard
+	local props = self._props
+	local card: ItemCard.ItemCard
+	local function call(fn: ((any) -> ())?, closeAfter: boolean): (any) -> ()
+		return function(it)
+			if closeAfter then
+				card:setArmed(false)
+			end
+			if fn then
+				fn(it)
+			end
+		end
+	end
+	card = ItemCard.new({
+		item = item,
+		layoutOrder = order,
+		onActivated = function(it)
+			self:disarm()
+			card:setArmed(true)
+			if props.onItemActivated then
+				props.onItemActivated(it)
+			end
+		end,
+		onDismiss = function()
+			card:setArmed(false)
+		end,
+		onTry = call(props.onTry, false), -- overlay tetap terbuka: TRY <-> REMOVE
+		onBuy = call(props.onBuy, true),
+		onInfo = call(props.onInfo, true),
+	})
+	return card
+end
+
 -- Kartu: pakai ulang yang ada, buat bila kurang, hapus kelebihan
 function CatalogPanel._renderCards(self: CatalogPanel, items: { any })
 	local cards = self._cards
 	for i, item in items do
 		local card = cards[i]
 		if card == nil then
-			card = ItemCard.new({ item = item, layoutOrder = i, onActivated = self._props.onItemActivated })
+			card = self:_newCard(item, i)
 			card.instance.Parent = self._grid
 			cards[i] = card
 		elseif card.item ~= item then
@@ -523,6 +571,9 @@ end
 
 function CatalogPanel.setVisible(self: CatalogPanel, visible: boolean)
 	self.instance.Visible = visible
+	if not visible then
+		self:disarm()
+	end
 	local state = self._props.controller:getState()
 	if visible and state.page == 0 and not state.loading then
 		spawnCall(self._props.controller.setCategory, self._props.controller, state.categoryId)
