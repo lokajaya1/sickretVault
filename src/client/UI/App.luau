@@ -1,8 +1,10 @@
 --!strict
 -- Akar UI: ScreenGui + tombol atas (Catalog, Stores) + panel katalog + panel detail + dock (Undo/Redo/Reset + strip Wearing).
---   local app = App.mount({ onItemActivated = function(item) ... end })  -- hook tambahan (log); tap kartu selalu buka detail
+--   local app = App.mount({ onItemActivated = function(item) ... end })  -- hook tambahan (log) saat kartu di-tap
+-- Kartu: tap -> overlay TRY / BUY / ⓘ. ⓘ & paste link -> panel detail.
 --   app:toggleCatalog()   app:openDetail(id, "Asset")   app.toast:show("Hello", "info")   app:destroy()
 
+local MarketplaceService = game:GetService("MarketplaceService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
@@ -25,6 +27,21 @@ export type Options = {
 
 local App = {}
 App.__index = App
+
+-- Prompt beli bawaan Roblox (aset / bundle). Gagal -> false.
+local function promptBuy(player: Player, id: number, itemType: string): boolean
+	local ok, err = pcall(function()
+		if itemType == "Bundle" then
+			MarketplaceService:PromptBundlePurchase(player, id)
+		else
+			MarketplaceService:PromptPurchase(player, id)
+		end
+	end)
+	if not ok then
+		warn("[App] prompt beli gagal", itemType, id, err)
+	end
+	return ok
+end
 
 export type App = typeof(setmetatable(
 	{} :: {
@@ -147,12 +164,16 @@ function App.mount(opts: Options?): App
 	local panel = CatalogPanel.new({
 		controller = catalog,
 		parent = gui,
-		-- Tap kartu -> buka panel detail (Try On ada di panel)
-		onItemActivated = function(item)
+		-- Tap kartu -> overlay di kartu (CatalogPanel); aksinya di bawah.
+		onItemActivated = o.onItemActivated,
+		onTry = function(item)
+			outfit:toggle(item)
+		end,
+		onBuy = function(item)
+			self:buy(item.id, item.itemType)
+		end,
+		onInfo = function(item)
 			self:openDetail(item.id, item.itemType)
-			if o.onItemActivated then
-				o.onItemActivated(item)
-			end
 		end,
 		onClose = function()
 			self:_refreshButtons()
@@ -182,6 +203,9 @@ function App.mount(opts: Options?): App
 		end,
 		onToggle = function(d)
 			outfit:toggle({ id = d.id, itemType = d.itemType })
+		end,
+		onBuy = function(d)
+			self:buy(d.id, d.itemType)
 		end,
 		-- Tap part bundle: sedang dipakai -> lepas part itu; belum -> pakai part itu saja.
 		onPartActivated = function(part, d)
@@ -321,6 +345,13 @@ function App.openDetail(self: App, id: number, itemType: string)
 		self:_refreshButtons()
 	end
 	task.spawn(self.detail.open, self.detail, id, itemType)
+end
+
+-- Buka prompt beli Roblox; gagal -> toast.
+function App.buy(self: App, id: number, itemType: string)
+	if not promptBuy(Players.LocalPlayer, id, itemType) then
+		self.toast:show("Couldn't open the purchase prompt", "error")
+	end
 end
 
 function App.destroy(self: App)
