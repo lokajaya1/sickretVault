@@ -29,6 +29,7 @@ PanelLayout.MARGIN = 16
 PanelLayout.COMPACT_MARGIN = 8
 PanelLayout.TOP = 64 -- ruang tombol atas (Catalog/Stores)
 PanelLayout.SIDE_RATIO = 0.55
+PanelLayout.SIDE_RATIO_COMPACT = 0.6 -- ponsel mendatar: area aman lebih sempit (notch) -> panel sedikit lebih lebar
 PanelLayout.SIDE_MIN = 360
 PanelLayout.SIDE_MAX = 760
 PanelLayout.SHEET_RATIO = 0.58
@@ -36,7 +37,7 @@ PanelLayout.PADDING = 12 -- padding dalam panel (kiri+kanan masing-masing)
 PanelLayout.SCROLLBAR = 10 -- ruang scrollbar + padding kanan grid
 PanelLayout.GAP = 8
 PanelLayout.CARD_MIN = 104 -- lebar kartu minimum
-PanelLayout.CARD_MIN_COMPACT = 88
+PanelLayout.CARD_MIN_COMPACT = 76
 PanelLayout.MIN_COLUMNS = 3
 PanelLayout.MAX_COLUMNS = 6
 PanelLayout.TEXT_AREA = 34 -- tinggi nama + harga di bawah gambar
@@ -65,7 +66,8 @@ function PanelLayout.compute(width: number, height: number): Layout
 	local compact = mode == "side" and height < P.COMPACT_HEIGHT
 	local x, y, w, h, anchorX, anchorY
 	if mode == "side" then
-		w = math.floor(clamp(width * P.SIDE_RATIO, P.SIDE_MIN, P.SIDE_MAX))
+		local ratio = if compact then P.SIDE_RATIO_COMPACT else P.SIDE_RATIO
+		w = math.floor(clamp(width * ratio, P.SIDE_MIN, P.SIDE_MAX))
 		w = math.min(w, width - P.MARGIN * 2)
 		x = width - w - P.MARGIN
 		-- compact: panel setinggi layar (tombol atas disembunyikan App selama katalog terbuka)
