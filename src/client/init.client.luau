@@ -8,19 +8,33 @@ local App = require(script.UI.App)
 
 local log = Log.new("Client")
 
--- Pesan singkat per kode error dari server (toast menyusul; sementara ke Output).
+-- Teks toast per kode dari server (teks pemain berbahasa Inggris).
 local NOTICE_TEXT: { [string]: string } = {
-	NOT_FOUND = "Item tidak ditemukan / tipe belum didukung",
-	UNSUPPORTED_TYPE = "Tipe item belum didukung",
-	LIMIT_RIGID = "Batas aksesori tercapai",
-	LIMIT_LAYERED = "Batas pakaian layered tercapai",
-	LIMIT_TYPE = "Tipe item ini tidak boleh dipakai",
-	APPLY_FAILED = "Gagal memasang ke avatar, dikembalikan",
-	RATE_LIMITED = "Terlalu cepat, tunggu sebentar",
-	NOT_READY = "Avatar belum siap, coba lagi",
-	NOT_IMPLEMENTED = "Bundle belum didukung",
-	BAD_ARG = "Permintaan tidak valid",
-	FAILED = "Gagal, coba lagi",
+	NOT_FOUND = "Item not found or not supported",
+	UNSUPPORTED_TYPE = "This item type isn't supported yet",
+	LIMIT_RIGID = "Accessory limit reached",
+	LIMIT_LAYERED = "Layered clothing limit reached",
+	LIMIT_TYPE = "This item type can't be worn",
+	APPLY_FAILED = "Couldn't apply to your avatar, reverted",
+	RATE_LIMITED = "Slow down a little",
+	NOT_READY = "Avatar is loading, try again",
+	NOT_IMPLEMENTED = "Bundles are coming soon",
+	BAD_ARG = "Invalid request",
+	FAILED = "Something went wrong, try again",
+}
+
+local NOTICE_KIND: { [string]: "info" | "warning" | "error" } = {
+	NOT_FOUND = "warning",
+	UNSUPPORTED_TYPE = "warning",
+	LIMIT_RIGID = "warning",
+	LIMIT_LAYERED = "warning",
+	LIMIT_TYPE = "warning",
+	APPLY_FAILED = "error",
+	RATE_LIMITED = "info",
+	NOT_READY = "info",
+	NOT_IMPLEMENTED = "info",
+	BAD_ARG = "warning",
+	FAILED = "error",
 }
 
 local app: App.App
@@ -32,7 +46,9 @@ app = App.mount({
 })
 
 app.outfit:onNotify(function(notice)
-	log.warn("notify", notice.code, notice.op, NOTICE_TEXT[notice.code] or "")
+	log.warn("notify", notice.code, notice.op)
+	local text = NOTICE_TEXT[notice.code] or NOTICE_TEXT.FAILED
+	app.toast:show(text, NOTICE_KIND[notice.code] or "error")
 end)
 
 -- Shortcut PC: C = buka/tutup katalog (abaikan saat mengetik).

@@ -1,12 +1,13 @@
 --!strict
 -- Akar UI: ScreenGui + tombol atas (Catalog, Stores) + panel katalog.
 --   local app = App.mount({ onItemActivated = function(item) ... end })
---   app:toggleCatalog()   app:destroy()
+--   app:toggleCatalog()   app.toast:show("Hello", "info")   app:destroy()
 
 local Players = game:GetService("Players")
 
 local Tokens = require(script.Parent.Theme.Tokens)
 local CatalogPanel = require(script.Parent.Components.CatalogPanel)
+local Toast = require(script.Parent.Components.Toast)
 local CatalogController = require(script.Parent.Parent.Controllers.CatalogController)
 local OutfitController = require(script.Parent.Parent.Controllers.OutfitController)
 
@@ -23,6 +24,7 @@ export type App = typeof(setmetatable(
 		catalog: CatalogController.CatalogController,
 		outfit: OutfitController.OutfitController,
 		panel: CatalogPanel.CatalogPanel,
+		toast: Toast.Toast,
 		_catalogButton: TextButton,
 		_conns: { RBXScriptConnection },
 	},
@@ -95,6 +97,8 @@ function App.mount(opts: Options?): App
 	local storesButton = topButton("Stores", "Stores", 2, bar)
 	storesButton.TextColor3 = Tokens.Color.TextMuted -- P1: belum aktif
 
+	local toast = Toast.new({ parent = gui })
+
 	local catalog = CatalogController.new()
 	local outfit = OutfitController.new()
 	local self: App
@@ -116,6 +120,7 @@ function App.mount(opts: Options?): App
 		catalog = catalog,
 		outfit = outfit,
 		panel = panel,
+		toast = toast,
 		_catalogButton = catalogButton,
 		_conns = {},
 	}, App)
@@ -164,6 +169,7 @@ function App.destroy(self: App)
 	end
 	self.outfit:stop()
 	self.panel:destroy()
+	self.toast:destroy()
 	self.gui:Destroy()
 end
 
