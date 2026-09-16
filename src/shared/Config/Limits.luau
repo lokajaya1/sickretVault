@@ -11,6 +11,7 @@ return {
 	Rate = { -- token bucket per pemain per remote
 		AvatarIntent = { capacity = 20, refillPerSec = 8 },
 		CatalogSearch = { capacity = 6, refillPerSec = 1 },
+		Checkout = { capacity = 3, refillPerSec = 0.2 }, -- 1 prompt tiap ~5 dtk
 		GetBundle = { capacity = 10, refillPerSec = 2 },
 		GetItemDetail = { capacity = 10, refillPerSec = 2 },
 		GetState = { capacity = 5, refillPerSec = 1 },

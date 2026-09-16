@@ -1,8 +1,10 @@
 --!strict
--- Akar UI: ScreenGui + tombol atas (Catalog, Stores) + panel katalog + panel detail + dock (Undo/Redo/Reset + strip Wearing).
+-- Akar UI: ScreenGui + tombol atas (Catalog, Stores) + panel katalog + panel detail + panel keranjang
+-- + dock (Undo/Redo/Reset + strip Wearing).
 --   local app = App.mount({ onItemActivated = function(item) ... end })  -- hook tambahan (log) saat kartu di-tap
--- Kartu: tap -> overlay TRY / BUY / ⓘ. ⓘ & paste link -> panel detail.
---   app:toggleCatalog()   app:openDetail(id, "Asset")   app.toast:show("Hello", "info")   app:destroy()
+-- Kartu: tap -> overlay TRY / BUY / ⓘ / 🛒. ⓘ & paste link -> panel detail. 🛒 di header -> panel keranjang.
+--   app:toggleCatalog()   app:openDetail(id, "Asset")   app:openCart()   app:checkout()
+--   app.toast:show("Hello", "info")   app:destroy()
 
 local MarketplaceService = game:GetService("MarketplaceService")
 local Players = game:GetService("Players")
@@ -16,9 +18,11 @@ local Toast = require(script.Parent.Components.Toast)
 local ActionBar = require(script.Parent.Components.ActionBar)
 local WornStrip = require(script.Parent.Components.WornStrip)
 local ItemDetailPanel = require(script.Parent.Components.ItemDetailPanel)
+local CartPanel = require(script.Parent.Components.CartPanel)
 local CatalogController = require(script.Parent.Parent.Controllers.CatalogController)
 local OutfitController = require(script.Parent.Parent.Controllers.OutfitController)
 local DetailController = require(script.Parent.Parent.Controllers.DetailController)
+local CartController = require(script.Parent.Parent.Controllers.CartController)
 local TryOnCamera = require(script.Parent.Parent.Controllers.TryOnCamera)
 
 export type Options = {
@@ -43,6 +47,37 @@ local function promptBuy(player: Player, id: number, itemType: string): boolean
 	return ok
 end
 
+-- Teks toast keranjang (teks pemain berbahasa Inggris).
+local CART_ADD_TEXT: { [string]: string } = {
+	full = "Cart is full (max %d items)",
+	notForSale = "This item can't be added to the cart",
+	invalid = "This item can't be added to the cart",
+}
+
+local CHECKOUT_TEXT: { [string]: string } = {
+	BUSY = "A purchase prompt is already open",
+	RATE_LIMITED = "Slow down a little",
+	TOO_MANY = "Too many items in the cart",
+	NETWORK = "Couldn't reach the server",
+}
+
+-- Item keranjang dari kartu katalog / detail (hanya field yang dipakai Cart).
+local function toCartItem(x: any): any
+	return {
+		id = x.id,
+		itemType = x.itemType,
+		name = x.name,
+		price = if x.isForSale == false then nil else x.price,
+		assetType = x.assetType,
+		bundleType = x.bundleType,
+		creatorName = x.creatorName,
+	}
+end
+
+local function plural(n: number, word: string): string
+	return ("%d %s%s"):format(n, word, if n == 1 then "" else "s")
+end
+
 export type App = typeof(setmetatable(
 	{} :: {
 		gui: ScreenGui,
@@ -51,6 +86,8 @@ export type App = typeof(setmetatable(
 		detail: DetailController.DetailController,
 		panel: CatalogPanel.CatalogPanel,
 		detailPanel: ItemDetailPanel.ItemDetailPanel,
+		cart: CartController.CartController,
+		cartPanel: CartPanel.CartPanel,
 		toast: Toast.Toast,
 		actions: ActionBar.ActionBar,
 		strip: WornStrip.WornStrip,
@@ -133,6 +170,7 @@ function App.mount(opts: Options?): App
 	local catalog = CatalogController.new()
 	local outfit = OutfitController.new()
 	local detail = DetailController.new()
+	local cart = CartController.new()
 	local self: App
 
 	-- Dock (kiri bawah, dekat avatar): Undo / Redo / Reset -> server lewat OutfitController.
@@ -190,6 +228,15 @@ function App.mount(opts: Options?): App
 		onInfo = function(item)
 			self:openDetail(item.id, item.itemType)
 		end,
+		onCart = function(item)
+			self:toggleCart(item)
+		end,
+		isInCart = function(item)
+			return cart:has(item.id, item.itemType)
+		end,
+		onOpenCart = function()
+			self:openCart()
+		end,
 		onClose = function()
 			self:_refreshButtons()
 		end,
@@ -203,6 +250,18 @@ function App.mount(opts: Options?): App
 			else
 				self:openDetail(id, kind or "Asset")
 			end
+		end,
+	})
+
+	-- Panel keranjang: menutupi isi katalog (di bawah panel detail). Tap baris -> detail di atasnya.
+	local cartPanel = CartPanel.new({
+		parent = panel.instance,
+		controller = cart,
+		onItemActivated = function(item)
+			self:openDetail(item.id, item.itemType)
+		end,
+		onCheckout = function()
+			self:checkout()
 		end,
 	})
 
@@ -221,6 +280,12 @@ function App.mount(opts: Options?): App
 		end,
 		onBuy = function(d)
 			self:buy(d.id, d.itemType)
+		end,
+		onCart = function(d)
+			self:toggleCart(d)
+		end,
+		isInCart = function(d)
+			return cart:has(d.id, d.itemType)
 		end,
 		-- Tap part bundle: sedang dipakai -> lepas part itu; belum -> pakai part itu saja.
 		onPartActivated = function(part, d)
@@ -253,6 +318,8 @@ function App.mount(opts: Options?): App
 		detail = detail,
 		panel = panel,
 		detailPanel = detailPanel,
+		cart = cart,
+		cartPanel = cartPanel,
 		toast = toast,
 		actions = actions,
 		strip = strip,
@@ -316,6 +383,20 @@ function App.mount(opts: Options?): App
 	table.insert(self._conns, { Disconnect = unsubscribe } :: any)
 	task.spawn(outfit.start, outfit) -- yield (GetState)
 
+	-- Keranjang berubah -> angka di header, tanda 🛒 di kartu & panel detail.
+	local unCart = cart:onChanged(function(snap)
+		panel:setCartCount(snap.count)
+		detailPanel:refreshCart()
+	end)
+	table.insert(self._conns, { Disconnect = unCart } :: any)
+	-- Hasil PromptBulkPurchase -> toast (item terbeli sudah dibuang dari keranjang oleh controller).
+	local unResult = cart:onResult(function(summary)
+		self:_showCheckoutResult(summary)
+	end)
+	table.insert(self._conns, { Disconnect = unResult } :: any)
+	cart:start()
+	panel:setCartCount(cart:count())
+
 	refreshStrip()
 	self:_refreshButtons()
 	return self
@@ -324,7 +405,8 @@ end
 function App._refreshButtons(self: App)
 	local open = self.panel:isVisible()
 	if not open then
-		self.detail:close() -- katalog ditutup (X / tombol / C) -> detail ikut tertutup
+		self.detail:close() -- katalog ditutup (X / tombol / C) -> detail & keranjang ikut tertutup
+		self.cartPanel:setOpen(false)
 	end
 	self._catalogButton.BackgroundColor3 = if open then Tokens.Color.Accent else Tokens.Color.Panel
 	self._catalogButton.BackgroundTransparency = if open then 0 else Tokens.Transparency.Panel
@@ -362,6 +444,61 @@ function App.openDetail(self: App, id: number, itemType: string)
 	task.spawn(self.detail.open, self.detail, id, itemType)
 end
 
+-- Buka panel keranjang (katalog dibuka dulu bila tertutup; detail yang terbuka ditutup).
+function App.openCart(self: App)
+	if not self.panel:isVisible() then
+		self.panel:setVisible(true)
+		self:_refreshButtons()
+	end
+	self.detail:close()
+	self.cartPanel:setOpen(true)
+end
+
+-- Tombol 🛒 (kartu / detail): tambah atau buang dari keranjang; gagal -> toast.
+function App.toggleCart(self: App, x: any)
+	local inCart, reason = self.cart:toggle(toCartItem(x))
+	if inCart then
+		self.toast:show(("Added to cart (%d)"):format(self.cart:count()), "info")
+	elseif reason then
+		local text = CART_ADD_TEXT[reason] or CART_ADD_TEXT.invalid
+		self.toast:show(text:format(self.cart:getSnapshot().max), "warning")
+	end
+end
+
+-- Tombol Buy All: remote Checkout (yield) di thread baru; gagal -> toast.
+function App.checkout(self: App)
+	task.spawn(function()
+		local ok, code = self.cart:checkout()
+		if not ok and code ~= "EMPTY" then
+			local text = CHECKOUT_TEXT[code or ""] or "Couldn't open the purchase prompt"
+			self.toast:show(text, if code == "RATE_LIMITED" or code == "BUSY" then "info" else "error")
+		end
+	end)
+end
+
+function App._showCheckoutResult(self: App, summary: any)
+	local bought, owned, failed = #summary.purchased, #summary.owned, #summary.failed
+	if bought > 0 then
+		self.toast:show("Purchased " .. plural(bought, "item"), "info")
+	end
+	if owned > 0 then
+		self.toast:show(plural(owned, "item") .. " already owned, removed from cart", "info")
+	end
+	if failed > 0 then
+		local poor = false
+		for _, f in summary.failed do
+			if f.reason == "InsufficientRobux" then
+				poor = true
+			end
+		end
+		local text = if poor then "Not enough Robux" else plural(failed, "item") .. " couldn't be bought"
+		self.toast:show(text, "warning")
+	end
+	if bought + owned + failed == 0 and summary.status == "Error" then
+		self.toast:show("Purchase failed, try again", "error")
+	end
+end
+
 -- Buka prompt beli Roblox; gagal -> toast.
 function App.buy(self: App, id: number, itemType: string)
 	if not promptBuy(Players.LocalPlayer, id, itemType) then
@@ -375,6 +512,8 @@ function App.destroy(self: App)
 	end
 	self.camera:destroy()
 	self.outfit:stop()
+	self.cart:stop()
+	self.cartPanel:destroy()
 	self.detailPanel:destroy()
 	self.detail:close()
 	self.panel:destroy()

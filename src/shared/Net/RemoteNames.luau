@@ -11,6 +11,7 @@ return {
 	-- RemoteFunction (client menunggu balasan)
 	Functions = {
 		CatalogSearch = "CatalogSearch",
+		Checkout = "Checkout", -- client -> server: { { id, itemType } } -> { ok, code? }
 		GetBundle = "GetBundle",
 		GetItemDetail = "GetItemDetail",
 		GetState = "GetState",

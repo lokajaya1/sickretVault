@@ -6,7 +6,8 @@
 --   panel:setVisible(true)   panel:getLayout()   panel:destroy()
 -- Tab "Wearing" (bila props.getWearing ada) menampilkan item yang sedang dipakai, bukan hasil katalog.
 -- Kotak cari juga menerima link/ID item: Enter -> props.onLink(id, kind) (bukan pencarian).
--- Tap kartu -> overlay TRY / BUY / ⓘ di kartu itu (satu kartu saja); gulir / tutup panel -> overlay hilang.
+-- Tap kartu -> overlay TRY / BUY / ⓘ / 🛒 di kartu itu (satu kartu saja); gulir / tutup panel -> overlay hilang.
+-- Header punya tombol keranjang "🛒 n" (bila props.onOpenCart ada) di kiri tombol tutup: panel:setCartCount(n).
 
 local Shared = game:GetService("ReplicatedStorage"):WaitForChild("Shared")
 local Categories = require(Shared.Config.Categories)
@@ -14,6 +15,7 @@ local PanelLayout = require(Shared.Util.PanelLayout)
 local ItemLink = require(Shared.Util.ItemLink)
 local Tokens = require(script.Parent.Parent.Theme.Tokens)
 local ItemCard = require(script.Parent.ItemCard)
+local CartIcon = require(script.Parent.Parent.Util.CartIcon)
 
 local SEARCH_DEBOUNCE = 0.6 -- detik setelah berhenti mengetik
 local HEADER_H = 40
@@ -21,6 +23,7 @@ local GAP = Tokens.Space.S
 local WEARING = "__wearing" -- kunci tab Wearing di _tabs (bukan kategori server)
 local STATUS_H = 28
 local STATUS_H_COMPACT = 20
+local CART_BTN_W = 60
 
 export type Props = {
 	controller: any, -- CatalogController
@@ -29,6 +32,9 @@ export type Props = {
 	onTry: ((item: any) -> ())?,
 	onBuy: ((item: any) -> ())?,
 	onInfo: ((item: any) -> ())?, -- tombol ⓘ -> panel detail
+	onCart: ((item: any) -> ())?, -- tombol 🛒 di kartu (tambah / buang dari keranjang)
+	isInCart: ((item: any) -> boolean)?, -- true = tombol 🛒 kartu ditandai "sudah di keranjang"
+	onOpenCart: (() -> ())?, -- tombol 🛒 di header (nil = tombol disembunyikan)
 	onClose: (() -> ())?,
 	isSelected: ((item: any) -> boolean)?, -- true = kartu diberi sorotan (item sedang dipakai)
 	getWearing: (() -> { any })?, -- daftar item terpakai untuk tab Wearing (nil = tab tidak ditampilkan)
@@ -47,6 +53,7 @@ export type CatalogPanel = typeof(setmetatable(
 		_status: TextLabel,
 		_retry: TextButton,
 		_search: TextBox,
+		_cartButton: TextButton,
 		_tabs: { [string]: TextButton },
 		_cards: { ItemCard.ItemCard },
 		_conns: { RBXScriptConnection },
@@ -133,7 +140,7 @@ function CatalogPanel.new(props: Props): CatalogPanel
 		TextColor3 = Tokens.Color.Text,
 		TextXAlignment = Enum.TextXAlignment.Left,
 		BackgroundTransparency = 1,
-		Size = UDim2.new(1, -HEADER_H, 0, HEADER_H),
+		Size = UDim2.new(1, -(HEADER_H + CART_BTN_W + GAP), 0, HEADER_H),
 		ZIndex = Tokens.ZIndex.Panel,
 		Parent = root,
 	})
@@ -142,6 +149,16 @@ function CatalogPanel.new(props: Props): CatalogPanel
 		AnchorPoint = Vector2.new(1, 0),
 		Position = UDim2.new(1, 0, 0, 4),
 		Size = UDim2.fromOffset(32, 32),
+		Parent = root,
+	})
+	-- Tombol keranjang (kiri tombol tutup); teks "🛒 n" diatur setCartCount
+	local hasCart = props.onOpenCart ~= nil
+	local cartButton = textButton("", {
+		Name = "Cart",
+		AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.new(1, -(32 + GAP), 0, 4),
+		Size = UDim2.fromOffset(CART_BTN_W, 32),
+		Visible = hasCart,
 		Parent = root,
 	})
 
@@ -290,6 +307,7 @@ function CatalogPanel.new(props: Props): CatalogPanel
 		_status = status,
 		_retry = retry,
 		_search = search,
+		_cartButton = cartButton,
 		_tabs = tabs,
 		_cards = {},
 		_conns = conns,
@@ -313,6 +331,15 @@ function CatalogPanel.new(props: Props): CatalogPanel
 		conns,
 		retry.Activated:Connect(function()
 			spawnCall(ctl.retry, ctl)
+		end)
+	)
+	table.insert(
+		conns,
+		cartButton.Activated:Connect(function()
+			self:disarm()
+			if props.onOpenCart then
+				props.onOpenCart()
+			end
 		end)
 	)
 
@@ -392,9 +419,14 @@ function CatalogPanel.new(props: Props): CatalogPanel
 		title.Visible = not c
 		close.Position = if c then UDim2.fromScale(1, 0) else UDim2.new(1, 0, 0, 4)
 		close.Size = if c then UDim2.fromOffset(sh, sh) else UDim2.fromOffset(32, 32)
+		local closeW = if c then sh else 32
+		cartButton.Position = if c then UDim2.new(1, -(closeW + GAP), 0, 0) else UDim2.new(1, -(closeW + GAP), 0, 4)
+		cartButton.Size = if c then UDim2.fromOffset(CART_BTN_W, sh) else UDim2.fromOffset(CART_BTN_W, 32)
 		local sTop = if c then 0 else HEADER_H + GAP
 		search.Position = UDim2.fromOffset(0, sTop)
-		search.Size = if c then UDim2.new(1, -(sh + GAP), 0, sh) else UDim2.new(1, 0, 0, sh)
+		-- compact: cari + (keranjang) + tutup satu baris
+		local rightW = sh + GAP + (if hasCart then CART_BTN_W + GAP else 0)
+		search.Size = if c then UDim2.new(1, -rightW, 0, sh) else UDim2.new(1, 0, 0, sh)
 		local tTop = sTop + sh + (if c then 6 else GAP)
 		tabBar.Position = UDim2.fromOffset(0, tTop)
 		local gTop = tTop + Tokens.Size.TabHeight + 6 + (if c then 4 else GAP)
@@ -480,6 +512,12 @@ function CatalogPanel._newCard(self: CatalogPanel, item: any, order: number): It
 		onTry = call(props.onTry, false), -- overlay tetap terbuka: TRY <-> REMOVE
 		onBuy = call(props.onBuy, true),
 		onInfo = call(props.onInfo, true),
+		onCart = if props.onCart
+			then function(it)
+				(props.onCart :: any)(it)
+				card:setInCart(self:_isInCart(it)) -- overlay tetap terbuka: 🛒+ <-> 🛒✓
+			end
+			else nil,
 	})
 	return card
 end
@@ -497,6 +535,7 @@ function CatalogPanel._renderCards(self: CatalogPanel, items: { any })
 			card:setItem(item)
 		end
 		card:setSelected(self:_isSelected(item))
+		card:setInCart(self:_isInCart(item))
 	end
 	for i = #cards, #items + 1, -1 do
 		cards[i]:destroy()
@@ -556,6 +595,20 @@ end
 function CatalogPanel._isSelected(self: CatalogPanel, item: any): boolean
 	local fn = self._props.isSelected
 	return fn ~= nil and fn(item) == true
+end
+
+function CatalogPanel._isInCart(self: CatalogPanel, item: any): boolean
+	local fn = self._props.isInCart
+	return fn ~= nil and fn(item) == true
+end
+
+-- Keranjang berubah -> angka di tombol header & tanda 🛒 di kartu.
+function CatalogPanel.setCartCount(self: CatalogPanel, count: number)
+	local color = if count > 0 then Tokens.Color.Text else Tokens.Color.TextMuted
+	CartIcon.apply(self._cartButton, "cart", color, tostring(count))
+	for _, card in self._cards do
+		card:setInCart(self:_isInCart(card.item))
+	end
 end
 
 -- Outfit berubah: tab Wearing -> gambar ulang daftar; tab lain -> perbarui sorotan kartu.

@@ -7,17 +7,20 @@
 --   	onToggle = function(d) ... end, onPartActivated = function(part, d) ... end,
 --   })
 --   detail:refreshWorn()   -- outfit berubah -> teks tombol & sorotan part
+--   detail:refreshCart()   -- keranjang berubah -> tombol 🛒
 --   detail:destroy()
--- Isi: Back + judul; thumbnail; nama; creator (+verified); tipe; harga; Try On/Remove + Buy;
+-- Isi: Back + judul; thumbnail; nama; creator (+verified); tipe; harga; Try On/Remove + Buy + 🛒;
 -- deskripsi; "Included Items" (part bundle, tap -> onPartActivated).
 
 local Shared = game:GetService("ReplicatedStorage"):WaitForChild("Shared")
 local ItemDetail = require(Shared.Domain.ItemDetail)
 local Tokens = require(script.Parent.Parent.Theme.Tokens)
+local CartIcon = require(script.Parent.Parent.Util.CartIcon)
 
 local THUMB_SIZE = 420 -- rbxthumb besar untuk panel detail
 local HEADER_H = 36
 local BUTTON_H = 40
+local CART_W = 56 -- tombol 🛒 di kanan Buy
 local PART_MIN = 84 -- lebar minimum tile part
 local PART_TEXT = 28 -- tinggi nama di bawah gambar part
 local ROBUX = utf8.char(0xE002) -- ikon Robux bawaan font Roblox
@@ -38,6 +41,8 @@ export type Props = {
 	isPartWorn: (assetId: number) -> boolean,
 	onToggle: (detail: any) -> (), -- tombol Try On / Remove
 	onBuy: ((detail: any) -> ())?, -- tombol Buy (nil = tombol disembunyikan)
+	onCart: ((detail: any) -> ())?, -- tombol 🛒 tambah / buang dari keranjang (nil = disembunyikan)
+	isInCart: ((detail: any) -> boolean)?,
 	onPartActivated: (part: any, detail: any) -> (),
 	onBack: (() -> ())?, -- default: controller:close()
 }
@@ -65,6 +70,7 @@ export type ItemDetailPanel = typeof(setmetatable(
 		_favorites: TextLabel,
 		_toggle: TextButton,
 		_buy: TextButton,
+		_cart: TextButton,
 		_actions: Frame,
 		_descHeader: TextLabel,
 		_desc: TextLabel,
@@ -330,10 +336,13 @@ function ItemDetailPanel.new(props: Props): ItemDetailPanel
 		Parent = scroll,
 	})
 	local hasBuy = props.onBuy ~= nil
+	local hasCart = props.onCart ~= nil
 	local half = Tokens.Space.S / 2
+	-- ruang kanan untuk tombol 🛒 (dibagi rata ke Try On & Buy)
+	local cartSpace = if hasCart then CART_W + Tokens.Space.S else 0
 	local toggle = button("Try On", {
 		Name = "Toggle",
-		Size = if hasBuy then UDim2.new(0.5, -half, 1, 0) else UDim2.fromScale(1, 1),
+		Size = if hasBuy then UDim2.new(0.5, -(half + cartSpace / 2), 1, 0) else UDim2.new(1, -cartSpace, 1, 0),
 		TextSize = Tokens.TextSize.Button,
 		BackgroundColor3 = Tokens.Color.Accent,
 		BackgroundTransparency = 0,
@@ -343,13 +352,21 @@ function ItemDetailPanel.new(props: Props): ItemDetailPanel
 	local buy = button("Buy", {
 		Name = "Buy",
 		AnchorPoint = Vector2.new(1, 0),
-		Position = UDim2.fromScale(1, 0),
-		Size = UDim2.new(0.5, -half, 1, 0),
+		Position = UDim2.new(1, -cartSpace, 0, 0),
+		Size = UDim2.new(0.5, -(half + cartSpace / 2), 1, 0),
 		TextSize = Tokens.TextSize.Button,
 		BackgroundColor3 = Tokens.Color.Robux,
 		BackgroundTransparency = 0,
 		TextColor3 = Tokens.Color.AccentText,
 		Visible = hasBuy,
+		Parent = actions,
+	})
+	local cart = button("", {
+		Name = "Cart",
+		AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.fromScale(1, 0),
+		Size = UDim2.new(0, CART_W, 1, 0),
+		Visible = hasCart,
 		Parent = actions,
 	})
 
@@ -406,6 +423,7 @@ function ItemDetailPanel.new(props: Props): ItemDetailPanel
 		_favorites = favorites,
 		_toggle = toggle,
 		_buy = buy,
+		_cart = cart,
 		_actions = actions,
 		_descHeader = descHeader,
 		_desc = desc,
@@ -450,6 +468,17 @@ function ItemDetailPanel.new(props: Props): ItemDetailPanel
 			local d = self._detail
 			if d and d.isForSale and props.onBuy then
 				props.onBuy(d)
+			end
+		end)
+	)
+
+	table.insert(
+		conns,
+		cart.Activated:Connect(function()
+			local d = self._detail
+			if d and props.onCart and ItemDetailPanel.canCart(d) then
+				props.onCart(d)
+				self:refreshCart()
 			end
 		end)
 	)
@@ -605,6 +634,7 @@ function ItemDetailPanel._render(self: ItemDetailPanel, state: any)
 	self._buy.BackgroundColor3 = if forSale then Tokens.Color.Robux else Tokens.Color.PanelRaised
 	self._buy.TextColor3 = if forSale then Tokens.Color.AccentText else Tokens.Color.TextMuted
 	self._buy.AutoButtonColor = forSale
+	self:refreshCart()
 
 	local partCount = if type(d.parts) == "table" then #d.parts else 0
 	self._partsHeader.Visible = partCount > 0
@@ -637,6 +667,25 @@ function ItemDetailPanel.refreshWorn(self: ItemDetailPanel)
 		tile.stroke.Transparency = if on then 0.2 else Tokens.Transparency.Stroke
 		tile.stroke.Thickness = if on then 2 else 1
 	end
+end
+
+-- Bisa masuk keranjang: dijual dengan harga normal (resale/limited tanpa harga -> tidak).
+function ItemDetailPanel.canCart(d: any): boolean
+	return d.isForSale == true and type(d.price) == "number"
+end
+
+-- Keranjang berubah -> tampilan tombol 🛒 (🛒+ tambah, 🛒✓ sudah di keranjang, abu-abu = tidak bisa).
+function ItemDetailPanel.refreshCart(self: ItemDetailPanel)
+	local d = self._detail
+	if d == nil then
+		return
+	end
+	local can = ItemDetailPanel.canCart(d)
+	local isIn = self._props.isInCart ~= nil and (self._props.isInCart :: any)(d) == true
+	local cart = self._cart
+	local color = if not can then Tokens.Color.TextMuted elseif isIn then Tokens.Color.Accent else Tokens.Color.Text
+	CartIcon.apply(cart, if isIn then "check" else "add", color)
+	cart.AutoButtonColor = can
 end
 
 function ItemDetailPanel.isOpen(self: ItemDetailPanel): boolean
