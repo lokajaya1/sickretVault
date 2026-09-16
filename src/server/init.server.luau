@@ -14,6 +14,7 @@ local RobloxApi = require(script.Gateways.RobloxApi)
 local CatalogService = require(script.Services.CatalogService)
 local ItemInfoService = require(script.Services.ItemInfoService)
 local AvatarService = require(script.Services.AvatarService)
+local AvatarRules = require(script.Services.AvatarRules)
 local Inspect = require(script.Dev.Inspect)
 
 local log = Log.new("Server")
@@ -25,6 +26,7 @@ Remotes.init()
 local api = RobloxApi.new()
 local catalog = CatalogService.new({ api = api })
 local itemInfo = ItemInfoService.new({ api = api })
+local rules = AvatarRules.new({ api = api }) -- batas per tipe (Hat=3, lainnya 1)
 
 local stateChanged = Remotes.event(RemoteNames.Events.StateChanged)
 local notify = Remotes.event(RemoteNames.Events.Notify)
@@ -32,6 +34,7 @@ local notify = Remotes.event(RemoteNames.Events.Notify)
 local avatar = AvatarService.new({
 	api = api,
 	itemInfo = itemInfo,
+	rules = rules,
 	onState = function(player: Player, state)
 		if player.Parent == Players then
 			stateChanged:FireClient(player, state)
@@ -118,6 +121,11 @@ Players.PlayerRemoving:Connect(function(player: Player)
 	intentLimiter:reset(player.UserId)
 	searchLimiter:reset(player.UserId)
 	stateLimiter:reset(player.UserId)
+end)
+
+-- Ambil rules avatar sekali di awal supaya klik pertama tidak menunggu.
+task.spawn(function()
+	rules:maxPerType()
 end)
 
 -- 6. Inspeksi API asli: hanya Studio + Play + Features.DevInspect (cek di dalam Inspect.run).
