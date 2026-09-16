@@ -289,5 +289,33 @@ return function()
 	assert(svc3:load(player), "load tanpa bundle")
 	eq(codeOf(svc3:handle(player, { op = "wearBundle", bundleId = 700 })), "NOT_IMPLEMENTED", "bundle mati")
 
+	-- 15. restore outfit tersimpan: sekali commit, Undo kembali ke avatar asli
+	local svc4, t4 = setup()
+	eq(codeOf(svc4:restore(player, OutfitState.empty())), "NOT_READY", "restore sebelum load")
+	assert(svc4:load(player), "load restore")
+	eq(svc4:isBaseline(player), true, "baseline di awal")
+	local saved = OutfitState.clone(svc4:getState(player) :: any)
+	eq(codeOf(svc4:restore(player, saved)), "NOTHING", "sama dengan avatar asli")
+	saved = OutfitState.wear(saved, 1, "Hat")
+	assert(svc4:restore(player, saved), "restore ok")
+	eq(#t4.states, 2, "state restore dikirim")
+	eq((svc4:getState(player) :: any).accessories["1"] ~= nil, true, "topi terpasang")
+	eq(svc4:getState(player) ~= saved, true, "state disalin")
+	eq(svc4:isBaseline(player), false, "bukan baseline")
+	t4.flushTimers()
+	eq(#t4.applied, 1, "restore diterapkan")
+	eq(codeOf(svc4:restore(player, OutfitState.empty())), "CHANGED", "restore kedua ditolak")
+	assert(svc4:handle(player, { op = "undo" }), "undo restore")
+	eq(svc4:isBaseline(player), true, "undo -> avatar asli")
+	eq(codeOf(svc4:restore(player, saved)), "CHANGED", "ada redo -> ditolak")
+
+	-- 16. pemain sudah mengubah outfit sebelum data dimuat -> restore ditolak
+	local svc5 = setup()
+	assert(svc5:load(player), "load 5")
+	assert(svc5:handle(player, { op = "wear", assetId = 2 }), "wear dulu")
+	eq(codeOf(svc5:restore(player, saved)), "CHANGED", "tidak menimpa pilihan pemain")
+	eq(svc5:isBaseline(player), false, "isBaseline false")
+	eq(svc5:isBaseline({ UserId = 2 }), false, "tanpa sesi")
+
 	print("PASS AvatarService.spec")
 end
