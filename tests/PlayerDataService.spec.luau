@@ -6,6 +6,7 @@ local ServerScriptService = game:GetService("ServerScriptService")
 local PlayerDataService = require(ServerScriptService:WaitForChild("Server").Services.PlayerDataService)
 local Shared = game:GetService("ReplicatedStorage"):WaitForChild("Shared")
 local PlayerData = require(Shared.Domain.PlayerData)
+local Wardrobe = require(Shared.Domain.Wardrobe)
 local OS = require(Shared.Domain.OutfitState)
 local Log = require(Shared.Util.Log)
 
@@ -210,6 +211,88 @@ return function()
 		svc:load(p)
 		t.profile.released = true -- IsActive() = false tanpa memicu listener
 		eq(svc:setLastOutfit(p, OS.empty()), false, "tidak aktif")
+	end
+
+	-- 10. setSetting: hanya key dikenal & tipe sama
+	do
+		local svc, t = setup()
+		local p = player("J", 16)
+		eq(select(2, svc:setSetting(p, "restoreOutfit", false)), "NOT_LOADED", "belum dimuat")
+		svc:load(p)
+		eq(svc:setSetting(p, "restoreOutfit", false), true, "setting diubah")
+		eq(svc:getSettings(p).restoreOutfit, false, "tersimpan")
+		eq(select(2, svc:setSetting(p, "restoreOutfit", "no")), "BAD_ARG", "tipe salah")
+		eq(select(2, svc:setSetting(p, "admin", true)), "BAD_ARG", "key asing")
+		eq(select(2, svc:setSetting(p, 5, true)), "BAD_ARG", "key bukan string")
+		eq(t.profile.Data.settings.admin, nil, "key asing tidak ditulis")
+	end
+
+	-- 11. wardrobe: add / list / get / rename / overwrite / delete
+	do
+		local svc, t = setup()
+		local p = player("K", 17)
+		eq(select(2, svc:listOutfits(p)), "NOT_LOADED", "list sebelum load")
+		eq(svc:outfitSlotInfo(p), nil, "info sebelum load")
+		svc:load(p)
+		local full, name = svc:outfitSlotInfo(p)
+		eq(full, false, "belum penuh")
+		eq(name, "Outfit 1", "nama bawaan")
+		local a = svc:addOutfit(p, nil, OS.wear(OS.empty(), 20, "Hat"))
+		assert(a, "add bawaan")
+		eq(a.name, "Outfit 1", "nama bawaan dipakai")
+		eq(a.count, 1, "ringkasan")
+		local b = svc:addOutfit(p, "Pesta", OS.wear(OS.empty(), 30, "Shirt"))
+		assert(b, "add bernama")
+		eq(#t.profile.Data.outfits, 2, "tersimpan di profil")
+		local rows = svc:listOutfits(p)
+		assert(rows, "list")
+		eq(rows[1].name, "Pesta", "terbaru dulu")
+		local got = svc:getOutfit(p, a.id)
+		assert(got, "get")
+		eq(got.accessories["20"].assetType, "Hat", "isi slot")
+		eq(select(2, svc:getOutfit(p, 99)), "NOT_FOUND", "get tidak ada")
+		eq(svc:renameOutfit(p, b.id, "Malam"), true, "rename")
+		eq(t.profile.Data.outfits[2].n, "Malam", "nama berubah")
+		eq(svc:overwriteOutfit(p, a.id, OS.empty()), true, "overwrite")
+		eq(svc:listOutfits(p)[2].count, 0, "isi ditimpa")
+		eq(svc:deleteOutfit(p, a.id), true, "delete")
+		eq(select(2, svc:deleteOutfit(p, a.id)), "NOT_FOUND", "delete dua kali")
+		eq(#t.profile.Data.outfits, 1, "sisa 1")
+		-- slot rusak -> INVALID (bukan error)
+		t.profile.Data.outfits[1].o = { ov = 99 }
+		eq(select(2, svc:getOutfit(p, b.id)), "INVALID", "slot rusak")
+	end
+
+	-- 12. wardrobe penuh
+	do
+		local svc = setup()
+		local p = player("L", 18)
+		svc:load(p)
+		for _ = 1, Wardrobe.MAX_SLOTS do
+			assert(svc:addOutfit(p, nil, OS.empty()), "isi")
+		end
+		eq(svc:outfitSlotInfo(p), true, "penuh")
+		eq(select(2, svc:addOutfit(p, "x", OS.empty())), "FULL", "FULL")
+	end
+
+	-- 13. data versi lebih baru / profil tidak aktif: wardrobe tidak dibaca/ditulis
+	do
+		local future = { v = PlayerData.VERSION + 1, settings = {}, outfits = "format baru" }
+		local svc, t = setup({ data = future })
+		local p = player("M", 19)
+		svc:load(p)
+		eq(select(2, svc:listOutfits(p)), "NOT_LOADED", "newer: list")
+		eq(select(2, svc:addOutfit(p, nil, OS.empty())), "NOT_LOADED", "newer: add")
+		eq(select(2, svc:setSetting(p, "restoreOutfit", false)), "NOT_LOADED", "newer: setting")
+		eq(t.profile.Data.outfits, "format baru", "data utuh")
+
+		local svc2, t2 = setup()
+		local p2 = player("N", 20)
+		svc2:load(p2)
+		t2.profile.released = true
+		eq(select(2, svc2:addOutfit(p2, nil, OS.empty())), "NOT_LOADED", "tidak aktif: add")
+		eq(select(2, svc2:deleteOutfit(p2, 1)), "NOT_LOADED", "tidak aktif: delete")
+		eq(svc2:listOutfits(p2) ~= nil, true, "tidak aktif: masih bisa dibaca")
 	end
 
 	print("PASS PlayerDataService.spec")
