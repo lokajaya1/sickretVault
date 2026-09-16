@@ -1,0 +1,29 @@
+name: Bug
+description: Sesuatu tidak bekerja
+labels: ["type:bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: Yang terjadi
+    validations: { required: true }
+  - type: textarea
+    id: steps
+    attributes:
+      label: Langkah reproduksi
+      placeholder: "1. ...\n2. ..."
+    validations: { required: true }
+  - type: input
+    id: ids
+    attributes:
+      label: Asset/Bundle ID terkait
+  - type: dropdown
+    id: where
+    attributes:
+      label: Di mana
+      options: [Studio Play Solo, Team Test, Server live, Mobile]
+  - type: textarea
+    id: log
+    attributes:
+      label: Output / error console
+      render: text
