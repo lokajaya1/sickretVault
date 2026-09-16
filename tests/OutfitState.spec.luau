@@ -95,5 +95,16 @@ return function()
 	local free = OS.wear(h, 91, "BackAccessory", nil, limits)
 	assert(free.accessories["91"], "tipe tanpa batas tetap bisa dipakai")
 
+	-- 10. bundle meneruskan batas per tipe: 2 topi dari bundle, Hat=1 -> hanya topi terakhir
+	local hats = {
+		{ assetId = 95, name = "Topi A", assetType = "Hat", kind = "accessory", slot = "Hat" },
+		{ assetId = 96, name = "Topi B", assetType = "Hat", kind = "accessory", slot = "Hat" },
+	}
+	local hb = OS.wearBundle(OS.empty(), 9100, hats, nil, nil, { Hat = 1 })
+	eq(hb.accessories["95"], nil, "topi bundle pertama diganti")
+	eq(hb.accessories["96"].source, 9100, "topi bundle kedua terpasang dengan source")
+	local hb2 = OS.wearBundle(OS.empty(), 9100, hats)
+	assert(hb2.accessories["95"] and hb2.accessories["96"], "tanpa batas -> dua topi")
+
 	print("PASS OutfitState.spec")
 end
