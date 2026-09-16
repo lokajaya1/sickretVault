@@ -1,0 +1,10 @@
+{
+  "recommendations": [
+    "evaera.vscode-rojo",
+    "JohnnyMorganz.luau-lsp",
+    "JohnnyMorganz.stylua",
+    "Kampfkarren.selene-vscode",
+    "eamodio.gitlens",
+    "GitHub.vscode-pull-request-github"
+  ]
+}

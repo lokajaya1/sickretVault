@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main, develop]
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Samakan versi dengan rokit.toml
+      - name: Install toolchain
+        run: |
+          mkdir -p "$HOME/bin" && cd "$HOME/bin"
+          dl() { curl -sSfL -o t.zip "$1" && unzip -o -q t.zip && rm t.zip; }
+          dl https://github.com/rojo-rbx/rojo/releases/download/v7.7.0/rojo-7.7.0-linux-x86_64.zip
+          dl https://github.com/UpliftGames/wally/releases/download/v0.3.2/wally-v0.3.2-linux.zip
+          dl https://github.com/lune-org/lune/releases/download/v0.10.4/lune-0.10.4-linux-x86_64.zip
+          dl https://github.com/Kampfkarren/selene/releases/download/0.28.0/selene-0.28.0-linux.zip
+          dl https://github.com/JohnnyMorganz/StyLua/releases/download/v2.1.0/stylua-linux-x86_64.zip
+          chmod +x "$HOME/bin/"*
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+
+      # Packages/ & ServerPackages/ tidak di-commit -> harus dipasang dulu agar rojo build jalan
+      - name: Install packages (Wally)
+        run: wally install
+
+      - name: Format (StyLua)
+        run: stylua --check $(ls -d src tests tools 2>/dev/null)
+
+      - name: Lint (Selene)
+        run: selene $(ls -d src tests 2>/dev/null)
+
+      - name: Test domain (Lune)
+        run: |
+          if [ -f tools/run-tests.luau ]; then lune run tools/run-tests.luau; else echo "belum ada test"; fi
+
+      - name: Build place (Rojo)
+        run: rojo build -o build.rbxl

@@ -1,0 +1,17 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    { "label": "Wally: install", "type": "shell", "command": "wally install", "problemMatcher": [] },
+    { "label": "Rojo: serve", "type": "shell", "command": "rojo serve", "isBackground": true, "problemMatcher": [] },
+    { "label": "Test: domain", "type": "shell", "command": "lune run tools/run-tests.luau", "group": "test", "problemMatcher": [] },
+    { "label": "Lint: selene", "type": "shell", "command": "selene src", "problemMatcher": [] },
+    { "label": "Format: check", "type": "shell", "command": "stylua --check src", "problemMatcher": [] },
+    { "label": "Build: place", "type": "shell", "command": "rojo build -o build.rbxl", "group": "build", "problemMatcher": [] },
+    {
+      "label": "Check: semua (sebelum push)",
+      "dependsOrder": "sequence",
+      "dependsOn": ["Format: check", "Lint: selene", "Build: place"],
+      "problemMatcher": []
+    }
+  ]
+}

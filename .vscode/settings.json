@@ -1,0 +1,21 @@
+{
+  "files.eol": "\n",
+  "files.insertFinalNewline": true,
+  "files.trimTrailingWhitespace": true,
+
+  "[luau]": {
+    "editor.defaultFormatter": "JohnnyMorganz.stylua",
+    "editor.formatOnSave": true
+  },
+
+  "luau-lsp.platform.type": "roblox",
+  "luau-lsp.sourcemap.enabled": true,
+  "luau-lsp.sourcemap.autogenerate": true,
+  "luau-lsp.sourcemap.rojoProjectFile": "default.project.json",
+  "luau-lsp.completion.imports.enabled": true,
+
+  "git.branchProtection": ["main", "develop"],
+  "git.branchProtectionPrompt": "alwaysCommitToNewBranch",
+  "git.pruneOnFetch": true,
+  "git.autofetch": true
+}

@@ -17,7 +17,7 @@
         "$path": "src/server"
       },
       "ServerPackages": {
-        "$path": "S erverPackages"
+        "$path": "ServerPackages"
       }
     },
 
