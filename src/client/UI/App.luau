@@ -147,7 +147,7 @@ function App.mount(opts: Options?): App
 			self:_refreshButtons()
 		end,
 		isSelected = function(item)
-			return item.itemType ~= "Bundle" and outfit:isWorn(item.id)
+			return if item.itemType == "Bundle" then outfit:isBundleWorn(item.id) else outfit:isWorn(item.id)
 		end,
 		-- Link/ID ditempel -> coba pakai (server memvalidasi; gagal -> toast)
 		onLink = function(id, kind)
