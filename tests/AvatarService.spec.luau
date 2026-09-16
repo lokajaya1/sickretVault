@@ -26,7 +26,28 @@ local TYPES: { [number]: string } = {
 	[6] = "NeckAccessory",
 }
 
-local function setup(opts: { baselineFails: boolean? }?)
+-- bundle palsu (bentuk BundleInfo hasil BundleService)
+local BUNDLES: { [number]: any } = {
+	[700] = {
+		bundleId = 700,
+		name = "Paket Tes",
+		parts = {
+			{ assetId = 701, name = "Topi", assetType = "Hat", kind = "accessory", slot = "Hat" },
+			{ assetId = 702, name = "Badan", assetType = "Torso", kind = "bodyPart", slot = "Torso" },
+			{ assetId = 703, name = "Aneh", assetType = "Unknown", kind = "unknown" },
+		},
+		outfitScales = { HeightScale = 1.2 },
+		unknownItems = {},
+	},
+	[710] = {
+		bundleId = 710,
+		name = "Tak Didukung",
+		parts = { { assetId = 711, name = "Aneh", assetType = "Unknown", kind = "unknown" } },
+		unknownItems = {},
+	},
+}
+
+local function setup(opts: { baselineFails: boolean?, noBundles: boolean? }?)
 	local o = opts or {}
 	local t = {
 		states = {} :: { any },
@@ -67,10 +88,22 @@ local function setup(opts: { baselineFails: boolean? }?)
 	function rules.maxPerType(_self: any)
 		return { NeckAccessory = 1 }
 	end
+	local bundles = {}
+	function bundles.get(_self: any, id: number)
+		if id == 720 then
+			return false, { code = "FAILED", message = "HTTP 500" }
+		end
+		local b = BUNDLES[id]
+		if b == nil then
+			return false, { code = "NOT_FOUND", message = "x" }
+		end
+		return true, b
+	end
 	local svc = AvatarService.new({
 		api = api,
 		itemInfo = itemInfo,
 		rules = rules,
+		bundles = if o.noBundles then nil else bundles,
 		onState = function(_p: any, s: any)
 			table.insert(t.states, s)
 		end,
@@ -163,8 +196,38 @@ return function()
 		"topi rigid tak punya order"
 	)
 
-	-- 8. bundle belum ada
-	eq(codeOf(svc:handle(player, { op = "wearBundle", bundleId = 5 })), "NOT_IMPLEMENTED", "bundle menyusul")
+	-- 8. bundle: sebagian part, semua part, error, lepas bundle
+	assert(svc:handle(player, { op = "wearBundle", bundleId = 700, partIds = { 701 } }), "pakai topi bundle saja")
+	local sb = svc:getState(player) :: any
+	eq(sb.accessories["701"].source, 700, "topi bundle ber-source")
+	eq(sb.bodyParts.Torso.id, 0, "torso belum dipakai")
+	assert(svc:handle(player, { op = "wearBundle", bundleId = 700 }), "pakai semua part")
+	sb = svc:getState(player) :: any
+	eq(sb.bodyParts.Torso.id, 702, "torso bundle")
+	eq(sb.bodyParts.Torso.source, 700, "torso ber-source")
+	eq(sb.scales.HeightScale == 1.2, false, "skala bundle tidak dipakai tanpa useBundleScales")
+	eq(codeOf(svc:handle(player, { op = "wearBundle", bundleId = 700 })), "NOTHING", "bundle sudah dipakai")
+	eq(codeOf(svc:handle(player, { op = "wearBundle", bundleId = 710 })), "UNSUPPORTED_TYPE", "tanpa part didukung")
+	eq(
+		codeOf(svc:handle(player, { op = "wearBundle", bundleId = 700, partIds = { 703 } })),
+		"UNSUPPORTED_TYPE",
+		"partIds hanya part tak dikenal"
+	)
+	eq(codeOf(svc:handle(player, { op = "wearBundle", bundleId = 720 })), "FAILED", "api gagal")
+	eq(codeOf(svc:handle(player, { op = "wearBundle", bundleId = 999 })), "NOT_FOUND", "bundle tidak ada")
+	assert(svc:handle(player, { op = "removeBundle", bundleId = 700 }), "lepas bundle")
+	sb = svc:getState(player) :: any
+	eq(sb.accessories["701"], nil, "topi bundle dilepas")
+	eq(sb.bodyParts.Torso.id, 0, "torso kembali ke baseline")
+	eq(sb.bodyParts.Head.id, 777, "part lain tidak tersentuh")
+	eq(codeOf(svc:handle(player, { op = "removeBundle", bundleId = 700 })), "NOTHING", "lepas dua kali")
+	assert(
+		svc:handle(player, { op = "wearBundle", bundleId = 700, useBundleScales = true }),
+		"pakai dengan skala bundle"
+	)
+	eq((svc:getState(player) :: any).scales.HeightScale, 1.2, "skala bundle dipakai")
+	assert(svc:handle(player, { op = "undo" }), "undo skala bundle")
+	eq((svc:getState(player) :: any).accessories["701"], nil, "undo melepas bundle")
 	t.flushTimers()
 
 	-- 9. apply gagal -> rollback + APPLY_FAILED
@@ -220,6 +283,11 @@ return function()
 	assert(svc2:load(player), "load fallback")
 	eq((svc2:getState(player) :: any).bodyParts.Head.id, 0, "baseline kosong")
 	eq(#t2.states, 1, "state tetap dikirim")
+
+	-- 14. tanpa BundleService -> NOT_IMPLEMENTED
+	local svc3 = setup({ noBundles = true })
+	assert(svc3:load(player), "load tanpa bundle")
+	eq(codeOf(svc3:handle(player, { op = "wearBundle", bundleId = 700 })), "NOT_IMPLEMENTED", "bundle mati")
 
 	print("PASS AvatarService.spec")
 end
