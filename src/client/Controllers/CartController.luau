@@ -1,11 +1,13 @@
 --!strict
 -- Keranjang belanja di client (Domain Cart) + checkout lewat server.
 --   local cart = CartController.new()
---   cart:start()                               -- dengarkan CheckoutResult
+--   cart:start()                               -- dengarkan PromptBulkPurchaseFinished
 --   cart:onChanged(function(snap) ... end)     -- snap = { items, count, total, isFull, checkingOut }
 --   cart:onResult(function(summary) ... end)   -- hasil PromptBulkPurchase (untuk toast)
 --   local ok, reason = cart:toggle(item)       -- tombol 🛒 di kartu/detail/strip
 --   local ok, code = cart:checkout()           -- YIELD (InvokeServer) -> panggil dari task.spawn
+-- PromptBulkPurchase dipanggil server (remote Checkout); PromptBulkPurchaseFinished HANYA bisa
+-- didengarkan dari LocalScript (uji Studio 17 Sep 2026) -> diringkas di sini dengan CheckoutSummary.
 -- Isi keranjang hanya di memori (hilang saat rejoin). Item yang terbeli / sudah dimiliki dibuang otomatis.
 -- `deps` bisa diganti saat test (tanpa remote).
 
@@ -13,11 +15,12 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Cart = require(Shared.Domain.Cart)
+local CheckoutSummary = require(Shared.Domain.CheckoutSummary)
 local Log = require(Shared.Util.Log)
 
 local log = Log.new("CartController")
 
--- Sama dengan server: bila CheckoutResult tidak datang selama ini, izinkan checkout lagi.
+-- Bila PromptBulkPurchaseFinished tidak datang selama ini, izinkan checkout lagi.
 local CHECKOUT_TIMEOUT = 300
 
 export type Snapshot = {
@@ -31,7 +34,8 @@ export type Snapshot = {
 
 export type Deps = {
 	invoke: ((request: any) -> any)?, -- Checkout:InvokeServer
-	onResult: ((fn: (summary: any) -> ()) -> any)?, -- CheckoutResult.OnClientEvent:Connect
+	-- dengarkan hasil pembelian pemain lokal: fn(status, results) mentah dari PromptBulkPurchaseFinished
+	onResult: ((fn: (status: any, results: any) -> ()) -> any)?,
 	clock: (() -> number)?,
 	max: number?,
 }
@@ -66,8 +70,13 @@ local function defaultDeps(): Deps
 			return Remotes.func(Names.Functions.Checkout):InvokeServer(request)
 		end,
 		onResult = function(fn)
-			local Remotes, Names = remotes()
-			return Remotes.event(Names.Events.CheckoutResult).OnClientEvent:Connect(fn)
+			local Players = game:GetService("Players")
+			local MarketplaceService = game:GetService("MarketplaceService")
+			return MarketplaceService.PromptBulkPurchaseFinished:Connect(function(player, status, results)
+				if player == Players.LocalPlayer then
+					fn(status, results)
+				end
+			end)
 		end,
 	}
 end
@@ -141,7 +150,7 @@ function CartController.onChanged(self: CartController, fn: (Snapshot) -> ()): (
 	return subscribe(self._listeners, fn)
 end
 
--- Listener hasil checkout: summary = { status, robuxSpent, purchased, owned, failed }.
+-- Listener hasil checkout: summary = CheckoutSummary.Summary { status, robuxSpent, purchased, owned, failed }.
 function CartController.onResult(self: CartController, fn: (any) -> ()): () -> ()
 	return subscribe(self._resultListeners, fn)
 end
@@ -190,7 +199,7 @@ function CartController.clear(self: CartController)
 end
 
 -- YIELD. Return (true) = prompt tampil | (false, code) dengan code
--- "EMPTY" | "BUSY" | "NETWORK" | kode server ("RATE_LIMITED", "TOO_MANY", "BAD_ARG", "FAILED").
+-- "EMPTY" | "BUSY" (prompt masih terbuka) | "NETWORK" | kode server ("RATE_LIMITED", "TOO_MANY", "BAD_ARG", "FAILED").
 function CartController.checkout(self: CartController): (boolean, string?)
 	if Cart.count(self._cart) == 0 then
 		return false, "EMPTY"
@@ -210,45 +219,29 @@ function CartController.checkout(self: CartController): (boolean, string?)
 		code = if type(res.code) == "string" then res.code else "FAILED"
 	end
 	if code then
-		-- BUSY dari server = prompt lama masih terbuka -> tetap tandai sedang checkout
-		if code ~= "BUSY" then
-			self._checkoutAt = nil
-		end
+		self._checkoutAt = nil
 		self:_emit()
 		return false, code
 	end
 	return true, nil
 end
 
-local function eachRef(list: any, fn: (id: number, itemType: string) -> ())
-	if type(list) ~= "table" then
-		return
-	end
-	for _, r in list do
-		if type(r) == "table" and type(r.id) == "number" and type(r.itemType) == "string" then
-			fn(r.id, r.itemType)
-		end
-	end
-end
-
-function CartController._handleResult(self: CartController, summary: any)
-	if type(summary) ~= "table" then
-		return
-	end
+-- status/results mentah dari PromptBulkPurchaseFinished.
+function CartController._handleResult(self: CartController, status: any, results: any)
+	local summary = CheckoutSummary.summarize(status, results)
 	self._checkoutAt = nil
 	local c = self._cart
-	eachRef(summary.purchased, function(id, itemType)
-		Cart.remove(c, id, itemType)
-	end)
-	eachRef(summary.owned, function(id, itemType)
-		Cart.remove(c, id, itemType)
-	end)
+	for _, list in { summary.purchased, summary.owned } do
+		for _, ref in list do
+			Cart.remove(c, ref.id, ref.itemType)
+		end
+	end
 	log.info("hasil checkout", summary.status, summary.robuxSpent)
 	self:_emit()
 	emit(self._resultListeners, summary)
 end
 
--- Mulai mendengarkan CheckoutResult. Aman dipanggil dua kali.
+-- Mulai mendengarkan PromptBulkPurchaseFinished. Aman dipanggil dua kali.
 function CartController.start(self: CartController)
 	if self._started then
 		return
@@ -256,8 +249,8 @@ function CartController.start(self: CartController)
 	self._started = true
 	table.insert(
 		self._conns,
-		(self._deps.onResult :: any)(function(summary)
-			self:_handleResult(summary)
+		(self._deps.onResult :: any)(function(status, results)
+			self:_handleResult(status, results)
 		end)
 	)
 end
