@@ -1,12 +1,16 @@
 --!strict
--- Akar UI: ScreenGui + tombol atas (Catalog, Stores) + panel katalog.
+-- Akar UI: ScreenGui + tombol atas (Catalog, Stores) + tombol aksi (Undo/Redo/Reset) + panel katalog.
 --   local app = App.mount({ onItemActivated = function(item) ... end })
---   app:toggleCatalog()   app:destroy()
+--   app:toggleCatalog()   app.toast:show("Hello", "info")   app:destroy()
 
 local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
+local WornItems = require(ReplicatedStorage:WaitForChild("Shared").Domain.WornItems)
 local Tokens = require(script.Parent.Theme.Tokens)
 local CatalogPanel = require(script.Parent.Components.CatalogPanel)
+local Toast = require(script.Parent.Components.Toast)
+local ActionBar = require(script.Parent.Components.ActionBar)
 local CatalogController = require(script.Parent.Parent.Controllers.CatalogController)
 local OutfitController = require(script.Parent.Parent.Controllers.OutfitController)
 
@@ -23,6 +27,8 @@ export type App = typeof(setmetatable(
 		catalog: CatalogController.CatalogController,
 		outfit: OutfitController.OutfitController,
 		panel: CatalogPanel.CatalogPanel,
+		toast: Toast.Toast,
+		actions: ActionBar.ActionBar,
 		_catalogButton: TextButton,
 		_conns: { RBXScriptConnection },
 	},
@@ -95,9 +101,29 @@ function App.mount(opts: Options?): App
 	local storesButton = topButton("Stores", "Stores", 2, bar)
 	storesButton.TextColor3 = Tokens.Color.TextMuted -- P1: belum aktif
 
+	local toast = Toast.new({ parent = gui })
+
 	local catalog = CatalogController.new()
 	local outfit = OutfitController.new()
 	local self: App
+
+	-- Kanan atas: Undo / Redo / Reset -> diteruskan ke server lewat OutfitController.
+	local actions = ActionBar.new({
+		parent = gui,
+		onAction = function(op)
+			outfit:send({ op = op })
+		end,
+	})
+
+	-- Item katalog yang pernah tampil -> nama/harga untuk tab Wearing.
+	local known: { [number]: any } = {}
+	local function remember(state: any)
+		for _, item in state.items do
+			if item.itemType ~= "Bundle" then
+				known[item.id] = item
+			end
+		end
+	end
 
 	local panel = CatalogPanel.new({
 		controller = catalog,
@@ -109,6 +135,9 @@ function App.mount(opts: Options?): App
 		isSelected = function(item)
 			return item.itemType ~= "Bundle" and outfit:isWorn(item.id)
 		end,
+		getWearing = function()
+			return WornItems.list(outfit:getState(), known)
+		end,
 	})
 
 	self = setmetatable({
@@ -116,6 +145,8 @@ function App.mount(opts: Options?): App
 		catalog = catalog,
 		outfit = outfit,
 		panel = panel,
+		toast = toast,
+		actions = actions,
 		_catalogButton = catalogButton,
 		_conns = {},
 	}, App)
@@ -136,7 +167,11 @@ function App.mount(opts: Options?): App
 		end)
 	)
 
-	-- Outfit berubah (dari server) -> perbarui sorotan kartu.
+	remember(catalog:getState())
+	local unremember = catalog:onChanged(remember)
+	table.insert(self._conns, { Disconnect = unremember } :: any)
+
+	-- Outfit berubah (dari server) -> perbarui sorotan kartu / tab Wearing.
 	local unsubscribe = outfit:onChanged(function()
 		panel:refreshSelection()
 	end)
@@ -164,6 +199,8 @@ function App.destroy(self: App)
 	end
 	self.outfit:stop()
 	self.panel:destroy()
+	self.toast:destroy()
+	self.actions:destroy()
 	self.gui:Destroy()
 end
 
