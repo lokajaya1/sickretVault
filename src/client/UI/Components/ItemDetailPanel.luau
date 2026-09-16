@@ -8,7 +8,7 @@
 --   })
 --   detail:refreshWorn()   -- outfit berubah -> teks tombol & sorotan part
 --   detail:destroy()
--- Isi: Back + judul; thumbnail; nama; creator (+verified); tipe; harga; Try On/Remove;
+-- Isi: Back + judul; thumbnail; nama; creator (+verified); tipe; harga; Try On/Remove + Buy;
 -- deskripsi; "Included Items" (part bundle, tap -> onPartActivated).
 
 local Shared = game:GetService("ReplicatedStorage"):WaitForChild("Shared")
@@ -37,6 +37,7 @@ export type Props = {
 	isWorn: (detail: any) -> boolean,
 	isPartWorn: (assetId: number) -> boolean,
 	onToggle: (detail: any) -> (), -- tombol Try On / Remove
+	onBuy: ((detail: any) -> ())?, -- tombol Buy (nil = tombol disembunyikan)
 	onPartActivated: (part: any, detail: any) -> (),
 	onBack: (() -> ())?, -- default: controller:close()
 }
@@ -63,6 +64,8 @@ export type ItemDetailPanel = typeof(setmetatable(
 		_price: TextLabel,
 		_favorites: TextLabel,
 		_toggle: TextButton,
+		_buy: TextButton,
+		_actions: Frame,
 		_descHeader: TextLabel,
 		_desc: TextLabel,
 		_partsHeader: TextLabel,
@@ -318,15 +321,36 @@ function ItemDetailPanel.new(props: Props): ItemDetailPanel
 		Parent = info,
 	})
 
-	local toggle = button("Try On", {
-		Name = "Toggle",
+	-- Baris aksi: Try On/Remove (kiri) + Buy (kanan)
+	local actions: Frame = make("Frame", {
+		Name = "Actions",
+		BackgroundTransparency = 1,
 		LayoutOrder = 2,
 		Size = UDim2.new(1, 0, 0, BUTTON_H),
+		Parent = scroll,
+	})
+	local hasBuy = props.onBuy ~= nil
+	local half = Tokens.Space.S / 2
+	local toggle = button("Try On", {
+		Name = "Toggle",
+		Size = if hasBuy then UDim2.new(0.5, -half, 1, 0) else UDim2.fromScale(1, 1),
 		TextSize = Tokens.TextSize.Button,
 		BackgroundColor3 = Tokens.Color.Accent,
 		BackgroundTransparency = 0,
 		TextColor3 = Tokens.Color.AccentText,
-		Parent = scroll,
+		Parent = actions,
+	})
+	local buy = button("Buy", {
+		Name = "Buy",
+		AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.fromScale(1, 0),
+		Size = UDim2.new(0.5, -half, 1, 0),
+		TextSize = Tokens.TextSize.Button,
+		BackgroundColor3 = Tokens.Color.Robux,
+		BackgroundTransparency = 0,
+		TextColor3 = Tokens.Color.AccentText,
+		Visible = hasBuy,
+		Parent = actions,
 	})
 
 	local descHeader = label({
@@ -381,6 +405,8 @@ function ItemDetailPanel.new(props: Props): ItemDetailPanel
 		_price = price,
 		_favorites = favorites,
 		_toggle = toggle,
+		_buy = buy,
+		_actions = actions,
 		_descHeader = descHeader,
 		_desc = desc,
 		_partsHeader = partsHeader,
@@ -415,6 +441,15 @@ function ItemDetailPanel.new(props: Props): ItemDetailPanel
 			local d = self._detail
 			if d then
 				props.onToggle(d)
+			end
+		end)
+	)
+	table.insert(
+		conns,
+		buy.Activated:Connect(function()
+			local d = self._detail
+			if d and d.isForSale and props.onBuy then
+				props.onBuy(d)
 			end
 		end)
 	)
@@ -541,7 +576,7 @@ function ItemDetailPanel._render(self: ItemDetailPanel, state: any)
 
 	local has = d ~= nil
 	self._name.Text = if has then d.name else ""
-	self._toggle.Visible = has
+	self._actions.Visible = has
 	self._descHeader.Visible = has
 	self._desc.Visible = has
 	if not has then
@@ -564,6 +599,12 @@ function ItemDetailPanel._render(self: ItemDetailPanel, state: any)
 	self._price.TextColor3 = pColor
 	self._favorites.Text = if d.favoriteCount then "♥ " .. shortNumber(d.favoriteCount) else ""
 	self._desc.Text = if d.description ~= "" then d.description else "No description."
+	-- Buy: tidak dijual -> abu-abu & tidak bereaksi
+	local forSale = d.isForSale == true
+	self._buy.Text = if forSale then "Buy" else "Off Sale"
+	self._buy.BackgroundColor3 = if forSale then Tokens.Color.Robux else Tokens.Color.PanelRaised
+	self._buy.TextColor3 = if forSale then Tokens.Color.AccentText else Tokens.Color.TextMuted
+	self._buy.AutoButtonColor = forSale
 
 	local partCount = if type(d.parts) == "table" then #d.parts else 0
 	self._partsHeader.Visible = partCount > 0
