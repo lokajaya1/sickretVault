@@ -2,12 +2,13 @@
 -- Kartu item katalog: thumbnail + nama + harga + pil "Worn". Ukuran diatur UIGridLayout induknya.
 -- Tap kartu -> onActivated (CatalogPanel lalu memanggil setArmed(true)).
 -- Kartu "armed" menampilkan overlay di atas gambar: TRY/REMOVE, BUY, tombol ⓘ (detail).
--- Tap bagian kosong overlay -> onDismiss.
+-- Tap bagian kosong overlay -> onDismiss. Klik kanan (PC) / tahan (HP) di kartu -> onInfo (detail).
 --   local card = ItemCard.new({ item = item, onActivated = fn, onTry = fn, onBuy = fn, onInfo = fn, onDismiss = fn })
 --   card.instance.Parent = grid
 --   card:setItem(itemLain)   card:setSelected(true)   card:setArmed(true)   card:destroy()
 
 local Tokens = require(script.Parent.Parent.Theme.Tokens)
+local SecondaryAction = require(script.Parent.Parent.Util.SecondaryAction)
 
 export type Item = {
 	id: number,
@@ -191,7 +192,7 @@ function ItemCard.new(props: Props): ItemCard
 	overlay.Text = ""
 	overlay.AutoButtonColor = false
 	overlay.BackgroundColor3 = Tokens.Color.Background
-	overlay.BackgroundTransparency = 0.25
+	overlay.BackgroundTransparency = 0.5 -- gambar item tetap terlihat di balik tombol
 	overlay.BorderSizePixel = 0
 	overlay.Position = UDim2.fromOffset(0, 0)
 	overlay.Size = UDim2.new(1, 0, 1, -TEXT_AREA)
@@ -264,10 +265,35 @@ function ItemCard.new(props: Props): ItemCard
 		_conns = {},
 	}, ItemCard)
 
+	-- Klik kanan / tahan (kartu maupun overlay) -> detail
+	local suppressors: { SecondaryAction.Suppressed } = {}
+	for _, target in { button :: GuiButton, overlay } do
+		local conns, suppressed = SecondaryAction.bind(target, function()
+			if props.onInfo then
+				props.onInfo(self.item)
+			end
+		end)
+		for _, c in conns do
+			table.insert(self._conns, c)
+		end
+		table.insert(suppressors, suppressed)
+	end
+	local function isSuppressed(): boolean
+		for _, s in suppressors do
+			if s() then
+				return true
+			end
+		end
+		return false
+	end
+
 	local function hook(b: GuiButton, fn: Callback, enabled: (() -> boolean)?)
 		table.insert(
 			self._conns,
 			b.Activated:Connect(function()
+				if isSuppressed() then
+					return -- jari baru dilepas setelah long-press
+				end
 				if fn and (enabled == nil or enabled()) then
 					fn(self.item)
 				end
