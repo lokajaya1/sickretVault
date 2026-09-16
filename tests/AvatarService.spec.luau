@@ -22,6 +22,8 @@ local TYPES: { [number]: string } = {
 	[2] = "JacketAccessory",
 	[3] = "Shirt",
 	[4] = "TShirtAccessory",
+	[5] = "NeckAccessory",
+	[6] = "NeckAccessory",
 }
 
 local function setup(opts: { baselineFails: boolean? }?)
@@ -61,9 +63,14 @@ local function setup(opts: { baselineFails: boolean? }?)
 		end
 		return true, { assetId = id, assetType = ty }
 	end
+	local rules = {}
+	function rules.maxPerType(_self: any)
+		return { NeckAccessory = 1 }
+	end
 	local svc = AvatarService.new({
 		api = api,
 		itemInfo = itemInfo,
+		rules = rules,
 		onState = function(_p: any, s: any)
 			table.insert(t.states, s)
 		end,
@@ -123,6 +130,15 @@ return function()
 	-- 4. wear ulang / id asing
 	eq(codeOf(svc:handle(player, { op = "wear", assetId = 1 })), "NOTHING", "sudah dipakai")
 	eq(codeOf(svc:handle(player, { op = "wear", assetId = 99 })), "NOT_FOUND", "id asing")
+
+	-- 4b. batas per tipe (Neck=1): neck kedua mengganti yang pertama
+	assert(svc:handle(player, { op = "wear", assetId = 5 }), "wear neck 5")
+	assert(svc:handle(player, { op = "wear", assetId = 6 }), "wear neck 6")
+	eq((svc:getState(player) :: any).accessories["5"], nil, "neck 5 diganti")
+	assert((svc:getState(player) :: any).accessories["6"], "neck 6 terpasang")
+	assert(svc:handle(player, { op = "undo" }), "undo neck 6")
+	assert((svc:getState(player) :: any).accessories["5"], "undo mengembalikan neck 5")
+	assert(svc:handle(player, { op = "remove", assetId = 5 }), "lepas neck 5")
 
 	-- 5. remove classic -> kembali ke baseline, bukan 0
 	assert(svc:handle(player, { op = "wear", assetId = 3 }), "wear baju")

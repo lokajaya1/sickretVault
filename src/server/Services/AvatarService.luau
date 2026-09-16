@@ -26,6 +26,7 @@ export type Code =
 	| "UNSUPPORTED_TYPE"
 	| "LIMIT_RIGID"
 	| "LIMIT_LAYERED"
+	| "LIMIT_TYPE"
 	| "NOT_IMPLEMENTED"
 	| "NOTHING"
 	| "BAD_OP"
@@ -33,6 +34,7 @@ export type Code =
 export type Deps = {
 	api: any, -- RobloxApi (getDescriptionFromUserId, applyDescription)
 	itemInfo: any, -- ItemInfoService
+	rules: any?, -- AvatarRules (batas per tipe); nil = tanpa batas per tipe
 	onState: ((player: any, state: State) -> ())?, -- kirim StateChanged
 	onError: ((player: any, code: string) -> ())?, -- kirim Notify
 	-- engine (default Roblox; diganti saat test)
@@ -63,6 +65,7 @@ export type AvatarService = typeof(setmetatable(
 	{} :: {
 		_api: any,
 		_itemInfo: any,
+		_rules: any?,
 		_onState: (any, State) -> (),
 		_onError: (any, string) -> (),
 		_build: (State) -> any,
@@ -95,6 +98,7 @@ function AvatarService.new(deps: Deps): AvatarService
 	return setmetatable({
 		_api = deps.api,
 		_itemInfo = deps.itemInfo,
+		_rules = deps.rules,
 		_onState = deps.onState or function() end,
 		_onError = deps.onError or function() end,
 		_build = deps.build or defaultBuild,
@@ -238,7 +242,11 @@ function AvatarService.handle(self: AvatarService, player: any, intent: Types.In
 		if not ok then
 			return false, if info and info.code == "FAILED" then "FAILED" else "NOT_FOUND"
 		end
-		local nextState, err = OutfitState.wear(session.state, info.assetId, info.assetType)
+		local limits = if self._rules then self._rules:maxPerType() else nil -- bisa yield (sekali)
+		if self._sessions[player] ~= session then
+			return false, "NOT_READY"
+		end
+		local nextState, err = OutfitState.wear(session.state, info.assetId, info.assetType, nil, limits)
 		if err then
 			return false, err :: any
 		end
