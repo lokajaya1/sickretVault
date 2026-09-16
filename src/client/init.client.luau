@@ -14,10 +14,12 @@ local NOTICE_TEXT: { [string]: string } = {
 	UNSUPPORTED_TYPE = "Tipe item belum didukung",
 	LIMIT_RIGID = "Batas aksesori tercapai",
 	LIMIT_LAYERED = "Batas pakaian layered tercapai",
+	LIMIT_TYPE = "Tipe item ini tidak boleh dipakai",
 	APPLY_FAILED = "Gagal memasang ke avatar, dikembalikan",
 	RATE_LIMITED = "Terlalu cepat, tunggu sebentar",
 	NOT_READY = "Avatar belum siap, coba lagi",
 	NOT_IMPLEMENTED = "Bundle belum didukung",
+	BAD_ARG = "Permintaan tidak valid",
 	FAILED = "Gagal, coba lagi",
 }
 
