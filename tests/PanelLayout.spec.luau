@@ -12,6 +12,7 @@ return function()
 	-- 1. desktop 1920x1080: panel di kanan, 55% lebar, tidak keluar layar
 	local d = P.compute(1920, 1080)
 	eq(d.mode, "side", "desktop side")
+	eq(d.compact, false, "desktop tidak compact")
 	eq(d.w, 760, "lebar dibatasi SIDE_MAX")
 	eq(d.x + d.w, 1920 - P.MARGIN, "menempel kanan")
 	eq(d.y, P.TOP, "di bawah tombol atas")
@@ -27,6 +28,7 @@ return function()
 	-- 3. ponsel tegak 390x844: sheet dari bawah, lebar penuh, 3 kolom
 	local m = P.compute(390, 844)
 	eq(m.mode, "sheet", "ponsel sheet")
+	eq(m.compact, false, "sheet tidak compact")
 	eq(m.x, 0, "sheet x")
 	eq(m.w, 390, "sheet lebar penuh")
 	eq(m.y + m.h, 844, "menempel bawah")
@@ -34,11 +36,20 @@ return function()
 	eq(m.anchorX, 195, "karakter di tengah horizontal")
 	assert(m.anchorY > P.TOP and m.anchorY < m.y, "karakter di area atas")
 
-	-- 4. ponsel mendatar 844x390: side (layar lebar), panel tetap muat
+	-- 4. ponsel mendatar 844x390: side + compact, panel setinggi layar, kartu lebih kecil
 	local ls = P.compute(844, 390)
 	eq(ls.mode, "side", "landscape side")
+	eq(ls.compact, true, "landscape compact")
+	eq(ls.y, P.COMPACT_MARGIN, "compact mulai dari atas")
+	eq(ls.y + ls.h, 390 - P.COMPACT_MARGIN, "compact sampai bawah")
 	assert(ls.x >= P.MARGIN, "tidak keluar kiri")
-	assert(ls.h > 0, "tinggi positif")
+	eq(ls.cellH, ls.cellW + P.TEXT_AREA_COMPACT, "kartu compact")
+	assert(ls.columns >= 4, "landscape minimal 4 kolom")
+
+	-- 4b. ponsel kecil mendatar 667x375 (lebih sempit dari PHONE_WIDTH) tetap side, bukan sheet
+	local se = P.compute(667, 375)
+	eq(se.mode, "side", "ponsel kecil mendatar = side")
+	eq(se.compact, true, "ponsel kecil compact")
 
 	-- 5. grid: kartu persegi + area teks, tidak melebihi lebar
 	local cols, cellW, cellH = P.grid(700)
