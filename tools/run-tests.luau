@@ -1,7 +1,7 @@
 --!nocheck
 -- Jalankan test DOMAIN MURNI di luar Studio (CI/lokal) dengan Lune:
 --   lune run tools/run-tests.luau
--- Hanya untuk modul tanpa service Roblox (Domain/*, Config/*). Test engine tetap di Studio.
+-- Hanya untuk modul tanpa service Roblox (Domain/*, Config/*, Util/*, Validators/*). Test engine tetap di Studio.
 local fs = require("@lune/fs")
 local luau = require("@lune/luau")
 local process = require("@lune/process")
@@ -33,25 +33,33 @@ Node.__index = function(self, key)
 	return node(self.__path .. "/" .. key, key)
 end
 
-local root = setmetatable({}, {
-	__index = function(_, k)
-		if k == "WaitForChild" then
-			return function(me, c)
-				return me[c]
+local function serviceRoot(children)
+	return setmetatable({}, {
+		__index = function(_, k)
+			if k == "WaitForChild" or k == "FindFirstChild" then
+				return function(me, c)
+					return me[c]
+				end
 			end
-		end
-		if k == "Shared" then
-			return node("src/shared", "Shared")
-		end
-		if k == "Tests" then
-			return node("tests", "Tests")
-		end
-	end,
-})
+			local path = children[k]
+			if path then
+				return node(path, k)
+			end
+			return nil
+		end,
+	})
+end
+
+local services = {
+	ReplicatedStorage = serviceRoot({ Shared = "src/shared", Tests = "tests" }),
+	-- modul server yang MURNI (mis. Validators) boleh dites juga
+	ServerScriptService = serviceRoot({ Server = "src/server" }),
+}
 local game = {
 	GetService = function(_, name)
-		if name == "ReplicatedStorage" then
-			return root
+		local svc = services[name]
+		if svc then
+			return svc
 		end
 		error("service tidak tersedia di test domain: " .. name)
 	end,
