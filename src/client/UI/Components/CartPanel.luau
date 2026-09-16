@@ -12,6 +12,7 @@
 local Shared = game:GetService("ReplicatedStorage"):WaitForChild("Shared")
 local WornItems = require(Shared.Domain.WornItems)
 local Tokens = require(script.Parent.Parent.Theme.Tokens)
+local CartIcon = require(script.Parent.Parent.Util.CartIcon)
 
 local HEADER_H = 36
 local FOOTER_H = 44
@@ -42,7 +43,7 @@ export type CartPanel = typeof(setmetatable(
 		_title: TextLabel,
 		_clear: TextButton,
 		_list: ScrollingFrame,
-		_empty: TextLabel,
+		_empty: Frame,
 		_total: TextLabel,
 		_buy: TextButton,
 		_rows: { Row },
@@ -208,17 +209,46 @@ function CartPanel.new(props: Props): CartPanel
 		}),
 		make("UIPadding", { PaddingRight = UDim.new(0, Tokens.Space.S) }),
 	})
-	local empty = label({
+	local empty: Frame = make("Frame", {
 		Name = "Empty",
-		Text = "Your cart is empty.\nTap 🛒 on an item to add it.",
-		TextColor3 = Tokens.Color.TextMuted,
-		TextWrapped = true,
-		TextTruncate = Enum.TextTruncate.None,
-		TextXAlignment = Enum.TextXAlignment.Center,
+		BackgroundTransparency = 1,
 		Position = UDim2.fromOffset(0, HEADER_H + Tokens.Space.XL),
-		Size = UDim2.new(1, 0, 0, 48),
+		Size = UDim2.new(1, 0, 0, 120),
 		Visible = false,
+		ZIndex = Z,
 		Parent = root,
+	}, {
+		make("UIListLayout", {
+			HorizontalAlignment = Enum.HorizontalAlignment.Center,
+			SortOrder = Enum.SortOrder.LayoutOrder,
+			Padding = UDim.new(0, Tokens.Space.S),
+		}),
+		make("ImageLabel", {
+			Name = "Icon",
+			BackgroundTransparency = 1,
+			Image = CartIcon.Image.cart,
+			ImageColor3 = Tokens.Color.TextMuted,
+			LayoutOrder = 1,
+			Size = UDim2.fromOffset(56, 56),
+			ZIndex = Z,
+		}),
+		label({
+			Name = "Title",
+			Text = "Your cart is empty",
+			FontFace = Tokens.Font.Bold,
+			TextXAlignment = Enum.TextXAlignment.Center,
+			LayoutOrder = 2,
+			Size = UDim2.new(1, 0, 0, 20),
+		}),
+		label({
+			Name = "Hint",
+			Text = "Tap the cart button on an item to add it.",
+			TextSize = Tokens.TextSize.Caption,
+			TextColor3 = Tokens.Color.TextMuted,
+			TextXAlignment = Enum.TextXAlignment.Center,
+			LayoutOrder = 3,
+			Size = UDim2.new(1, 0, 0, 16),
+		}),
 	})
 
 	-- Bawah: total + Buy All
