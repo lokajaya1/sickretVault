@@ -32,7 +32,7 @@ return function()
 	eq(table.concat(ids, ","), "20,10,30,40,41,50,60", "urutan")
 
 	-- 3. nama cadangan = tipe / slot
-	eq(list[1].name, "HairAccessory", "nama aksesori")
+	eq(list[1].name, "Hair", "nama aksesori ramah")
 	eq(list[4].name, "Shirt", "nama slot")
 
 	-- 4. known -> nama & harga dari katalog
@@ -59,6 +59,13 @@ return function()
 		assert(it.group == "accessory" or it.group == "classic", "hanya bisa dilepas")
 	end
 	eq(#WornItems.removable({}), 0, "kosong aman")
+
+	-- 7. nama ramah
+	eq(WornItems.friendlyName("EyebrowAccessory"), "Eyebrow", "eyebrow")
+	eq(WornItems.friendlyName("LeftShoeAccessory"), "Left Shoe", "sepatu kiri")
+	eq(WornItems.friendlyName("GraphicTShirt"), "T-Shirt", "kaos grafis")
+	eq(WornItems.friendlyName("Shirt"), "Shirt", "baju")
+	eq(WornItems.friendlyName("Accessory"), "Accessory", "tanpa tipe")
 
 	print("PASS WornItems.spec")
 end

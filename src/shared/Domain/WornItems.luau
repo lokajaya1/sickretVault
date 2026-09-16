@@ -3,7 +3,7 @@
 --   local list = WornItems.list(state, known)
 --   -- known: { [assetId] = item katalog yang pernah dilihat client } (opsional, untuk nama/harga)
 -- Urutan: aksesori terbaru dulu, lalu pakaian klasik, bagian tubuh, animasi.
--- Item yang tidak ada di `known` diberi nama slot/tipe (mis. "Shirt", "HatAccessory").
+-- Item yang tidak ada di `known` diberi nama ramah dari slot/tipe (mis. "Shirt", "Eyebrow", "T-Shirt").
 -- item.group: "accessory" | "classic" | "body" | "animation" (strip Wearing hanya menampilkan
 -- accessory + classic, karena body/animation tidak bisa "dilepas", hanya kembali ke avatar asal).
 
@@ -27,6 +27,28 @@ local function validId(v: any): boolean
 	return type(v) == "number" and v > 0
 end
 
+-- Nama cadangan yang enak dibaca: "EyebrowAccessory" -> "Eyebrow", "GraphicTShirt" -> "T-Shirt",
+-- "LeftShoeAccessory" -> "Left Shoe", "Hat" -> "Hat".
+local SPECIAL: { [string]: string } = {
+	GraphicTShirt = "T-Shirt",
+	TShirtAccessory = "T-Shirt",
+	Face = "Face",
+}
+
+function WornItems.friendlyName(typeName: string): string
+	local special = SPECIAL[typeName]
+	if special then
+		return special
+	end
+	local base = typeName:gsub("Accessory$", "")
+	if base == "" then
+		return "Accessory"
+	end
+	-- pisahkan CamelCase: "LeftShoe" -> "Left Shoe"
+	local spaced = base:gsub("(%l)(%u)", "%1 %2")
+	return spaced
+end
+
 local function makeItem(
 	id: number,
 	group: Group,
@@ -46,7 +68,13 @@ local function makeItem(
 			creatorName = k.creatorName,
 		}
 	end
-	return { id = id, group = group, itemType = "Asset", name = fallbackName, assetType = assetType }
+	return {
+		id = id,
+		group = group,
+		itemType = "Asset",
+		name = WornItems.friendlyName(fallbackName),
+		assetType = assetType,
+	}
 end
 
 -- Hanya item yang bisa dilepas pemain (aksesori + pakaian klasik).
