@@ -3,12 +3,15 @@
 -- Urutan penting: Remotes.init() dulu, baru service & handler.
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Remotes = require(Shared.Net.Remotes)
 local RemoteNames = require(Shared.Net.RemoteNames)
 local RateLimiter = require(Shared.Util.RateLimiter)
 local Log = require(Shared.Util.Log)
+local Features = require(Shared.Config.Features)
+local PlayerData = require(Shared.Domain.PlayerData)
 local IntentValidator = require(script.Validators.IntentValidator)
 local RobloxApi = require(script.Gateways.RobloxApi)
 local CatalogService = require(script.Services.CatalogService)
@@ -18,6 +21,7 @@ local ItemDetailService = require(script.Services.ItemDetailService)
 local CheckoutService = require(script.Services.CheckoutService)
 local AvatarService = require(script.Services.AvatarService)
 local AvatarRules = require(script.Services.AvatarRules)
+local PlayerDataService = require(script.Services.PlayerDataService)
 local Inspect = require(script.Dev.Inspect)
 
 local log = Log.new("Server")
@@ -39,7 +43,28 @@ local notify = Remotes.event(RemoteNames.Events.Notify)
 -- Checkout keranjang: PromptBulkPurchase HARUS dari server; hasilnya didengarkan client.
 local checkout = CheckoutService.new()
 
-local avatar = AvatarService.new({
+-- Data pemain (ProfileStore: session lock, auto save, BindToClose). Flag mati -> tanpa simpan.
+local playerData: PlayerDataService.PlayerDataService? = nil
+if Features.PlayerData then
+	local ProfileStore = require(script.Parent:WaitForChild("ServerPackages").ProfileStore)
+	local store = ProfileStore.New(PlayerDataService.STORE_NAME, PlayerData.TEMPLATE)
+	if Features.PlayerDataStudioMock and RunService:IsStudio() then
+		store = store.Mock -- Studio tidak menyentuh data asli (hilang saat Stop)
+	end
+	playerData = PlayerDataService.new({ store = store })
+end
+
+local avatar: AvatarService.AvatarService
+
+-- Simpan outfit terakhir ke profil (di memori; ProfileStore yang menulis ke DataStore).
+-- Sama dengan avatar asli -> hapus, supaya ganti avatar di website tetap terlihat saat join.
+local function saveOutfit(player: Player, state)
+	if playerData then
+		playerData:setLastOutfit(player, if avatar:isBaseline(player) then nil else state)
+	end
+end
+
+avatar = AvatarService.new({
 	api = api,
 	itemInfo = itemInfo,
 	rules = rules,
@@ -48,6 +73,7 @@ local avatar = AvatarService.new({
 		if player.Parent == Players then
 			stateChanged:FireClient(player, state)
 		end
+		saveOutfit(player, state)
 	end,
 	onError = function(player: Player, code: string)
 		if player.Parent == Players then
@@ -180,11 +206,36 @@ Remotes.func(RemoteNames.Functions.Checkout).OnServerInvoke = function(player: P
 	return { ok = true }
 end
 
--- 5d. Sesi avatar per pemain. attach yield (ambil avatar asli) -> task.spawn.
+-- 5d. Muat data pemain lalu pasang outfit terakhir (YIELD). Gagal -> tetap avatar asli.
+local function loadPlayerData(player: Player)
+	if playerData == nil or not playerData:load(player) then
+		return
+	end
+	local settings = playerData:getSettings(player)
+	local saved = if settings and settings.restoreOutfit then playerData:getLastOutfit(player) else nil
+	if saved then
+		local ok, code = avatar:restore(player, saved)
+		log.info("restore outfit", ok, code, player.Name)
+		if ok then
+			return -- onState sudah menyimpan
+		end
+	end
+	-- tidak di-restore (tidak ada / setting mati / pemain sudah mengubah): simpan yang sekarang
+	local current = avatar:getState(player)
+	if current then
+		saveOutfit(player, current)
+	end
+end
+
+-- 5e. Sesi avatar per pemain. attach yield (ambil avatar asli) -> task.spawn.
 local function onPlayerAdded(player: Player)
 	local ok, err = pcall(avatar.attach, avatar, player)
 	if not ok then
 		log.error("attach gagal", err, player.Name)
+	end
+	local dOk, dErr = pcall(loadPlayerData, player)
+	if not dOk then
+		log.error("data pemain gagal", dErr, player.Name)
 	end
 end
 Players.PlayerAdded:Connect(onPlayerAdded)
@@ -194,6 +245,9 @@ end
 
 Players.PlayerRemoving:Connect(function(player: Player)
 	avatar:detach(player)
+	if playerData then
+		playerData:release(player) -- outfit terakhir sudah ada di profil (saveOutfit)
+	end
 	intentLimiter:reset(player.UserId)
 	searchLimiter:reset(player.UserId)
 	stateLimiter:reset(player.UserId)
