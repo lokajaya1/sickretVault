@@ -51,7 +51,7 @@ local function priceText(price: number?): string
 	elseif price <= 0 then
 		return "Free"
 	end
-	return "R$ " .. tostring(price)
+	return utf8.char(0xE002) .. " " .. tostring(price) -- ikon Robux bawaan font Roblox
 end
 
 local function label(name: string, parent: Instance, font: Font, size: number, color: Color3): TextLabel
