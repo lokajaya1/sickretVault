@@ -18,6 +18,12 @@ return function()
 	eq(d.y, P.TOP, "di bawah tombol atas")
 	eq(d.y + d.h, 1080 - P.MARGIN, "sampai bawah")
 	eq(d.anchorX, d.x / 2, "karakter di tengah area kiri")
+	-- dock kiri bawah: tidak menabrak panel, menempel bawah, avatar di atasnya
+	eq(d.dockX, P.MARGIN, "dock x")
+	eq(d.dockX + d.dockW, d.x - P.MARGIN, "dock berhenti sebelum panel")
+	eq(d.dockY + d.dockH, 1080 - P.MARGIN, "dock menempel bawah")
+	eq(d.dockH, P.ACTIONS_H + P.DOCK_GAP + P.STRIP_H, "tinggi dock")
+	assert(d.anchorY < d.dockY, "avatar di atas dock")
 	assert(d.columns >= 4, "desktop minimal 4 kolom")
 
 	-- 2. laptop 1280x720: 55%
@@ -34,7 +40,9 @@ return function()
 	eq(m.y + m.h, 844, "menempel bawah")
 	eq(m.columns, 3, "ponsel 3 kolom")
 	eq(m.anchorX, 195, "karakter di tengah horizontal")
-	assert(m.anchorY > P.TOP and m.anchorY < m.y, "karakter di area atas")
+	assert(m.anchorY > P.TOP and m.anchorY < m.dockY, "karakter di atas dock")
+	eq(m.dockY + m.dockH, m.y - P.MARGIN, "dock tepat di atas sheet")
+	eq(m.dockW, 390 - P.MARGIN * 2, "dock selebar layar")
 
 	-- 4. ponsel mendatar 844x390: side + compact, panel setinggi layar, kartu lebih kecil
 	local ls = P.compute(844, 390)
@@ -45,6 +53,10 @@ return function()
 	assert(ls.x >= P.MARGIN, "tidak keluar kiri")
 	eq(ls.cellH, ls.cellW + P.TEXT_AREA_COMPACT, "kartu compact")
 	assert(ls.columns >= 4, "landscape minimal 4 kolom")
+	eq(ls.stripH, P.STRIP_H_COMPACT, "strip compact")
+	eq(ls.dockY + ls.dockH, 390 - P.COMPACT_MARGIN, "dock compact menempel bawah")
+	assert(ls.dockX + ls.dockW <= ls.x, "dock compact tidak menabrak panel")
+	assert(ls.anchorY > 0 and ls.anchorY < ls.dockY, "avatar compact di atas dock")
 
 	-- 4b. ponsel kecil mendatar 667x375 (lebih sempit dari PHONE_WIDTH) tetap side, bukan sheet
 	local se = P.compute(667, 375)
@@ -62,6 +74,7 @@ return function()
 	-- 6. layar sangat kecil: aman (tanpa nilai negatif)
 	local tiny = P.compute(300, 200)
 	assert(tiny.w > 0 and tiny.h > 0 and tiny.cellW > 0, "layar kecil aman")
+	assert(tiny.dockW >= 0 and tiny.dockY >= 0, "dock layar kecil aman")
 
 	print("PASS PanelLayout.spec")
 end

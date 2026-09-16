@@ -6,6 +6,8 @@
 --   L.x, L.y, L.w, L.h           -- kotak panel
 --   L.columns, L.cellW, L.cellH  -- ukuran kartu grid
 --   L.anchorX, L.anchorY         -- titik tengah area kosong (piksel) untuk kamera try-on
+--   L.dockX, L.dockY, L.dockW, L.dockH -- area kiri bawah (di bawah avatar) untuk tombol aksi + strip Wearing
+--   L.actionsH, L.stripH         -- tinggi baris tombol aksi & strip di dalam dock
 
 export type Layout = {
 	mode: "side" | "sheet",
@@ -19,6 +21,12 @@ export type Layout = {
 	cellH: number,
 	anchorX: number,
 	anchorY: number,
+	dockX: number,
+	dockY: number,
+	dockW: number,
+	dockH: number,
+	actionsH: number,
+	stripH: number,
 }
 
 local PanelLayout = {}
@@ -42,6 +50,12 @@ PanelLayout.MIN_COLUMNS = 3
 PanelLayout.MAX_COLUMNS = 6
 PanelLayout.TEXT_AREA = 34 -- tinggi nama + harga di bawah gambar
 PanelLayout.TEXT_AREA_COMPACT = 30
+PanelLayout.ACTIONS_H = 44 -- tombol Undo/Redo/Reset
+PanelLayout.ACTIONS_H_COMPACT = 40
+PanelLayout.STRIP_H = 78 -- strip item yang dipakai (judul 18 + tombol 52 + padding)
+PanelLayout.STRIP_H_COMPACT = 70 -- tombol 44 (batas nyaman sentuh)
+PanelLayout.DOCK_GAP = 8
+PanelLayout.DOCK_GAP_COMPACT = 6
 
 local function clamp(v: number, lo: number, hi: number): number
 	return math.max(lo, math.min(hi, v))
@@ -64,7 +78,11 @@ function PanelLayout.compute(width: number, height: number): Layout
 	-- Sheet hanya untuk ponsel TEGAK. Roblox mobile umumnya mendatar -> side + compact.
 	local mode: "side" | "sheet" = if width < P.PHONE_WIDTH and height > width then "sheet" else "side"
 	local compact = mode == "side" and height < P.COMPACT_HEIGHT
-	local x, y, w, h, anchorX, anchorY
+	local m = if compact then P.COMPACT_MARGIN else P.MARGIN
+	local actionsH = if compact then P.ACTIONS_H_COMPACT else P.ACTIONS_H
+	local stripH = if compact then P.STRIP_H_COMPACT else P.STRIP_H
+	local dockH = actionsH + (if compact then P.DOCK_GAP_COMPACT else P.DOCK_GAP) + stripH
+	local x, y, w, h, anchorX, anchorY, dockX, dockY, dockW
 	if mode == "side" then
 		local ratio = if compact then P.SIDE_RATIO_COMPACT else P.SIDE_RATIO
 		w = math.floor(clamp(width * ratio, P.SIDE_MIN, P.SIDE_MAX))
@@ -74,15 +92,24 @@ function PanelLayout.compute(width: number, height: number): Layout
 		y = if compact then P.COMPACT_MARGIN else P.TOP
 		local bottom = if compact then P.COMPACT_MARGIN else P.MARGIN
 		h = math.max(0, height - y - bottom)
+		-- dock di kiri bawah (area kosong di kiri panel); avatar di tengah area di atasnya
+		dockX = m
+		dockW = math.max(0, x - m * 2)
+		dockY = math.max(0, height - m - dockH)
 		anchorX = x / 2 -- tengah area kosong di kiri panel
-		anchorY = height / 2
+		local top = if compact then m else P.TOP
+		anchorY = (top + dockY) / 2
 	else
 		w = width
 		x = 0
 		h = math.floor(height * P.SHEET_RATIO)
 		y = height - h
+		-- dock tepat di atas sheet; avatar di antara tombol atas dan dock
+		dockX = P.MARGIN
+		dockW = math.max(0, width - P.MARGIN * 2)
+		dockY = math.max(0, y - P.MARGIN - dockH)
 		anchorX = width / 2
-		anchorY = (P.TOP + y) / 2 -- tengah area kosong di atas panel
+		anchorY = (P.TOP + dockY) / 2
 	end
 	local columns, cellW, cellH = PanelLayout.grid(w - P.PADDING * 2, compact)
 	return {
@@ -97,6 +124,12 @@ function PanelLayout.compute(width: number, height: number): Layout
 		cellH = cellH,
 		anchorX = anchorX,
 		anchorY = anchorY,
+		dockX = dockX,
+		dockY = dockY,
+		dockW = dockW,
+		dockH = dockH,
+		actionsH = actionsH,
+		stripH = stripH,
 	}
 end
 
