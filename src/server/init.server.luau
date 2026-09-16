@@ -9,6 +9,8 @@ local RemoteNames = require(Shared.Net.RemoteNames)
 local RateLimiter = require(Shared.Util.RateLimiter)
 local Log = require(Shared.Util.Log)
 local IntentValidator = require(script.Validators.IntentValidator)
+local RobloxApi = require(script.Gateways.RobloxApi)
+local Inspect = require(script.Dev.Inspect)
 
 local log = Log.new("Server")
 
@@ -34,5 +36,11 @@ end)
 Players.PlayerRemoving:Connect(function(player: Player)
 	intentLimiter:reset(player.UserId)
 end)
+
+-- 3. Gateway API Roblox (satu instance untuk seluruh server).
+local api = RobloxApi.new()
+
+-- 4. Inspeksi API asli: hanya Studio + Play + Features.DevInspect (cek di dalam Inspect.run).
+task.spawn(Inspect.run, api)
 
 log.info("siap")
