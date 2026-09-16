@@ -8,6 +8,7 @@ export type Accessory = {
 	order: number?, -- hanya layered
 	puffiness: number?, -- hanya layered (0..1)
 	source: number?, -- bundleId jika berasal dari bundle
+	seq: number?, -- urutan dipakai (untuk mengganti yang tertua saat batas per tipe penuh)
 }
 
 export type SlotValue = {

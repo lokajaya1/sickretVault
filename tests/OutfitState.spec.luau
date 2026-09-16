@@ -62,5 +62,28 @@ return function()
 	-- 8. immutability
 	eq(base.bodyParts.Head.id, 111, "baseline tidak berubah")
 	eq(b.bodyParts.Head.id, 500, "state lama tidak berubah setelah remove")
+
+	-- 9. batas per tipe: Hat=3 -> topi ke-4 mengganti yang TERTUA; Neck=1 -> diganti
+	local limits = { Hat = 3, NeckAccessory = 1, FaceAccessory = 0 }
+	local h = OS.empty()
+	h.accessories["70"] = { assetId = 70, assetType = "Hat", isLayered = false } -- avatar asli (tanpa seq)
+	h = OS.wear(h, 71, "Hat", nil, limits)
+	h = OS.wear(h, 72, "Hat", nil, limits)
+	eq(h.accessories["70"] ~= nil, true, "3 topi masih muat")
+	h = OS.wear(h, 73, "Hat", nil, limits)
+	eq(h.accessories["70"], nil, "topi avatar asli (tertua) diganti")
+	assert(h.accessories["71"] and h.accessories["72"] and h.accessories["73"], "3 topi terbaru")
+	h = OS.wear(h, 74, "Hat", nil, limits)
+	eq(h.accessories["71"], nil, "topi 71 (tertua berikutnya) diganti")
+	h = OS.wear(h, 80, "NeckAccessory", nil, limits)
+	h = OS.wear(h, 81, "NeckAccessory", nil, limits)
+	eq(h.accessories["80"], nil, "neck lama diganti")
+	assert(h.accessories["81"], "neck baru terpasang")
+	local unchanged, e9 = OS.wear(h, 90, "FaceAccessory", nil, limits)
+	eq(unchanged, h, "tipe batas 0 tidak mengubah state")
+	eq(e9, "LIMIT_TYPE", "kode LIMIT_TYPE")
+	local free = OS.wear(h, 91, "BackAccessory", nil, limits)
+	assert(free.accessories["91"], "tipe tanpa batas tetap bisa dipakai")
+
 	print("PASS OutfitState.spec")
 end

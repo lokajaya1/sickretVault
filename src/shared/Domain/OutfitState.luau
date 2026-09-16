@@ -92,13 +92,47 @@ local function maxOrder(state: OutfitState): number
 	return m
 end
 
+local function maxSeq(state: OutfitState): number
+	local m = 0
+	for _, a in state.accessories do
+		if a.seq and a.seq > m then
+			m = a.seq
+		end
+	end
+	return m
+end
+
+-- Lepas aksesori tertua bertipe `typeName` sampai jumlahnya <= keep.
+-- Tertua = seq terkecil (aksesori avatar asli tanpa seq dianggap paling tua).
+local function dropOldestOfType(state: OutfitState, typeName: string, keep: number)
+	local list: { Accessory } = {}
+	for _, a in state.accessories do
+		if a.assetType == typeName then
+			table.insert(list, a)
+		end
+	end
+	table.sort(list, function(a, b)
+		if (a.seq or 0) ~= (b.seq or 0) then
+			return (a.seq or 0) < (b.seq or 0)
+		end
+		return a.assetId < b.assetId
+	end)
+	for i = 1, #list - math.max(keep, 0) do
+		state.accessories[tostring(list[i].assetId)] = nil
+	end
+end
+
 -- Pakai satu aset. `source` = bundleId jika aset berasal dari bundle.
 -- Return: (stateBaru, errorKode?)
+-- `maxPerType` (opsional) = batas per tipe aksesori dari GetAvatarRulesAsync (mis. Hat=3).
+-- Jika tipe sudah penuh, aksesori TERLAMA dari tipe itu dilepas (diganti), seperti editor avatar.
+-- Batas 0 = tipe tidak boleh dipakai -> "LIMIT_TYPE".
 function OutfitState.wear(
 	state: OutfitState,
 	assetId: number,
 	assetTypeName: string,
-	source: number?
+	source: number?,
+	maxPerType: { [string]: number }?
 ): (OutfitState, string?)
 	local kind, slot = Map.classify(assetTypeName)
 	if kind == "unknown" or not slot then
@@ -118,6 +152,13 @@ function OutfitState.wear(
 		return state, nil -- sudah dipakai
 	end
 	local layered = Map.isLayered(assetTypeName)
+	local maxOfType = maxPerType and maxPerType[assetTypeName]
+	if maxOfType ~= nil then
+		if maxOfType <= 0 then
+			return state, "LIMIT_TYPE"
+		end
+		dropOldestOfType(s, assetTypeName, maxOfType - 1)
+	end
 	local rigid, lay = countAccessories(s)
 	if layered and lay >= Limits.MaxLayeredAccessories then
 		return state, "LIMIT_LAYERED"
@@ -139,6 +180,7 @@ function OutfitState.wear(
 		assetType = assetTypeName,
 		isLayered = layered,
 		source = source,
+		seq = maxSeq(s) + 1,
 	}
 	if layered then
 		-- urutan default per tipe (kaos di dalam, jaket di luar). Pemain bisa ubah via setLayerOrder.
