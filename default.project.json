@@ -17,14 +17,13 @@
         "$path": "src/server"
       },
       "ServerPackages": {
-        "$path": "S erverPackages"
+        "$path": "ServerPackages"
       }
     },
 
     "StarterPlayer": {
       "StarterPlayerScripts": {
         "Client": {
-          "$className": "Folder",
           "$path": "src/client"
         }
       }

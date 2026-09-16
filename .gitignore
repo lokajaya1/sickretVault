@@ -9,3 +9,5 @@ Packages/
 ServerPackages/
 
 sourcemap.json
+
+*.rbxl
