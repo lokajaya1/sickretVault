@@ -5,6 +5,7 @@
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
 
 local WornItems = require(ReplicatedStorage:WaitForChild("Shared").Domain.WornItems)
 local Tokens = require(script.Parent.Theme.Tokens)
@@ -13,6 +14,7 @@ local Toast = require(script.Parent.Components.Toast)
 local ActionBar = require(script.Parent.Components.ActionBar)
 local CatalogController = require(script.Parent.Parent.Controllers.CatalogController)
 local OutfitController = require(script.Parent.Parent.Controllers.OutfitController)
+local TryOnCamera = require(script.Parent.Parent.Controllers.TryOnCamera)
 
 export type Options = {
 	onItemActivated: ((item: any) -> ())?,
@@ -29,6 +31,7 @@ export type App = typeof(setmetatable(
 		panel: CatalogPanel.CatalogPanel,
 		toast: Toast.Toast,
 		actions: ActionBar.ActionBar,
+		camera: TryOnCamera.TryOnCamera,
 		_catalogButton: TextButton,
 		_conns: { RBXScriptConnection },
 	},
@@ -140,6 +143,20 @@ function App.mount(opts: Options?): App
 		end,
 	})
 
+	-- Kamera try-on: karakter di tengah area kosong sebelah kanan panel.
+	local camera = TryOnCamera.new({
+		getAnchor = function()
+			local cam = Workspace.CurrentCamera
+			local width = if cam then cam.ViewportSize.X else 0
+			if width <= 0 then
+				return 0.7, 0.5
+			end
+			local p = panel.instance
+			local panelRight = p.AbsolutePosition.X + p.AbsoluteSize.X
+			return math.clamp((panelRight + width) / 2 / width, 0.5, 0.95), 0.5
+		end,
+	})
+
 	self = setmetatable({
 		gui = gui,
 		catalog = catalog,
@@ -147,6 +164,7 @@ function App.mount(opts: Options?): App
 		panel = panel,
 		toast = toast,
 		actions = actions,
+		camera = camera,
 		_catalogButton = catalogButton,
 		_conns = {},
 	}, App)
@@ -186,6 +204,12 @@ function App._refreshButtons(self: App)
 	local open = self.panel:isVisible()
 	self._catalogButton.BackgroundColor3 = if open then Tokens.Color.Accent else Tokens.Color.Panel
 	self._catalogButton.BackgroundTransparency = if open then 0 else Tokens.Transparency.Panel
+	-- Katalog terbuka -> kamera try-on; tertutup -> kamera biasa.
+	if open then
+		self.camera:enable()
+	else
+		self.camera:disable()
+	end
 end
 
 function App.toggleCatalog(self: App)
@@ -197,6 +221,7 @@ function App.destroy(self: App)
 	for _, c in self._conns do
 		c:Disconnect()
 	end
+	self.camera:destroy()
 	self.outfit:stop()
 	self.panel:destroy()
 	self.toast:destroy()
