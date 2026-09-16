@@ -1,8 +1,9 @@
 --!strict
--- Panel katalog: judul + tutup, kotak cari, tab kategori, grid ItemCard (infinite scroll), status.
+-- Panel katalog: judul + tutup, kotak cari, tab (Wearing + kategori), grid ItemCard (infinite scroll), status.
 -- Hanya MENAMPILKAN state CatalogController dan meneruskan aksi pemain ke controller.
 --   local panel = CatalogPanel.new({ controller = catalog, parent = screenGui, onItemActivated = fn })
 --   panel:setVisible(true)   panel:destroy()
+-- Tab "Wearing" (bila props.getWearing ada) menampilkan item yang sedang dipakai, bukan hasil katalog.
 
 local Workspace = game:GetService("Workspace")
 
@@ -13,6 +14,7 @@ local ItemCard = require(script.Parent.ItemCard)
 local SEARCH_DEBOUNCE = 0.6 -- detik setelah berhenti mengetik
 local HEADER_H = 40
 local GAP = Tokens.Space.S
+local WEARING = "__wearing" -- kunci tab Wearing di _tabs (bukan kategori server)
 
 export type Props = {
 	controller: any, -- CatalogController
@@ -20,6 +22,7 @@ export type Props = {
 	onItemActivated: ((item: any) -> ())?,
 	onClose: (() -> ())?,
 	isSelected: ((item: any) -> boolean)?, -- true = kartu diberi sorotan (item sedang dipakai)
+	getWearing: (() -> { any })?, -- daftar item terpakai untuk tab Wearing (nil = tab tidak ditampilkan)
 }
 
 local CatalogPanel = {}
@@ -39,6 +42,7 @@ export type CatalogPanel = typeof(setmetatable(
 		_unsubscribe: () -> (),
 		_searchToken: number,
 		_lastCount: number,
+		_wearing: boolean,
 	},
 	CatalogPanel
 ))
@@ -183,10 +187,11 @@ function CatalogPanel.new(props: Props): CatalogPanel
 
 	local tabs: { [string]: TextButton } = {}
 	local conns: { RBXScriptConnection } = {}
-	for i, cat in Categories.list do
-		local b = textButton(cat.label, {
-			Name = "Tab_" .. cat.id,
-			LayoutOrder = i,
+	local self: CatalogPanel
+	local function tabButton(id: string, label: string, order: number): TextButton
+		local b = textButton(label, {
+			Name = "Tab_" .. id,
+			LayoutOrder = order,
 			AutomaticSize = Enum.AutomaticSize.X,
 			Size = UDim2.fromOffset(0, Tokens.Size.TabHeight),
 			TextSize = Tokens.TextSize.Body,
@@ -197,10 +202,24 @@ function CatalogPanel.new(props: Props): CatalogPanel
 			PaddingRight = UDim.new(0, Tokens.Space.M),
 			Parent = b,
 		})
-		tabs[cat.id] = b
+		tabs[id] = b
+		return b
+	end
+	if props.getWearing then
+		local b = tabButton(WEARING, "Wearing", 0)
 		table.insert(
 			conns,
 			b.Activated:Connect(function()
+				self:_setWearing(true)
+			end)
+		)
+	end
+	for i, cat in Categories.list do
+		local b = tabButton(cat.id, cat.label, i)
+		table.insert(
+			conns,
+			b.Activated:Connect(function()
+				self:_setWearing(false)
 				spawnCall(ctl.setCategory, ctl, cat.id)
 			end)
 		)
@@ -257,7 +276,7 @@ function CatalogPanel.new(props: Props): CatalogPanel
 		Parent = root,
 	})
 
-	local self = setmetatable({
+	self = setmetatable({
 		instance = root,
 		_props = props,
 		_grid = grid,
@@ -270,6 +289,7 @@ function CatalogPanel.new(props: Props): CatalogPanel
 		_unsubscribe = function() end,
 		_searchToken = 0,
 		_lastCount = 0,
+		_wearing = false,
 	}, CatalogPanel)
 
 	table.insert(
@@ -291,6 +311,7 @@ function CatalogPanel.new(props: Props): CatalogPanel
 	-- Cari: Enter langsung, mengetik -> debounce
 	local function submitSearch()
 		self._searchToken += 1
+		self:_setWearing(false) -- cari selalu di katalog
 		spawnCall(ctl.setKeyword, ctl, search.Text)
 	end
 	table.insert(
@@ -344,7 +365,7 @@ end
 
 function CatalogPanel._maybeLoadMore(self: CatalogPanel)
 	local grid = self._grid
-	if not self.instance.Visible then
+	if not self.instance.Visible or self._wearing then
 		return
 	end
 	local state = self._props.controller:getState()
@@ -357,23 +378,21 @@ function CatalogPanel._maybeLoadMore(self: CatalogPanel)
 	end
 end
 
-function CatalogPanel._render(self: CatalogPanel, state: any)
-	-- Tab aktif
-	for id, b in self._tabs do
-		local active = id == state.categoryId
-		b.BackgroundColor3 = if active then Tokens.Color.Accent else Tokens.Color.PanelRaised
-		b.TextColor3 = if active then Tokens.Color.AccentText else Tokens.Color.TextMuted
+-- Masuk/keluar mode Wearing lalu gambar ulang.
+function CatalogPanel._setWearing(self: CatalogPanel, on: boolean)
+	if self._wearing == on then
+		return
 	end
+	self._wearing = on
+	self._lastCount = 0
+	self._grid.CanvasPosition = Vector2.zero
+	self:_render(self._props.controller:getState())
+end
 
-	-- Daftar baru (reset) -> gulir ke atas
-	if #state.items < self._lastCount then
-		self._grid.CanvasPosition = Vector2.zero
-	end
-	self._lastCount = #state.items
-
-	-- Kartu: pakai ulang yang ada, buat bila kurang, hapus kelebihan
+-- Kartu: pakai ulang yang ada, buat bila kurang, hapus kelebihan
+function CatalogPanel._renderCards(self: CatalogPanel, items: { any })
 	local cards = self._cards
-	for i, item in state.items do
+	for i, item in items do
 		local card = cards[i]
 		if card == nil then
 			card = ItemCard.new({ item = item, layoutOrder = i, onActivated = self._props.onItemActivated })
@@ -384,10 +403,37 @@ function CatalogPanel._render(self: CatalogPanel, state: any)
 		end
 		card:setSelected(self:_isSelected(item))
 	end
-	for i = #cards, #state.items + 1, -1 do
+	for i = #cards, #items + 1, -1 do
 		cards[i]:destroy()
 		cards[i] = nil
 	end
+end
+
+function CatalogPanel._render(self: CatalogPanel, state: any)
+	-- Tab aktif
+	for id, b in self._tabs do
+		local active = if self._wearing then id == WEARING else id == state.categoryId
+		b.BackgroundColor3 = if active then Tokens.Color.Accent else Tokens.Color.PanelRaised
+		b.TextColor3 = if active then Tokens.Color.AccentText else Tokens.Color.TextMuted
+	end
+
+	if self._wearing then
+		local getWearing = self._props.getWearing
+		local items = if getWearing then getWearing() else {}
+		self:_renderCards(items)
+		self._status.Text = if #items == 0 then "Nothing worn yet" else ("%d items worn"):format(#items)
+		self._status.TextColor3 = Tokens.Color.TextMuted
+		self._retry.Visible = false
+		return
+	end
+
+	-- Daftar baru (reset) -> gulir ke atas
+	if #state.items < self._lastCount then
+		self._grid.CanvasPosition = Vector2.zero
+	end
+	self._lastCount = #state.items
+
+	self:_renderCards(state.items)
 
 	-- Status
 	local text = ""
@@ -417,9 +463,12 @@ function CatalogPanel._isSelected(self: CatalogPanel, item: any): boolean
 	return fn ~= nil and fn(item) == true
 end
 
--- Perbarui sorotan semua kartu (dipanggil saat outfit berubah).
--- Perbarui sorotan semua kartu (dipanggil saat outfit berubah).
+-- Outfit berubah: tab Wearing -> gambar ulang daftar; tab lain -> perbarui sorotan kartu.
 function CatalogPanel.refreshSelection(self: CatalogPanel)
+	if self._wearing then
+		self:_render(self._props.controller:getState())
+		return
+	end
 	for _, card in self._cards do
 		card:setSelected(self:_isSelected(card.item))
 	end

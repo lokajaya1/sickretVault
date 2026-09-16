@@ -4,7 +4,9 @@
 --   app:toggleCatalog()   app.toast:show("Hello", "info")   app:destroy()
 
 local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
+local WornItems = require(ReplicatedStorage:WaitForChild("Shared").Domain.WornItems)
 local Tokens = require(script.Parent.Theme.Tokens)
 local CatalogPanel = require(script.Parent.Components.CatalogPanel)
 local Toast = require(script.Parent.Components.Toast)
@@ -113,6 +115,16 @@ function App.mount(opts: Options?): App
 		end,
 	})
 
+	-- Item katalog yang pernah tampil -> nama/harga untuk tab Wearing.
+	local known: { [number]: any } = {}
+	local function remember(state: any)
+		for _, item in state.items do
+			if item.itemType ~= "Bundle" then
+				known[item.id] = item
+			end
+		end
+	end
+
 	local panel = CatalogPanel.new({
 		controller = catalog,
 		parent = gui,
@@ -122,6 +134,9 @@ function App.mount(opts: Options?): App
 		end,
 		isSelected = function(item)
 			return item.itemType ~= "Bundle" and outfit:isWorn(item.id)
+		end,
+		getWearing = function()
+			return WornItems.list(outfit:getState(), known)
 		end,
 	})
 
@@ -152,7 +167,11 @@ function App.mount(opts: Options?): App
 		end)
 	)
 
-	-- Outfit berubah (dari server) -> perbarui sorotan kartu.
+	remember(catalog:getState())
+	local unremember = catalog:onChanged(remember)
+	table.insert(self._conns, { Disconnect = unremember } :: any)
+
+	-- Outfit berubah (dari server) -> perbarui sorotan kartu / tab Wearing.
 	local unsubscribe = outfit:onChanged(function()
 		panel:refreshSelection()
 	end)
