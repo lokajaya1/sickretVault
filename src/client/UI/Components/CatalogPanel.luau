@@ -1,13 +1,16 @@
 --!strict
 -- Panel katalog: judul + tutup, kotak cari, tab (Wearing + kategori), grid ItemCard (infinite scroll), status.
+-- Posisi & ukuran dari Shared/Util/PanelLayout: layar lebar -> panel di kanan; ponsel tegak -> panel dari bawah.
 -- Hanya MENAMPILKAN state CatalogController dan meneruskan aksi pemain ke controller.
 --   local panel = CatalogPanel.new({ controller = catalog, parent = screenGui, onItemActivated = fn })
---   panel:setVisible(true)   panel:destroy()
+--   panel:setVisible(true)   panel:getLayout()   panel:destroy()
 -- Tab "Wearing" (bila props.getWearing ada) menampilkan item yang sedang dipakai, bukan hasil katalog.
+-- Kotak cari juga menerima link/ID item: Enter -> props.onLink(id, kind) (bukan pencarian).
 
-local Workspace = game:GetService("Workspace")
-
-local Categories = require(game:GetService("ReplicatedStorage"):WaitForChild("Shared").Config.Categories)
+local Shared = game:GetService("ReplicatedStorage"):WaitForChild("Shared")
+local Categories = require(Shared.Config.Categories)
+local PanelLayout = require(Shared.Util.PanelLayout)
+local ItemLink = require(Shared.Util.ItemLink)
 local Tokens = require(script.Parent.Parent.Theme.Tokens)
 local ItemCard = require(script.Parent.ItemCard)
 
@@ -15,6 +18,8 @@ local SEARCH_DEBOUNCE = 0.6 -- detik setelah berhenti mengetik
 local HEADER_H = 40
 local GAP = Tokens.Space.S
 local WEARING = "__wearing" -- kunci tab Wearing di _tabs (bukan kategori server)
+local STATUS_H = 28
+local STATUS_H_COMPACT = 20
 
 export type Props = {
 	controller: any, -- CatalogController
@@ -23,6 +28,8 @@ export type Props = {
 	onClose: (() -> ())?,
 	isSelected: ((item: any) -> boolean)?, -- true = kartu diberi sorotan (item sedang dipakai)
 	getWearing: (() -> { any })?, -- daftar item terpakai untuk tab Wearing (nil = tab tidak ditampilkan)
+	-- link/ID ditempel di kotak cari lalu Enter; id = nil bila teks mirip link tapi tidak valid
+	onLink: ((id: number?, kind: ("Asset" | "Bundle")?) -> ())?,
 }
 
 local CatalogPanel = {}
@@ -43,6 +50,7 @@ export type CatalogPanel = typeof(setmetatable(
 		_searchToken: number,
 		_lastCount: number,
 		_wearing: boolean,
+		_layout: PanelLayout.Layout,
 	},
 	CatalogPanel
 ))
@@ -96,8 +104,6 @@ function CatalogPanel.new(props: Props): CatalogPanel
 	local root: Frame = make("Frame", {
 		Name = "CatalogPanel",
 		AnchorPoint = Vector2.new(0, 0),
-		Position = UDim2.new(0, Tokens.Space.L, 0, 72),
-		Size = UDim2.new(Tokens.Size.PanelWidth, 0, 1, -72 - Tokens.Space.L),
 		BackgroundColor3 = Tokens.Color.Panel,
 		BackgroundTransparency = Tokens.Transparency.Panel,
 		BorderSizePixel = 0,
@@ -106,10 +112,6 @@ function CatalogPanel.new(props: Props): CatalogPanel
 		Parent = props.parent,
 	}, {
 		corner(Tokens.Radius.Large),
-		make("UISizeConstraint", {
-			MinSize = Vector2.new(Tokens.Size.PanelMinWidth, 0),
-			MaxSize = Vector2.new(Tokens.Size.PanelMaxWidth, math.huge),
-		}),
 		make("UIPadding", {
 			PaddingTop = UDim.new(0, Tokens.Space.M),
 			PaddingBottom = UDim.new(0, Tokens.Space.M),
@@ -118,8 +120,8 @@ function CatalogPanel.new(props: Props): CatalogPanel
 		}),
 	})
 
-	-- Header: judul + tombol tutup
-	make("TextLabel", {
+	-- Header: judul + tombol tutup (posisi akhir diatur applyLayout)
+	local title: TextLabel = make("TextLabel", {
 		Name = "Title",
 		Text = "Catalog",
 		FontFace = Tokens.Font.Bold,
@@ -143,7 +145,7 @@ function CatalogPanel.new(props: Props): CatalogPanel
 	local searchTop = HEADER_H + GAP
 	local search: TextBox = make("TextBox", {
 		Name = "Search",
-		PlaceholderText = "Search catalog...",
+		PlaceholderText = if props.onLink then "Search or paste item link/ID" else "Search catalog...",
 		PlaceholderColor3 = Tokens.Color.TextMuted,
 		Text = "",
 		ClearTextOnFocus = false,
@@ -227,7 +229,7 @@ function CatalogPanel.new(props: Props): CatalogPanel
 
 	-- Grid item
 	local gridTop = tabsTop + Tokens.Size.TabHeight + 6 + GAP
-	local statusH = 28
+	local statusH = STATUS_H
 	local grid: ScrollingFrame = make("ScrollingFrame", {
 		Name = "Grid",
 		BackgroundTransparency = 1,
@@ -241,13 +243,14 @@ function CatalogPanel.new(props: Props): CatalogPanel
 		ZIndex = Tokens.ZIndex.Panel,
 		Parent = root,
 	}, {
-		make("UIGridLayout", {
-			CellSize = UDim2.fromOffset(Tokens.Size.Card.X, Tokens.Size.Card.Y),
-			CellPadding = UDim2.fromOffset(GAP, GAP),
-			SortOrder = Enum.SortOrder.LayoutOrder, -- penting: default bisa urut Name
-			HorizontalAlignment = Enum.HorizontalAlignment.Center,
-		}),
 		make("UIPadding", { PaddingRight = UDim.new(0, 6), PaddingTop = UDim.new(0, 2) }),
+	})
+	local gridLayout: UIGridLayout = make("UIGridLayout", {
+		CellSize = UDim2.fromOffset(Tokens.Size.Card.X, Tokens.Size.Card.Y),
+		CellPadding = UDim2.fromOffset(GAP, GAP),
+		SortOrder = Enum.SortOrder.LayoutOrder, -- penting: default bisa urut Name
+		HorizontalAlignment = Enum.HorizontalAlignment.Center,
+		Parent = grid,
 	})
 
 	-- Status bawah + tombol coba lagi
@@ -290,6 +293,7 @@ function CatalogPanel.new(props: Props): CatalogPanel
 		_searchToken = 0,
 		_lastCount = 0,
 		_wearing = false,
+		_layout = PanelLayout.compute(1280, 720),
 	}, CatalogPanel)
 
 	table.insert(
@@ -309,6 +313,7 @@ function CatalogPanel.new(props: Props): CatalogPanel
 	)
 
 	-- Cari: Enter langsung, mengetik -> debounce
+	local skipTextChange = false -- kotak dikosongkan oleh kode (setelah paste link) -> jangan cari
 	local function submitSearch()
 		self._searchToken += 1
 		self:_setWearing(false) -- cari selalu di katalog
@@ -317,15 +322,35 @@ function CatalogPanel.new(props: Props): CatalogPanel
 	table.insert(
 		conns,
 		search.FocusLost:Connect(function(enter: boolean)
-			if enter then
-				submitSearch()
+			if not enter then
+				return
 			end
+			-- Link / ID item -> coba pakai, kotak dikosongkan (tanpa memicu pencarian)
+			local onLink = props.onLink
+			if onLink and ItemLink.looksLikeLink(search.Text) then
+				local id, kind = ItemLink.parse(search.Text)
+				if id then
+					skipTextChange = true
+					search.Text = ""
+				end
+				self._searchToken += 1 -- batalkan pencarian yang tertunda
+				onLink(id, kind)
+				return
+			end
+			submitSearch()
 		end)
 	)
 	table.insert(
 		conns,
 		search:GetPropertyChangedSignal("Text"):Connect(function()
 			self._searchToken += 1
+			if skipTextChange then
+				skipTextChange = false
+				return
+			end
+			if props.onLink and ItemLink.looksLikeLink(search.Text) then
+				return -- sedang menempel link/ID: jangan cari
+			end
 			local token = self._searchToken
 			task.delay(SEARCH_DEBOUNCE, function()
 				if token == self._searchToken then
@@ -343,18 +368,40 @@ function CatalogPanel.new(props: Props): CatalogPanel
 		end)
 	)
 
-	-- Lebar panel: ponsel -> lebih lebar
-	local function applyWidth()
-		local cam = Workspace.CurrentCamera
-		local w = if cam then cam.ViewportSize.X else 1000
-		local scale = if w < Tokens.Breakpoint.Phone then Tokens.PanelWidthPhone else Tokens.Size.PanelWidth
-		root.Size = UDim2.new(scale, 0, 1, -72 - Tokens.Space.L)
+	-- Posisi, ukuran & kolom grid mengikuti ukuran layar (lihat PanelLayout)
+	local host = props.parent :: GuiBase2d
+	local function applyLayout()
+		local size = host.AbsoluteSize
+		if size.X <= 0 or size.Y <= 0 then
+			return
+		end
+		local L = PanelLayout.compute(size.X, size.Y)
+		self._layout = L
+		root.Position = UDim2.fromOffset(L.x, L.y)
+		root.Size = UDim2.fromOffset(L.w, L.h)
+		gridLayout.CellSize = UDim2.fromOffset(L.cellW, L.cellH)
+
+		-- Header: normal = judul di baris sendiri; compact = judul disembunyikan, cari + tutup satu baris.
+		local c = L.compact
+		local sh = Tokens.Size.SearchHeight
+		title.Visible = not c
+		close.Position = if c then UDim2.fromScale(1, 0) else UDim2.new(1, 0, 0, 4)
+		close.Size = if c then UDim2.fromOffset(sh, sh) else UDim2.fromOffset(32, 32)
+		local sTop = if c then 0 else HEADER_H + GAP
+		search.Position = UDim2.fromOffset(0, sTop)
+		search.Size = if c then UDim2.new(1, -(sh + GAP), 0, sh) else UDim2.new(1, 0, 0, sh)
+		local tTop = sTop + sh + (if c then 6 else GAP)
+		tabBar.Position = UDim2.fromOffset(0, tTop)
+		local gTop = tTop + Tokens.Size.TabHeight + 6 + (if c then 4 else GAP)
+		local stH = if c then STATUS_H_COMPACT else STATUS_H
+		grid.Position = UDim2.fromOffset(0, gTop)
+		grid.Size = UDim2.new(1, 0, 1, -gTop - stH)
+		status.Size = UDim2.new(1, -90, 0, stH)
+		status.TextSize = if c then Tokens.TextSize.Caption else Tokens.TextSize.Body
+		retry.Size = UDim2.fromOffset(80, stH - 4)
 	end
-	applyWidth()
-	local cam = Workspace.CurrentCamera
-	if cam then
-		table.insert(conns, cam:GetPropertyChangedSignal("ViewportSize"):Connect(applyWidth))
-	end
+	applyLayout()
+	table.insert(conns, host:GetPropertyChangedSignal("AbsoluteSize"):Connect(applyLayout))
 
 	self._unsubscribe = ctl:onChanged(function(state)
 		self:_render(state)
@@ -480,6 +527,11 @@ function CatalogPanel.setVisible(self: CatalogPanel, visible: boolean)
 	if visible and state.page == 0 and not state.loading then
 		spawnCall(self._props.controller.setCategory, self._props.controller, state.categoryId)
 	end
+end
+
+-- Tata letak terakhir (piksel GUI), dipakai kamera try-on untuk mencari area kosong.
+function CatalogPanel.getLayout(self: CatalogPanel): PanelLayout.Layout
+	return self._layout
 end
 
 function CatalogPanel.isVisible(self: CatalogPanel): boolean

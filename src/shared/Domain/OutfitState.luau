@@ -191,7 +191,11 @@ function OutfitState.wear(
 	return s, nil
 end
 
--- Lepas satu aset (body part/animasi/classic kembali ke baseline).
+-- Lepas satu aset.
+--   aksesori            -> dihapus
+--   body part / animasi -> kembali ke baseline (avatar asal)
+--   classic             -> kembali ke baseline; bila yang dilepas ADALAH item baseline -> kosong (id 0),
+--                          jadi baju/wajah bawaan avatar juga bisa dilepas.
 function OutfitState.remove(state: OutfitState, assetId: number, baseline: OutfitState?): OutfitState
 	local s = deepCopy(state)
 	local key = tostring(assetId)
@@ -201,15 +205,20 @@ function OutfitState.remove(state: OutfitState, assetId: number, baseline: Outfi
 	end
 	for _, pair in
 		{
-			{ s.bodyParts, baseline and baseline.bodyParts },
-			{ s.animations, baseline and baseline.animations },
-			{ s.classic, baseline and baseline.classic },
+			{ s.bodyParts, baseline and baseline.bodyParts, false },
+			{ s.animations, baseline and baseline.animations, false },
+			{ s.classic, baseline and baseline.classic, true },
 		}
 	do
-		local group, base = pair[1], pair[2]
+		local group, base, emptyIfBaseline = pair[1], pair[2], pair[3]
 		for slot, v in group do
 			if v.id == assetId then
-				group[slot] = if base and base[slot] then deepCopy(base[slot]) else { id = 0 }
+				local b = if base then base[slot] else nil
+				if b and not (emptyIfBaseline and b.id == assetId) then
+					group[slot] = deepCopy(b)
+				else
+					group[slot] = { id = 0 }
+				end
 			end
 		end
 	end

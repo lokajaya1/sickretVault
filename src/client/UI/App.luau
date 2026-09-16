@@ -1,18 +1,21 @@
 --!strict
--- Akar UI: ScreenGui + tombol atas (Catalog, Stores) + tombol aksi (Undo/Redo/Reset) + panel katalog.
+-- Akar UI: ScreenGui + tombol atas (Catalog, Stores) + panel katalog + dock (Undo/Redo/Reset + strip Wearing).
 --   local app = App.mount({ onItemActivated = function(item) ... end })
 --   app:toggleCatalog()   app.toast:show("Hello", "info")   app:destroy()
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
 
 local WornItems = require(ReplicatedStorage:WaitForChild("Shared").Domain.WornItems)
 local Tokens = require(script.Parent.Theme.Tokens)
 local CatalogPanel = require(script.Parent.Components.CatalogPanel)
 local Toast = require(script.Parent.Components.Toast)
 local ActionBar = require(script.Parent.Components.ActionBar)
+local WornStrip = require(script.Parent.Components.WornStrip)
 local CatalogController = require(script.Parent.Parent.Controllers.CatalogController)
 local OutfitController = require(script.Parent.Parent.Controllers.OutfitController)
+local TryOnCamera = require(script.Parent.Parent.Controllers.TryOnCamera)
 
 export type Options = {
 	onItemActivated: ((item: any) -> ())?,
@@ -29,7 +32,10 @@ export type App = typeof(setmetatable(
 		panel: CatalogPanel.CatalogPanel,
 		toast: Toast.Toast,
 		actions: ActionBar.ActionBar,
+		strip: WornStrip.WornStrip,
+		camera: TryOnCamera.TryOnCamera,
 		_catalogButton: TextButton,
+		_topBar: Frame,
 		_conns: { RBXScriptConnection },
 	},
 	App
@@ -107,7 +113,7 @@ function App.mount(opts: Options?): App
 	local outfit = OutfitController.new()
 	local self: App
 
-	-- Kanan atas: Undo / Redo / Reset -> diteruskan ke server lewat OutfitController.
+	-- Dock (kiri bawah, dekat avatar): Undo / Redo / Reset -> server lewat OutfitController.
 	local actions = ActionBar.new({
 		parent = gui,
 		onAction = function(op)
@@ -115,7 +121,15 @@ function App.mount(opts: Options?): App
 		end,
 	})
 
-	-- Item katalog yang pernah tampil -> nama/harga untuk tab Wearing.
+	-- Strip item yang sedang dipakai; tap -> Remove.
+	local strip = WornStrip.new({
+		parent = gui,
+		onRemove = function(item)
+			outfit:send({ op = "remove", assetId = item.id })
+		end,
+	})
+
+	-- Item katalog yang pernah tampil -> nama/harga untuk strip Wearing.
 	local known: { [number]: any } = {}
 	local function remember(state: any)
 		for _, item in state.items do
@@ -135,8 +149,29 @@ function App.mount(opts: Options?): App
 		isSelected = function(item)
 			return item.itemType ~= "Bundle" and outfit:isWorn(item.id)
 		end,
-		getWearing = function()
-			return WornItems.list(outfit:getState(), known)
+		-- Link/ID ditempel -> coba pakai (server memvalidasi; gagal -> toast)
+		onLink = function(id, kind)
+			if id == nil then
+				toast:show("That isn't a catalog item link", "warning")
+			elseif kind == "Bundle" then
+				outfit:send({ op = "wearBundle", bundleId = id })
+			else
+				outfit:send({ op = "wear", assetId = id })
+			end
+		end,
+	})
+
+	-- Kamera try-on: karakter di tengah area layar yang tidak tertutup panel.
+	local camera = TryOnCamera.new({
+		getAnchor = function()
+			local cam = Workspace.CurrentCamera
+			local vp = if cam then cam.ViewportSize else Vector2.zero
+			if vp.X <= 0 or vp.Y <= 0 then
+				return 0.5, 0.5
+			end
+			local L = panel:getLayout()
+			local origin = gui.AbsolutePosition -- geser inset topbar Roblox
+			return (origin.X + L.anchorX) / vp.X, (origin.Y + L.anchorY) / vp.Y
 		end,
 	})
 
@@ -147,7 +182,10 @@ function App.mount(opts: Options?): App
 		panel = panel,
 		toast = toast,
 		actions = actions,
+		strip = strip,
+		camera = camera,
 		_catalogButton = catalogButton,
+		_topBar = bar,
 		_conns = {},
 	}, App)
 
@@ -167,17 +205,34 @@ function App.mount(opts: Options?): App
 		end)
 	)
 
+	-- Ukuran layar berubah (putar ponsel / jendela) -> atur ulang tombol atas & bar aksi.
+	table.insert(
+		self._conns,
+		gui:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+			self:_refreshButtons()
+		end)
+	)
+
+	local function refreshStrip()
+		strip:setItems(WornItems.removable(WornItems.list(outfit:getState(), known)))
+	end
+
 	remember(catalog:getState())
-	local unremember = catalog:onChanged(remember)
+	local unremember = catalog:onChanged(function(state)
+		remember(state)
+		refreshStrip() -- nama item bisa bertambah
+	end)
 	table.insert(self._conns, { Disconnect = unremember } :: any)
 
-	-- Outfit berubah (dari server) -> perbarui sorotan kartu / tab Wearing.
+	-- Outfit berubah (dari server) -> perbarui sorotan kartu & strip.
 	local unsubscribe = outfit:onChanged(function()
 		panel:refreshSelection()
+		refreshStrip()
 	end)
 	table.insert(self._conns, { Disconnect = unsubscribe } :: any)
 	task.spawn(outfit.start, outfit) -- yield (GetState)
 
+	refreshStrip()
 	self:_refreshButtons()
 	return self
 end
@@ -186,6 +241,24 @@ function App._refreshButtons(self: App)
 	local open = self.panel:isVisible()
 	self._catalogButton.BackgroundColor3 = if open then Tokens.Color.Accent else Tokens.Color.Panel
 	self._catalogButton.BackgroundTransparency = if open then 0 else Tokens.Transparency.Panel
+	-- Layar pendek (ponsel mendatar) + katalog terbuka: panel setinggi layar -> tombol atas disembunyikan
+	-- (tutup lewat X). Dock (tombol aksi + strip) hanya tampil saat katalog terbuka, di kiri bawah.
+	local L = self.panel:getLayout()
+	self._topBar.Visible = not (open and L.compact)
+	local bar = self.actions.instance
+	bar.Visible = open
+	bar.AnchorPoint = Vector2.zero
+	bar.Position = UDim2.fromOffset(L.dockX, L.dockY)
+	local gap = L.dockH - L.actionsH - L.stripH
+	self.strip:setPlacement(L.dockX, L.dockY + L.actionsH + gap, L.dockW, L.stripH)
+	self.strip:setVisible(open)
+
+	-- Katalog terbuka -> kamera try-on; tertutup -> kamera biasa.
+	if open then
+		self.camera:enable()
+	else
+		self.camera:disable()
+	end
 end
 
 function App.toggleCatalog(self: App)
@@ -197,10 +270,12 @@ function App.destroy(self: App)
 	for _, c in self._conns do
 		c:Disconnect()
 	end
+	self.camera:destroy()
 	self.outfit:stop()
 	self.panel:destroy()
 	self.toast:destroy()
 	self.actions:destroy()
+	self.strip:destroy()
 	self.gui:Destroy()
 end
 
