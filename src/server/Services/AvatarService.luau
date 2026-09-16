@@ -30,6 +30,7 @@ export type Code =
 	| "NOT_IMPLEMENTED"
 	| "NOTHING"
 	| "BAD_OP"
+	| "CHANGED"
 
 export type Deps = {
 	api: any, -- RobloxApi (getDescriptionFromUserId, applyDescription)
@@ -349,6 +350,29 @@ function AvatarService.handle(self: AvatarService, player: any, intent: Types.In
 		return true, nil
 	end
 	return false, "BAD_OP"
+end
+
+-- true bila outfit sekarang tampak sama dengan avatar asli (tidak perlu disimpan).
+function AvatarService.isBaseline(self: AvatarService, player: any): boolean
+	local session = self._sessions[player]
+	return session ~= nil and session.ready and sameLook(session.state, session.baseline)
+end
+
+-- Pasang outfit tersimpan saat join (Undo kembali ke avatar asli).
+-- Hanya bila pemain BELUM mengubah apa pun, supaya data yang telat dimuat tidak menimpa pilihannya.
+function AvatarService.restore(self: AvatarService, player: any, state: State): (boolean, Code?)
+	local session = self._sessions[player]
+	if session == nil or not session.ready then
+		return false, "NOT_READY"
+	end
+	if #session.undo > 0 or #session.redo > 0 or not sameLook(session.state, session.baseline) then
+		return false, "CHANGED"
+	end
+	if sameLook(state, session.state) then
+		return false, "NOTHING"
+	end
+	commit(self, player, session, OutfitState.clone(state))
+	return true, nil
 end
 
 -- ===== Apply (debounce + satu apply per pemain pada satu waktu) =====
