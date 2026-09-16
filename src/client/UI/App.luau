@@ -143,11 +143,26 @@ function App.mount(opts: Options?): App
 		end,
 	})
 
-	-- Strip item yang sedang dipakai; tap -> Remove.
+	-- Strip item yang sedang dipakai; tap -> Remove / Buy; klik kanan / tahan -> detail.
+	-- Part dari bundle (item.source) -> beli / tampilkan bundle-nya.
 	local strip = WornStrip.new({
 		parent = gui,
 		onRemove = function(item)
 			outfit:send({ op = "remove", assetId = item.id })
+		end,
+		onBuy = function(item)
+			if item.source then
+				self:buy(item.source, "Bundle")
+			else
+				self:buy(item.id, "Asset")
+			end
+		end,
+		onInfo = function(item)
+			if item.source then
+				self:openDetail(item.source, "Bundle")
+			else
+				self:openDetail(item.id, "Asset")
+			end
 		end,
 	})
 
