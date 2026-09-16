@@ -143,17 +143,17 @@ function App.mount(opts: Options?): App
 		end,
 	})
 
-	-- Kamera try-on: karakter di tengah area kosong sebelah kanan panel.
+	-- Kamera try-on: karakter di tengah area layar yang tidak tertutup panel.
 	local camera = TryOnCamera.new({
 		getAnchor = function()
 			local cam = Workspace.CurrentCamera
-			local width = if cam then cam.ViewportSize.X else 0
-			if width <= 0 then
-				return 0.7, 0.5
+			local vp = if cam then cam.ViewportSize else Vector2.zero
+			if vp.X <= 0 or vp.Y <= 0 then
+				return 0.5, 0.5
 			end
-			local p = panel.instance
-			local panelRight = p.AbsolutePosition.X + p.AbsoluteSize.X
-			return math.clamp((panelRight + width) / 2 / width, 0.5, 0.95), 0.5
+			local L = panel:getLayout()
+			local origin = gui.AbsolutePosition -- geser inset topbar Roblox
+			return (origin.X + L.anchorX) / vp.X, (origin.Y + L.anchorY) / vp.Y
 		end,
 	})
 

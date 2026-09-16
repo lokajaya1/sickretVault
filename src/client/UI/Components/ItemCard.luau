@@ -1,5 +1,5 @@
 --!strict
--- Kartu item katalog: thumbnail + nama + harga. Ukuran diatur UIGridLayout induknya.
+-- Kartu item katalog: thumbnail + nama + harga + pil "Worn". Ukuran diatur UIGridLayout induknya.
 --   local card = ItemCard.new({ item = item, onActivated = function(item) ... end })
 --   card.instance.Parent = grid
 --   card:setItem(itemLain)   card:setSelected(true)   card:destroy()
@@ -33,6 +33,7 @@ export type ItemCard = typeof(setmetatable(
 		_name: TextLabel,
 		_price: TextLabel,
 		_stroke: UIStroke,
+		_badge: TextLabel,
 		_conn: RBXScriptConnection,
 	},
 	ItemCard
@@ -110,6 +111,31 @@ function ItemCard.new(props: Props): ItemCard
 	price.Size = UDim2.new(1, -pad * 2, 0, 14)
 	price.ZIndex = Tokens.ZIndex.Panel
 
+	-- Penanda "sedang dipakai": pil kecil di pojok kiri atas (bukan garis tepi penuh).
+	local badge = Instance.new("TextLabel")
+	badge.Name = "WornBadge"
+	badge.Text = "Worn"
+	badge.FontFace = Tokens.Font.Bold
+	badge.TextSize = Tokens.TextSize.Caption
+	badge.TextColor3 = Tokens.Color.AccentText
+	badge.BackgroundColor3 = Tokens.Color.Accent
+	badge.BorderSizePixel = 0
+	badge.AutomaticSize = Enum.AutomaticSize.X
+	badge.Size = UDim2.fromOffset(0, 18)
+	badge.Position = UDim2.fromOffset(pad - 2, pad - 2)
+	badge.ZIndex = Tokens.ZIndex.Panel + 1
+	badge.Visible = false
+	badge.Parent = button
+
+	local badgeCorner = Instance.new("UICorner")
+	badgeCorner.CornerRadius = Tokens.Radius.Pill
+	badgeCorner.Parent = badge
+
+	local badgePad = Instance.new("UIPadding")
+	badgePad.PaddingLeft = UDim.new(0, Tokens.Space.S)
+	badgePad.PaddingRight = UDim.new(0, Tokens.Space.S)
+	badgePad.Parent = badge
+
 	local self = setmetatable({
 		instance = button,
 		item = props.item,
@@ -117,6 +143,7 @@ function ItemCard.new(props: Props): ItemCard
 		_name = name,
 		_price = price,
 		_stroke = stroke,
+		_badge = badge,
 		_conn = (nil :: any) :: RBXScriptConnection,
 	}, ItemCard)
 
@@ -141,9 +168,9 @@ function ItemCard.setItem(self: ItemCard, item: Item)
 end
 
 function ItemCard.setSelected(self: ItemCard, selected: boolean)
+	self._badge.Visible = selected
 	self._stroke.Color = if selected then Tokens.Color.Accent else Tokens.Color.Stroke
-	self._stroke.Transparency = if selected then 0 else Tokens.Transparency.Stroke
-	self._stroke.Thickness = if selected then 2 else 1
+	self._stroke.Transparency = if selected then 0.4 else Tokens.Transparency.Stroke
 end
 
 function ItemCard.destroy(self: ItemCard)

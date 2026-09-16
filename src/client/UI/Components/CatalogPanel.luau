@@ -1,13 +1,14 @@
 --!strict
 -- Panel katalog: judul + tutup, kotak cari, tab (Wearing + kategori), grid ItemCard (infinite scroll), status.
+-- Posisi & ukuran dari Shared/Util/PanelLayout: layar lebar -> panel di kanan; ponsel tegak -> panel dari bawah.
 -- Hanya MENAMPILKAN state CatalogController dan meneruskan aksi pemain ke controller.
 --   local panel = CatalogPanel.new({ controller = catalog, parent = screenGui, onItemActivated = fn })
---   panel:setVisible(true)   panel:destroy()
+--   panel:setVisible(true)   panel:getLayout()   panel:destroy()
 -- Tab "Wearing" (bila props.getWearing ada) menampilkan item yang sedang dipakai, bukan hasil katalog.
 
-local Workspace = game:GetService("Workspace")
-
-local Categories = require(game:GetService("ReplicatedStorage"):WaitForChild("Shared").Config.Categories)
+local Shared = game:GetService("ReplicatedStorage"):WaitForChild("Shared")
+local Categories = require(Shared.Config.Categories)
+local PanelLayout = require(Shared.Util.PanelLayout)
 local Tokens = require(script.Parent.Parent.Theme.Tokens)
 local ItemCard = require(script.Parent.ItemCard)
 
@@ -43,6 +44,7 @@ export type CatalogPanel = typeof(setmetatable(
 		_searchToken: number,
 		_lastCount: number,
 		_wearing: boolean,
+		_layout: PanelLayout.Layout,
 	},
 	CatalogPanel
 ))
@@ -96,8 +98,6 @@ function CatalogPanel.new(props: Props): CatalogPanel
 	local root: Frame = make("Frame", {
 		Name = "CatalogPanel",
 		AnchorPoint = Vector2.new(0, 0),
-		Position = UDim2.new(0, Tokens.Space.L, 0, 72),
-		Size = UDim2.new(Tokens.Size.PanelWidth, 0, 1, -72 - Tokens.Space.L),
 		BackgroundColor3 = Tokens.Color.Panel,
 		BackgroundTransparency = Tokens.Transparency.Panel,
 		BorderSizePixel = 0,
@@ -106,10 +106,6 @@ function CatalogPanel.new(props: Props): CatalogPanel
 		Parent = props.parent,
 	}, {
 		corner(Tokens.Radius.Large),
-		make("UISizeConstraint", {
-			MinSize = Vector2.new(Tokens.Size.PanelMinWidth, 0),
-			MaxSize = Vector2.new(Tokens.Size.PanelMaxWidth, math.huge),
-		}),
 		make("UIPadding", {
 			PaddingTop = UDim.new(0, Tokens.Space.M),
 			PaddingBottom = UDim.new(0, Tokens.Space.M),
@@ -241,13 +237,14 @@ function CatalogPanel.new(props: Props): CatalogPanel
 		ZIndex = Tokens.ZIndex.Panel,
 		Parent = root,
 	}, {
-		make("UIGridLayout", {
-			CellSize = UDim2.fromOffset(Tokens.Size.Card.X, Tokens.Size.Card.Y),
-			CellPadding = UDim2.fromOffset(GAP, GAP),
-			SortOrder = Enum.SortOrder.LayoutOrder, -- penting: default bisa urut Name
-			HorizontalAlignment = Enum.HorizontalAlignment.Center,
-		}),
 		make("UIPadding", { PaddingRight = UDim.new(0, 6), PaddingTop = UDim.new(0, 2) }),
+	})
+	local gridLayout: UIGridLayout = make("UIGridLayout", {
+		CellSize = UDim2.fromOffset(Tokens.Size.Card.X, Tokens.Size.Card.Y),
+		CellPadding = UDim2.fromOffset(GAP, GAP),
+		SortOrder = Enum.SortOrder.LayoutOrder, -- penting: default bisa urut Name
+		HorizontalAlignment = Enum.HorizontalAlignment.Center,
+		Parent = grid,
 	})
 
 	-- Status bawah + tombol coba lagi
@@ -290,6 +287,7 @@ function CatalogPanel.new(props: Props): CatalogPanel
 		_searchToken = 0,
 		_lastCount = 0,
 		_wearing = false,
+		_layout = PanelLayout.compute(1280, 720),
 	}, CatalogPanel)
 
 	table.insert(
@@ -343,18 +341,21 @@ function CatalogPanel.new(props: Props): CatalogPanel
 		end)
 	)
 
-	-- Lebar panel: ponsel -> lebih lebar
-	local function applyWidth()
-		local cam = Workspace.CurrentCamera
-		local w = if cam then cam.ViewportSize.X else 1000
-		local scale = if w < Tokens.Breakpoint.Phone then Tokens.PanelWidthPhone else Tokens.Size.PanelWidth
-		root.Size = UDim2.new(scale, 0, 1, -72 - Tokens.Space.L)
+	-- Posisi, ukuran & kolom grid mengikuti ukuran layar (lihat PanelLayout)
+	local host = props.parent :: GuiBase2d
+	local function applyLayout()
+		local size = host.AbsoluteSize
+		if size.X <= 0 or size.Y <= 0 then
+			return
+		end
+		local L = PanelLayout.compute(size.X, size.Y)
+		self._layout = L
+		root.Position = UDim2.fromOffset(L.x, L.y)
+		root.Size = UDim2.fromOffset(L.w, L.h)
+		gridLayout.CellSize = UDim2.fromOffset(L.cellW, L.cellH)
 	end
-	applyWidth()
-	local cam = Workspace.CurrentCamera
-	if cam then
-		table.insert(conns, cam:GetPropertyChangedSignal("ViewportSize"):Connect(applyWidth))
-	end
+	applyLayout()
+	table.insert(conns, host:GetPropertyChangedSignal("AbsoluteSize"):Connect(applyLayout))
 
 	self._unsubscribe = ctl:onChanged(function(state)
 		self:_render(state)
@@ -480,6 +481,11 @@ function CatalogPanel.setVisible(self: CatalogPanel, visible: boolean)
 	if visible and state.page == 0 and not state.loading then
 		spawnCall(self._props.controller.setCategory, self._props.controller, state.categoryId)
 	end
+end
+
+-- Tata letak terakhir (piksel GUI), dipakai kamera try-on untuk mencari area kosong.
+function CatalogPanel.getLayout(self: CatalogPanel): PanelLayout.Layout
+	return self._layout
 end
 
 function CatalogPanel.isVisible(self: CatalogPanel): boolean
