@@ -59,6 +59,16 @@ return function()
 	eq(r2.bodyParts.Head.id, 500, "head bundle tetap")
 	eq(r2.animations.RunAnimation.id, 0, "run dilepas")
 
+	-- 7b. classic: lepas baju coba -> baseline; lepas baju baseline -> kosong (id 0)
+	local cb = OS.empty()
+	cb.classic.Shirt = { id = 888 }
+	local tryOn = OS.clone(cb)
+	tryOn.classic.Shirt = { id = 3 }
+	eq(OS.remove(tryOn, 3, cb).classic.Shirt.id, 888, "baju coba -> baju asal")
+	eq(OS.remove(cb, 888, cb).classic.Shirt.id, 0, "baju asal -> kosong")
+	-- body part baseline tetap tidak bisa dikosongkan
+	eq(OS.remove(base, 111, base).bodyParts.Head.id, 111, "kepala asal tetap")
+
 	-- 8. immutability
 	eq(base.bodyParts.Head.id, 111, "baseline tidak berubah")
 	eq(b.bodyParts.Head.id, 500, "state lama tidak berubah setelah remove")
