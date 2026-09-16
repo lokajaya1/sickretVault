@@ -13,6 +13,7 @@ local IntentValidator = require(script.Validators.IntentValidator)
 local RobloxApi = require(script.Gateways.RobloxApi)
 local CatalogService = require(script.Services.CatalogService)
 local ItemInfoService = require(script.Services.ItemInfoService)
+local BundleService = require(script.Services.BundleService)
 local AvatarService = require(script.Services.AvatarService)
 local AvatarRules = require(script.Services.AvatarRules)
 local Inspect = require(script.Dev.Inspect)
@@ -27,6 +28,7 @@ local api = RobloxApi.new()
 local catalog = CatalogService.new({ api = api })
 local itemInfo = ItemInfoService.new({ api = api })
 local rules = AvatarRules.new({ api = api }) -- batas per tipe (Hat=3, lainnya 1)
+local bundles = BundleService.new({ api = api, itemInfo = itemInfo }) -- detail bundle (part + skala)
 
 local stateChanged = Remotes.event(RemoteNames.Events.StateChanged)
 local notify = Remotes.event(RemoteNames.Events.Notify)
@@ -35,6 +37,7 @@ local avatar = AvatarService.new({
 	api = api,
 	itemInfo = itemInfo,
 	rules = rules,
+	bundles = bundles,
 	onState = function(player: Player, state)
 		if player.Parent == Players then
 			stateChanged:FireClient(player, state)
@@ -51,6 +54,7 @@ local avatar = AvatarService.new({
 local intentLimiter = RateLimiter.fromLimits(RemoteNames.Events.AvatarIntent)
 local searchLimiter = RateLimiter.fromLimits(RemoteNames.Functions.CatalogSearch)
 local stateLimiter = RateLimiter.fromLimits(RemoteNames.Functions.GetState)
+local bundleLimiter = RateLimiter.fromLimits(RemoteNames.Functions.GetBundle)
 
 -- 4. AvatarIntent: rate limit -> validasi -> AvatarService. Gagal -> Notify { code, op }.
 Remotes.event(RemoteNames.Events.AvatarIntent).OnServerEvent:Connect(function(player: Player, raw: any)
@@ -104,6 +108,25 @@ Remotes.func(RemoteNames.Functions.CatalogSearch).OnServerInvoke = function(play
 	return res
 end
 
+-- 5a. GetBundle: detail bundle (daftar part) untuk panel pilih part (UI menyusul).
+Remotes.func(RemoteNames.Functions.GetBundle).OnServerInvoke = function(player: Player, raw: any)
+	if not bundleLimiter:take(player.UserId) then
+		return { ok = false, code = "RATE_LIMITED" }
+	end
+	if type(raw) ~= "number" or raw <= 0 or raw % 1 ~= 0 or raw > 2 ^ 53 then
+		return { ok = false, code = "BAD_ARG" }
+	end
+	local pOk, ok, res = pcall(bundles.get, bundles, raw)
+	if not pOk then
+		log.error("GetBundle error", ok, player.Name)
+		return { ok = false, code = "FAILED" }
+	end
+	if not ok then
+		return { ok = false, code = res.code }
+	end
+	return { ok = true, bundle = res }
+end
+
 -- 5b. Sesi avatar per pemain. attach yield (ambil avatar asli) -> task.spawn.
 local function onPlayerAdded(player: Player)
 	local ok, err = pcall(avatar.attach, avatar, player)
@@ -121,6 +144,7 @@ Players.PlayerRemoving:Connect(function(player: Player)
 	intentLimiter:reset(player.UserId)
 	searchLimiter:reset(player.UserId)
 	stateLimiter:reset(player.UserId)
+	bundleLimiter:reset(player.UserId)
 end)
 
 -- Ambil rules avatar sekali di awal supaya klik pertama tidak menunggu.
