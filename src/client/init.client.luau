@@ -41,7 +41,6 @@ local app: App.App
 app = App.mount({
 	onItemActivated = function(item)
 		log.info("pilih", item.itemType, item.id, item.name)
-		app.outfit:toggle(item)
 	end,
 })
 

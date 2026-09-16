@@ -1,7 +1,7 @@
 --!strict
--- Akar UI: ScreenGui + tombol atas (Catalog, Stores) + panel katalog + dock (Undo/Redo/Reset + strip Wearing).
---   local app = App.mount({ onItemActivated = function(item) ... end })
---   app:toggleCatalog()   app.toast:show("Hello", "info")   app:destroy()
+-- Akar UI: ScreenGui + tombol atas (Catalog, Stores) + panel katalog + panel detail + dock (Undo/Redo/Reset + strip Wearing).
+--   local app = App.mount({ onItemActivated = function(item) ... end })  -- hook tambahan (log); tap kartu selalu buka detail
+--   app:toggleCatalog()   app:openDetail(id, "Asset")   app.toast:show("Hello", "info")   app:destroy()
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -13,8 +13,10 @@ local CatalogPanel = require(script.Parent.Components.CatalogPanel)
 local Toast = require(script.Parent.Components.Toast)
 local ActionBar = require(script.Parent.Components.ActionBar)
 local WornStrip = require(script.Parent.Components.WornStrip)
+local ItemDetailPanel = require(script.Parent.Components.ItemDetailPanel)
 local CatalogController = require(script.Parent.Parent.Controllers.CatalogController)
 local OutfitController = require(script.Parent.Parent.Controllers.OutfitController)
+local DetailController = require(script.Parent.Parent.Controllers.DetailController)
 local TryOnCamera = require(script.Parent.Parent.Controllers.TryOnCamera)
 
 export type Options = {
@@ -29,7 +31,9 @@ export type App = typeof(setmetatable(
 		gui: ScreenGui,
 		catalog: CatalogController.CatalogController,
 		outfit: OutfitController.OutfitController,
+		detail: DetailController.DetailController,
 		panel: CatalogPanel.CatalogPanel,
+		detailPanel: ItemDetailPanel.ItemDetailPanel,
 		toast: Toast.Toast,
 		actions: ActionBar.ActionBar,
 		strip: WornStrip.WornStrip,
@@ -111,6 +115,7 @@ function App.mount(opts: Options?): App
 
 	local catalog = CatalogController.new()
 	local outfit = OutfitController.new()
+	local detail = DetailController.new()
 	local self: App
 
 	-- Dock (kiri bawah, dekat avatar): Undo / Redo / Reset -> server lewat OutfitController.
@@ -142,21 +147,48 @@ function App.mount(opts: Options?): App
 	local panel = CatalogPanel.new({
 		controller = catalog,
 		parent = gui,
-		onItemActivated = o.onItemActivated,
+		-- Tap kartu -> buka panel detail (Try On ada di panel)
+		onItemActivated = function(item)
+			self:openDetail(item.id, item.itemType)
+			if o.onItemActivated then
+				o.onItemActivated(item)
+			end
+		end,
 		onClose = function()
 			self:_refreshButtons()
 		end,
 		isSelected = function(item)
 			return if item.itemType == "Bundle" then outfit:isBundleWorn(item.id) else outfit:isWorn(item.id)
 		end,
-		-- Link/ID ditempel -> coba pakai (server memvalidasi; gagal -> toast)
+		-- Link/ID ditempel -> buka panel detail (server memvalidasi; gagal -> pesan di panel)
 		onLink = function(id, kind)
 			if id == nil then
 				toast:show("That isn't a catalog item link", "warning")
-			elseif kind == "Bundle" then
-				outfit:send({ op = "wearBundle", bundleId = id })
 			else
-				outfit:send({ op = "wear", assetId = id })
+				self:openDetail(id, kind or "Asset")
+			end
+		end,
+	})
+
+	-- Panel detail: menutupi isi panel katalog.
+	local detailPanel = ItemDetailPanel.new({
+		parent = panel.instance,
+		controller = detail,
+		isWorn = function(d)
+			return if d.itemType == "Bundle" then outfit:isBundleWorn(d.id) else outfit:isWorn(d.id)
+		end,
+		isPartWorn = function(assetId)
+			return outfit:isWorn(assetId)
+		end,
+		onToggle = function(d)
+			outfit:toggle({ id = d.id, itemType = d.itemType })
+		end,
+		-- Tap part bundle: sedang dipakai -> lepas part itu; belum -> pakai part itu saja.
+		onPartActivated = function(part, d)
+			if outfit:isWorn(part.assetId) then
+				outfit:send({ op = "remove", assetId = part.assetId })
+			else
+				outfit:send({ op = "wearBundle", bundleId = d.id, partIds = { part.assetId } })
 			end
 		end,
 	})
@@ -179,7 +211,9 @@ function App.mount(opts: Options?): App
 		gui = gui,
 		catalog = catalog,
 		outfit = outfit,
+		detail = detail,
 		panel = panel,
+		detailPanel = detailPanel,
 		toast = toast,
 		actions = actions,
 		strip = strip,
@@ -224,9 +258,20 @@ function App.mount(opts: Options?): App
 	end)
 	table.insert(self._conns, { Disconnect = unremember } :: any)
 
-	-- Outfit berubah (dari server) -> perbarui sorotan kartu & strip.
+	-- Detail aset termuat -> nama/harga juga dikenal strip (mis. item dari paste link).
+	local unDetail = detail:onChanged(function(state)
+		local d = state.detail
+		if d and d.itemType == "Asset" and known[d.id] == nil then
+			known[d.id] = d
+			refreshStrip()
+		end
+	end)
+	table.insert(self._conns, { Disconnect = unDetail } :: any)
+
+	-- Outfit berubah (dari server) -> perbarui sorotan kartu, panel detail & strip.
 	local unsubscribe = outfit:onChanged(function()
 		panel:refreshSelection()
+		detailPanel:refreshWorn()
 		refreshStrip()
 	end)
 	table.insert(self._conns, { Disconnect = unsubscribe } :: any)
@@ -239,6 +284,9 @@ end
 
 function App._refreshButtons(self: App)
 	local open = self.panel:isVisible()
+	if not open then
+		self.detail:close() -- katalog ditutup (X / tombol / C) -> detail ikut tertutup
+	end
 	self._catalogButton.BackgroundColor3 = if open then Tokens.Color.Accent else Tokens.Color.Panel
 	self._catalogButton.BackgroundTransparency = if open then 0 else Tokens.Transparency.Panel
 	-- Layar pendek (ponsel mendatar) + katalog terbuka: panel setinggi layar -> tombol atas disembunyikan
@@ -266,12 +314,23 @@ function App.toggleCatalog(self: App)
 	self:_refreshButtons()
 end
 
+-- Buka panel detail (katalog dibuka dulu bila tertutup). Memuat di thread baru (remote yield).
+function App.openDetail(self: App, id: number, itemType: string)
+	if not self.panel:isVisible() then
+		self.panel:setVisible(true)
+		self:_refreshButtons()
+	end
+	task.spawn(self.detail.open, self.detail, id, itemType)
+end
+
 function App.destroy(self: App)
 	for _, c in self._conns do
 		c:Disconnect()
 	end
 	self.camera:destroy()
 	self.outfit:stop()
+	self.detailPanel:destroy()
+	self.detail:close()
 	self.panel:destroy()
 	self.toast:destroy()
 	self.actions:destroy()
