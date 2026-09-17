@@ -7,6 +7,7 @@
 --   wardrobe:wear(id) / overwrite(id) / rename(id, name) / delete(id) / favorite(id, bool)
 --   wardrobe:setRestoreOutfit(bool)                                                         -- YIELD
 --   wardrobe:setSort("az")   wardrobe:setQuery("pesta")  -- tanpa server; snap.visible = hasil cari + urut
+--   local ok, data = wardrobe:items(id)         -- YIELD; { items = { {id,name,price,...} }, total, missing }
 -- Semua aksi YIELD (InvokeServer) -> panggil dari task.spawn di UI.
 -- Satu aksi pada satu waktu (busy); aksi lain saat busy -> (false, "BUSY") tanpa memanggil server.
 -- Kode gagal: kode server (NOT_LOADED, FULL, FILTERED, ...) atau "NETWORK" (invoke error).
@@ -64,12 +65,20 @@ export type WardrobeController = typeof(setmetatable(
 		_restore: boolean?,
 		_sortKey: string,
 		_query: string,
+		_items: { [string]: any },
+		_itemsBusy: { [string]: boolean },
 		_listeners: { (Snapshot) -> () },
 	},
 	WardrobeController
 ))
 
 local DEFAULT_MAX = 30
+local ITEMS_CACHE_MAX = 20
+
+-- Kunci cache detail item: ikut updatedAt supaya "update" otomatis memuat ulang.
+local function itemsKey(o: Summary): string
+	return ("%d:%d"):format(o.id, o.updatedAt)
+end
 
 local function defaultInvoke(request: { [string]: any }): any
 	local Remotes = require(Shared.Net.Remotes)
@@ -90,6 +99,8 @@ function WardrobeController.new(invoke: Invoke?): WardrobeController
 		_restore = nil,
 		_sortKey = OutfitSort.DEFAULT,
 		_query = "",
+		_items = {},
+		_itemsBusy = {},
 		_listeners = {},
 	}, WardrobeController)
 end
@@ -254,6 +265,52 @@ function WardrobeController.setQuery(self: WardrobeController, query: string)
 		self._query = q
 		self:_emit()
 	end
+end
+
+-- Detail item yang sudah pernah dimuat (tanpa memanggil server). nil = belum ada.
+function WardrobeController.itemsCached(self: WardrobeController, id: number): any?
+	local o = self:get(id)
+	if o == nil then
+		return nil
+	end
+	return self._items[itemsKey(o)]
+end
+
+-- YIELD. Nama & harga item di dalam satu outfit (untuk halaman detail).
+-- Return (true, { items, total, missing }) | (false, kode). Hasil di-cache per "<id>:<updatedAt>".
+function WardrobeController.items(self: WardrobeController, id: number): (boolean, any)
+	local o = self:get(id)
+	if o == nil then
+		return false, "NOT_FOUND"
+	end
+	local key = itemsKey(o)
+	local hit = self._items[key]
+	if hit ~= nil then
+		return true, hit
+	end
+	if self._itemsBusy[key] then
+		return false, "BUSY"
+	end
+	self._itemsBusy[key] = true
+	local res, code = self:_call({ op = "items", id = id })
+	self._itemsBusy[key] = nil
+	if res == nil then
+		return false, code or "FAILED"
+	end
+	local data = {
+		items = if type(res.items) == "table" then res.items else {},
+		total = if type(res.total) == "number" then res.total else 0,
+		missing = if type(res.missing) == "number" then res.missing else 0,
+	}
+	local n = 0
+	for _ in self._items do
+		n += 1
+	end
+	if n >= ITEMS_CACHE_MAX then
+		table.clear(self._items)
+	end
+	self._items[key] = data
+	return true, data
 end
 
 -- Setting "pakai outfit terakhir saat join".
