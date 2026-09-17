@@ -76,5 +76,28 @@ return function()
 	assert(tiny.w > 0 and tiny.h > 0 and tiny.cellW > 0, "layar kecil aman")
 	assert(tiny.dockW >= 0 and tiny.dockY >= 0, "dock layar kecil aman")
 
+	-- 7. mozaik menu kategori: 4 kolom bila panel cukup lebar, 2 kolom bila sempit
+	local wide = 736 -- isi panel desktop (760 - PADDING*2)
+	eq(P.mosaicNarrow(wide), false, "panel lebar = 4 kolom")
+	eq(P.mosaicNarrow(393), true, "tepat di bawah ambang = 2 kolom")
+	eq(P.mosaicNarrow(394), false, "tepat di ambang = 4 kolom")
+	eq(P.mosaicNarrow(0), true, "lebar 0 = 2 kolom (tanpa error)")
+
+	-- 8. unit mozaik: muat mendatar, tidak lebih jangkung dari lebarnya, canvas sesuai rumus
+	local uw, uh, total = P.mosaic(wide, 900, 4, 4)
+	assert(uw * 4 + P.MOSAIC_GAP * 3 <= wide - P.SCROLLBAR, "mozaik muat mendatar")
+	eq(uh, uw, "panel tinggi: unit dibatasi lebarnya (kartu tidak jangkung)")
+	eq(total, uh * 4 + P.MOSAIC_GAP * 3, "tinggi canvas mozaik")
+	assert(total <= 900, "panel tinggi: mozaik tidak perlu digulir")
+
+	-- 9. panel pendek: unit tidak lebih kecil dari batas minimum -> mozaik digulir
+	local _, shortH, shortTotal = P.mosaic(376, 120, 2, 6)
+	eq(shortH, P.MOSAIC_MIN_UNIT, "panel pendek: tinggi unit minimum")
+	assert(shortTotal > 120, "panel pendek: mozaik lebih tinggi dari panel (digulir)")
+
+	-- 10. ukuran aneh tidak bikin error / nilai negatif
+	local tw, th, tt = P.mosaic(0, 0, 0, 0)
+	assert(tw > 0 and th > 0 and tt > 0, "mozaik ukuran 0 aman")
+
 	print("PASS PanelLayout.spec")
 end
