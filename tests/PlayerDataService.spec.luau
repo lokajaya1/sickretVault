@@ -7,6 +7,7 @@ local PlayerDataService = require(ServerScriptService:WaitForChild("Server").Ser
 local Shared = game:GetService("ReplicatedStorage"):WaitForChild("Shared")
 local PlayerData = require(Shared.Domain.PlayerData)
 local Wardrobe = require(Shared.Domain.Wardrobe)
+local OutfitFolders = require(Shared.Domain.OutfitFolders)
 local OS = require(Shared.Domain.OutfitState)
 local Log = require(Shared.Util.Log)
 
@@ -317,6 +318,63 @@ return function()
 		svc:favoriteOutfit(p, a.id, false)
 		eq(entry.u, 1, "favorit tidak memperbarui u")
 		eq(entry.f, nil, "favorit dihapus")
+	end
+
+	-- 15. folder: buat, ganti nama, isi, hapus
+	do
+		local svc, t = setup()
+		local p = player("P", 22)
+		eq(select(2, svc:listFolders(p)), "NOT_LOADED", "folder sebelum load")
+		eq(svc:folderSlotInfo(p), nil, "slot info sebelum load")
+		svc:load(p)
+		eq(#svc:listFolders(p), 0, "belum ada folder")
+		eq(svc:folderSlotInfo(p), false, "belum penuh")
+		local fid = svc:addFolder(p, "Pesta")
+		eq(fid, 1, "id folder pertama")
+		eq(select(2, svc:addFolder(p, "pesta")), "DUPLICATE", "nama ganda")
+		eq(svc:renameFolder(p, fid, "Pesta Malam"), true, "ganti nama")
+		eq(select(2, svc:renameFolder(p, 99, "X")), "NOT_FOUND", "folder tidak ada")
+
+		local a = svc:addOutfit(p, "A", OS.empty())
+		local b = svc:addOutfit(p, "B", OS.empty())
+		assert(a and b, "add outfit")
+		eq(svc:setOutfitFolders(p, a.id, { fid }), true, "set folder outfit")
+		eq(select(2, svc:setOutfitFolders(p, a.id, { 99 })), "BAD_ARG", "folder tidak ada")
+		eq(svc:listOutfits(p)[2].folders[1], fid, "summary membawa folder")
+		eq(svc:listFolders(p)[1].count, 1, "jumlah outfit di folder")
+
+		local res = svc:applyFolder(p, { a.id, b.id }, fid, true)
+		assert(res, "applyFolder")
+		eq(res.changed, 1, "hanya B yang berubah")
+		eq(svc:listFolders(p)[1].count, 2, "dua outfit di folder")
+		eq(select(2, svc:applyFolder(p, { a.id }, 99, true)), "NOT_FOUND", "folder tidak ada")
+
+		eq(svc:deleteFolder(p, fid), true, "hapus folder")
+		eq(#svc:listFolders(p), 0, "folder hilang")
+		eq(#t.profile.Data.outfits, 2, "outfit tetap ada")
+		eq(t.profile.Data.outfits[1].g, nil, "outfit dilepas dari folder")
+	end
+
+	-- 16. hapus banyak outfit sekaligus & batas folder
+	do
+		local svc = setup()
+		local p = player("Q", 23)
+		eq(select(2, svc:deleteOutfits(p, { 1 })), "NOT_LOADED", "bulk sebelum load")
+		svc:load(p)
+		local ids = {}
+		for i = 1, 4 do
+			local o = svc:addOutfit(p, "O" .. i, OS.empty())
+			assert(o, "add")
+			ids[i] = o.id
+		end
+		eq(svc:deleteOutfits(p, { ids[1], ids[2], ids[2], 999 }), 2, "id ganda & hilang dilewati")
+		eq(#svc:listOutfits(p), 2, "sisa 2")
+
+		for i = 1, OutfitFolders.MAX_FOLDERS do
+			assert(svc:addFolder(p, "F" .. i), "folder " .. i)
+		end
+		eq(svc:folderSlotInfo(p), true, "folder penuh")
+		eq(select(2, svc:addFolder(p, "Lagi")), "FULL", "FULL")
 	end
 
 	print("PASS PlayerDataService.spec")

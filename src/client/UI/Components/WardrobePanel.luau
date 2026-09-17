@@ -6,11 +6,12 @@
 --   	onBack = function() ... end,                       -- tombol X
 --   })
 --   panel:setOpen(true)   panel:isOpen()   panel:destroy()
--- Isi: Search + X; tab "All" + dropdown sort; grid kartu (kartu pertama "+" = simpan outfit sekarang);
--- Kartu punya ikon hapus (dua tap) selain bintang favorit.
--- Tombol "+" membuka dialog nama dulu (boleh dikosongkan -> server memberi nama "Outfit N").
+-- Isi: Search + X; baris tab folder (All / Not In Any Folders / folder pemain / ＋ kelola) + dropdown sort;
+-- grid kartu (kartu pertama "+" = simpan outfit sekarang); tombol "Select Outfits" di kanan bawah;
 -- bawah: toggle "Wear last outfit when joining". Tap kartu -> WEAR / VIEW; VIEW -> OutfitDetailSheet.
--- Folder & "Select Outfits" menyusul di PR berikutnya (lihat claude/Pedoman_Layout_CAC.md).
+-- Mode "Select Outfits": kartu jadi kotak centang, bar bawah = jumlah terpilih + Move / Delete / Cancel.
+-- Dialog nama (NamePrompt) dipakai ulang: simpan outfit, folder baru, ganti nama folder.
+-- Dialog folder (FolderDialog): "manage" (kelola), "set" (Modify Folders satu outfit), "pick" (pindah massal).
 -- Kartu dipakai ulang selama id & updatedAt sama supaya model 3D tidak dibuat ulang.
 
 local Shared = game:GetService("ReplicatedStorage"):WaitForChild("Shared")
@@ -18,6 +19,8 @@ local OutfitSort = require(Shared.Domain.OutfitSort)
 local Tokens = require(script.Parent.Parent.Theme.Tokens)
 local OutfitCard = require(script.Parent.OutfitCard)
 local OutfitDetailSheet = require(script.Parent.OutfitDetailSheet)
+local FolderDialog = require(script.Parent.FolderDialog)
+local NamePrompt = require(script.Parent.NamePrompt)
 
 local SEARCH_H = 36
 local TABS_H = 30
@@ -25,12 +28,13 @@ local FOOTER_H = 32
 local CLOSE_W = 36
 local SORT_W = 168
 local SWITCH_W = 52
+local SELECT_W = 124
+local SELECT_H = 30
+local ACTION_W = 70
 local CELL_MIN = 132 -- lebar kartu minimum -> jumlah kolom menyesuaikan lebar panel
 local CELL_RATIO = 1.32 -- tinggi kartu = lebar * rasio
 local SEARCH_DEBOUNCE = 0.25
-local PROMPT_W = 320
-local PROMPT_H = 168
-local MAX_NAME = 32 -- sama dengan Wardrobe.MAX_NAME (server tetap memvalidasi)
+local CONFIRM_SECONDS = 3
 local Z = Tokens.ZIndex.Panel + 4 -- di atas isi katalog, di bawah ItemDetailPanel (+5)
 
 export type Props = {
@@ -50,19 +54,32 @@ export type WardrobePanel = typeof(setmetatable(
 		instance: Frame,
 		_props: Props,
 		_search: TextBox,
+		_tabs: ScrollingFrame,
+		_tabSig: string,
+		_tabButtons: { [string]: TextButton },
+		_tabConns: { RBXScriptConnection },
 		_sortButton: TextButton,
 		_sortMenu: Frame,
 		_grid: ScrollingFrame,
 		_layout: UIGridLayout,
 		_add: TextButton,
-		_prompt: TextButton,
-		_promptBox: TextBox,
 		_status: Frame,
 		_statusTitle: TextLabel,
 		_statusHint: TextLabel,
 		_retry: TextButton,
+		_footer: Frame,
 		_switch: TextButton,
 		_knob: Frame,
+		_selectButton: TextButton,
+		_selectBar: Frame,
+		_selectLabel: TextLabel,
+		_selectDelete: TextButton,
+		_selecting: boolean,
+		_selected: { [number]: boolean },
+		_deleteConfirm: boolean,
+		_confirmToken: number,
+		_prompt: NamePrompt.NamePrompt,
+		_dialog: FolderDialog.FolderDialog,
 		_sheet: OutfitDetailSheet.OutfitDetailSheet,
 		_cards: { [number]: any }, -- id -> OutfitCard
 		_cardKey: { [number]: string }, -- id -> "<updatedAt>"
@@ -129,12 +146,6 @@ local function button(text: string, props: { [string]: any }): TextButton
 	return make("TextButton", base, { corner(Tokens.Radius.Pill) })
 end
 
--- Teks kotak nama -> nil bila kosong (server yang memberi nama bawaan).
-local function cleanName(text: string): string?
-	local trimmed = string.match(text, "^%s*(.-)%s*$") or ""
-	return if trimmed == "" then nil else trimmed
-end
-
 function WardrobePanel.new(props: Props): WardrobePanel
 	local pad = Tokens.Space.M
 	local gap = Tokens.Space.S
@@ -199,17 +210,28 @@ function WardrobePanel.new(props: Props): WardrobePanel
 		Parent = root,
 	})
 
-	-- Baris 2: tab "All" (folder menyusul) + dropdown sort
+	-- Baris 2: tab folder (geser mendatar) + dropdown sort
 	local tabsTop = SEARCH_H + gap
-	-- Tab folder: sementara hanya "All" (folder menyusul di PR berikutnya)
-	button("All", {
-		Name = "TabAll",
+	local tabs: ScrollingFrame = make("ScrollingFrame", {
+		Name = "Tabs",
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
 		Position = UDim2.fromOffset(0, tabsTop),
-		Size = UDim2.fromOffset(64, TABS_H),
-		BackgroundColor3 = Tokens.Color.Accent,
-		BackgroundTransparency = 0,
-		TextColor3 = Tokens.Color.AccentText,
+		Size = UDim2.new(1, -(SORT_W + gap), 0, TABS_H),
+		CanvasSize = UDim2.new(),
+		AutomaticCanvasSize = Enum.AutomaticSize.X,
+		ScrollingDirection = Enum.ScrollingDirection.X,
+		ScrollBarThickness = 0,
+		ClipsDescendants = true,
+		ZIndex = Z,
 		Parent = root,
+	}, {
+		make("UIListLayout", {
+			FillDirection = Enum.FillDirection.Horizontal,
+			SortOrder = Enum.SortOrder.LayoutOrder,
+			VerticalAlignment = Enum.VerticalAlignment.Center,
+			Padding = UDim.new(0, gap / 2),
+		}),
 	})
 	local sortButton = button("Recently Updated ▼", {
 		Name = "Sort",
@@ -301,6 +323,20 @@ function WardrobePanel.new(props: Props): WardrobePanel
 		Parent = status,
 	})
 
+	-- Tombol mengambang "Select Outfits" (kanan bawah, di atas grid)
+	local selectButton = button("Select Outfits", {
+		Name = "SelectOutfits",
+		AnchorPoint = Vector2.new(1, 1),
+		Position = UDim2.new(1, 0, 1, -(FOOTER_H + gap)),
+		Size = UDim2.fromOffset(SELECT_W, SELECT_H),
+		TextSize = Tokens.TextSize.Caption,
+		BackgroundColor3 = Tokens.Color.Background,
+		BackgroundTransparency = 0.1,
+		Visible = false,
+		ZIndex = Z + 2,
+		Parent = root,
+	})
+
 	-- Bawah: toggle "pakai outfit terakhir saat join"
 	local footer: Frame = make("Frame", {
 		Name = "Footer",
@@ -335,6 +371,67 @@ function WardrobePanel.new(props: Props): WardrobePanel
 		Parent = switch,
 	}, { corner(Tokens.Radius.Pill) })
 
+	-- Bar mode pilih (menggantikan footer selama memilih)
+	local selectBar: Frame = make("Frame", {
+		Name = "SelectBar",
+		BackgroundTransparency = 1,
+		AnchorPoint = Vector2.new(0, 1),
+		Position = UDim2.fromScale(0, 1),
+		Size = UDim2.new(1, 0, 0, FOOTER_H),
+		Visible = false,
+		ZIndex = Z + 2,
+		Parent = root,
+	})
+	local selectLabel = label({
+		Name = "Count",
+		Text = "0 selected",
+		FontFace = Tokens.Font.Bold,
+		Size = UDim2.new(1, -(ACTION_W * 3 + gap * 2), 1, 0),
+		ZIndex = Z + 2,
+		Parent = selectBar,
+	})
+	local selectActions: Frame = make("Frame", {
+		Name = "Actions",
+		BackgroundTransparency = 1,
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.fromScale(1, 0.5),
+		Size = UDim2.new(0, ACTION_W * 3 + gap, 0, SELECT_H),
+		ZIndex = Z + 2,
+		Parent = selectBar,
+	}, {
+		make("UIListLayout", {
+			FillDirection = Enum.FillDirection.Horizontal,
+			HorizontalAlignment = Enum.HorizontalAlignment.Right,
+			SortOrder = Enum.SortOrder.LayoutOrder,
+			Padding = UDim.new(0, gap / 2),
+		}),
+	})
+	local selectMove = button("Move…", {
+		Name = "Move",
+		LayoutOrder = 1,
+		Size = UDim2.fromOffset(ACTION_W, SELECT_H),
+		TextSize = Tokens.TextSize.Caption,
+		ZIndex = Z + 2,
+		Parent = selectActions,
+	})
+	local selectDelete = button("Delete", {
+		Name = "Delete",
+		LayoutOrder = 2,
+		Size = UDim2.fromOffset(ACTION_W, SELECT_H),
+		TextSize = Tokens.TextSize.Caption,
+		TextColor3 = Tokens.Color.Danger,
+		ZIndex = Z + 2,
+		Parent = selectActions,
+	})
+	local selectCancel = button("Cancel", {
+		Name = "Cancel",
+		LayoutOrder = 3,
+		Size = UDim2.fromOffset(ACTION_W, SELECT_H),
+		TextSize = Tokens.TextSize.Caption,
+		ZIndex = Z + 2,
+		Parent = selectActions,
+	})
+
 	-- Menu sort (di atas grid)
 	local sortMenu: Frame = make("Frame", {
 		Name = "SortMenu",
@@ -352,122 +449,71 @@ function WardrobePanel.new(props: Props): WardrobePanel
 		make("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder }),
 	})
 
-	-- Dialog nama (muncul saat kartu "+" ditekan)
-	local prompt: TextButton = make("TextButton", {
-		Name = "NamePrompt",
-		Text = "",
-		AutoButtonColor = false,
-		BackgroundColor3 = Tokens.Color.Background,
-		BackgroundTransparency = Tokens.Transparency.Overlay,
-		BorderSizePixel = 0,
-		Visible = false,
-		Position = UDim2.fromOffset(-pad, -pad),
-		Size = UDim2.new(1, pad * 2, 1, pad * 2),
-		ZIndex = Z + 6,
-		Parent = root,
-	}, { corner(Tokens.Radius.Large) })
-	-- TextButton (bukan Frame) supaya klik di dalam kartu tidak menutup dialog.
-	local promptCard: TextButton = make("TextButton", {
-		Name = "Card",
-		Text = "",
-		AutoButtonColor = false,
-		BackgroundColor3 = Tokens.Color.Panel,
-		BorderSizePixel = 0,
-		AnchorPoint = Vector2.new(0.5, 0.5),
-		Position = UDim2.fromScale(0.5, 0.5),
-		Size = UDim2.new(0.9, 0, 0, PROMPT_H),
-		ZIndex = Z + 7,
-		Parent = prompt,
-	}, {
-		corner(Tokens.Radius.Large),
-		make("UISizeConstraint", { MaxSize = Vector2.new(PROMPT_W, PROMPT_H) }),
-		make("UIPadding", {
-			PaddingTop = UDim.new(0, pad),
-			PaddingBottom = UDim.new(0, pad),
-			PaddingLeft = UDim.new(0, pad),
-			PaddingRight = UDim.new(0, pad),
-		}),
-		make("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, gap) }),
-	})
-	label({
-		Name = "PromptTitle",
-		Text = "Save current outfit",
-		FontFace = Tokens.Font.Bold,
-		TextSize = Tokens.TextSize.Title,
-		TextXAlignment = Enum.TextXAlignment.Center,
-		LayoutOrder = 1,
-		Size = UDim2.new(1, 0, 0, 26),
-		ZIndex = Z + 7,
-		Parent = promptCard,
-	})
-	label({
-		Name = "PromptHint",
-		Text = "Kosongkan untuk nama otomatis.",
-		TextSize = Tokens.TextSize.Caption,
-		TextColor3 = Tokens.Color.TextMuted,
-		TextXAlignment = Enum.TextXAlignment.Center,
-		LayoutOrder = 2,
-		Size = UDim2.new(1, 0, 0, 18),
-		ZIndex = Z + 7,
-		Parent = promptCard,
-	})
-	local promptBox: TextBox = make("TextBox", {
-		Name = "PromptName",
-		Text = "",
-		PlaceholderText = "Outfit name",
-		ClearTextOnFocus = false,
-		FontFace = Tokens.Font.Regular,
-		TextSize = Tokens.TextSize.Body,
-		TextColor3 = Tokens.Color.Text,
-		PlaceholderColor3 = Tokens.Color.TextMuted,
-		TextXAlignment = Enum.TextXAlignment.Left,
-		TextTruncate = Enum.TextTruncate.AtEnd,
-		BackgroundColor3 = Tokens.Color.PanelRaised,
-		BackgroundTransparency = Tokens.Transparency.PanelRaised,
-		BorderSizePixel = 0,
-		LayoutOrder = 3,
-		Size = UDim2.new(1, 0, 0, 34),
-		ZIndex = Z + 7,
-		Parent = promptCard,
-	}, {
-		corner(Tokens.Radius.Pill),
-		make("UIPadding", { PaddingLeft = UDim.new(0, Tokens.Space.M), PaddingRight = UDim.new(0, Tokens.Space.M) }),
-	})
-	local promptRow: Frame = make("Frame", {
-		Name = "PromptActions",
-		BackgroundTransparency = 1,
-		LayoutOrder = 4,
-		Size = UDim2.new(1, 0, 0, 34),
-		ZIndex = Z + 7,
-		Parent = promptCard,
-	}, {
-		make("UIListLayout", {
-			FillDirection = Enum.FillDirection.Horizontal,
-			SortOrder = Enum.SortOrder.LayoutOrder,
-			Padding = UDim.new(0, gap),
-		}),
-	})
-	local promptHalf = UDim2.new(0.5, -gap / 2, 1, 0)
-	local promptCancel = button("Cancel", {
-		Name = "Cancel",
-		LayoutOrder = 1,
-		Size = promptHalf,
-		ZIndex = Z + 7,
-		Parent = promptRow,
-	})
-	local promptSave = button("Save", {
-		Name = "Save",
-		LayoutOrder = 2,
-		Size = promptHalf,
-		BackgroundColor3 = Tokens.Color.Accent,
-		BackgroundTransparency = 0,
-		TextColor3 = Tokens.Color.AccentText,
-		ZIndex = Z + 7,
-		Parent = promptRow,
-	})
-
 	local self: WardrobePanel
 	local conns: { RBXScriptConnection } = {}
+
+	-- Dialog folder: aksinya dijalankan panel (satu jalur dengan toast & busy).
+	local dialog = FolderDialog.new({
+		parent = root,
+		zIndex = Z + 6,
+		onCreate = function()
+			self._prompt:open("folderNew")
+		end,
+		onRename = function(id, name)
+			self._prompt:open("folderRename", id, name)
+		end,
+		onDelete = function(id, name)
+			self:_act("folderDelete", nil, name, function()
+				return ctl:folderDelete(id)
+			end)
+		end,
+		onSave = function(outfitId, ids)
+			self:_act("setFolders", outfitId, nil, function()
+				return ctl:setFolders(outfitId, ids)
+			end)
+		end,
+		onPick = function(id, name, addToFolder)
+			local ids = self:_selectedIds()
+			if #ids == 0 then
+				return
+			end
+			self:_act("bulkFolder", nil, name, function()
+				local ok, code = ctl:bulkFolder(ids, id, addToFolder)
+				if ok then
+					self:_setSelecting(false)
+				end
+				return ok, code
+			end)
+		end,
+		onLimit = function(name)
+			if props.onResult then
+				props.onResult("setFolders", false, "TOO_MANY", name)
+			end
+		end,
+	})
+
+	-- Dialog nama: simpan outfit / folder baru / ganti nama folder.
+	local prompt = NamePrompt.new({
+		parent = root,
+		zIndex = Z + 8,
+		onConfirm = function(mode, name, folderId)
+			if mode == "save" then
+				self:_act("save", nil, name, function()
+					return ctl:save(name) -- nil -> server memberi nama bawaan ("Outfit N")
+				end)
+			elseif name == nil then
+				return
+			elseif mode == "folderNew" then
+				self:_act("folderAdd", nil, name, function()
+					return ctl:folderAdd(name :: string)
+				end)
+			elseif mode == "folderRename" and folderId ~= nil then
+				self:_act("folderRename", nil, name, function()
+					return ctl:folderRename(folderId, name :: string)
+				end)
+			end
+		end,
+	})
 
 	local sheet = OutfitDetailSheet.new({
 		parent = root,
@@ -504,6 +550,12 @@ function WardrobePanel.new(props: Props): WardrobePanel
 				return ctl:delete(outfit.id)
 			end)
 		end,
+		onModifyFolders = function(outfit)
+			self._dialog:open("set", { outfitId = outfit.id, folders = outfit.folders })
+		end,
+		folderNames = function(outfit)
+			return self:_folderNames(outfit)
+		end,
 		onBack = function()
 			self._sheet:close()
 		end,
@@ -513,19 +565,32 @@ function WardrobePanel.new(props: Props): WardrobePanel
 		instance = root,
 		_props = props,
 		_search = search,
+		_tabs = tabs,
+		_tabSig = "",
+		_tabButtons = {},
+		_tabConns = {},
 		_sortButton = sortButton,
 		_sortMenu = sortMenu,
 		_grid = grid,
 		_layout = gridLayout,
 		_add = add,
-		_prompt = prompt,
-		_promptBox = promptBox,
 		_status = status,
 		_statusTitle = statusTitle,
 		_statusHint = statusHint,
 		_retry = retry,
+		_footer = footer,
 		_switch = switch,
 		_knob = knob,
+		_selectButton = selectButton,
+		_selectBar = selectBar,
+		_selectLabel = selectLabel,
+		_selectDelete = selectDelete,
+		_selecting = false,
+		_selected = {},
+		_deleteConfirm = false,
+		_confirmToken = 0,
+		_prompt = prompt,
+		_dialog = dialog,
 		_sheet = sheet,
 		_cards = {},
 		_cardKey = {},
@@ -594,46 +659,42 @@ function WardrobePanel.new(props: Props): WardrobePanel
 	table.insert(
 		conns,
 		add.Activated:Connect(function()
+			local snap = self._snap
+			if snap == nil or not snap.loaded or snap.busy ~= nil or snap.isFull then
+				return
+			end
 			self:_dismiss()
-			self:_openPrompt()
+			prompt:open("save")
 		end)
 	)
 	table.insert(
 		conns,
-		prompt.Activated:Connect(function()
-			self:_closePrompt()
+		selectButton.Activated:Connect(function()
+			self:_setSelecting(true)
 		end)
 	)
 	table.insert(
 		conns,
-		promptCancel.Activated:Connect(function()
-			self:_closePrompt()
+		selectCancel.Activated:Connect(function()
+			self:_setSelecting(false)
 		end)
 	)
 	table.insert(
 		conns,
-		promptSave.Activated:Connect(function()
-			self:_saveCurrent(cleanName(promptBox.Text))
-		end)
-	)
-	table.insert(
-		conns,
-		promptBox.FocusLost:Connect(function(enterPressed)
-			if enterPressed then
-				self:_saveCurrent(cleanName(promptBox.Text))
+		selectMove.Activated:Connect(function()
+			local snap = self._snap
+			local ids = self:_selectedIds()
+			if #ids == 0 or snap == nil then
+				return
 			end
+			local active = if type(snap.folderFilter) == "number" then snap.folderFilter else nil
+			dialog:open("pick", { count = #ids, activeFolder = active })
 		end)
 	)
 	table.insert(
 		conns,
-		promptBox:GetPropertyChangedSignal("Text"):Connect(function()
-			local len = utf8.len(promptBox.Text)
-			if len and len > MAX_NAME then
-				local cut = utf8.offset(promptBox.Text, MAX_NAME + 1)
-				if cut then
-					promptBox.Text = string.sub(promptBox.Text, 1, cut - 1)
-				end
-			end
+		selectDelete.Activated:Connect(function()
+			self:_bulkDelete()
 		end)
 	)
 	table.insert(
@@ -670,34 +731,6 @@ function WardrobePanel.new(props: Props): WardrobePanel
 	return self
 end
 
--- Dialog nama untuk kartu "+".
-function WardrobePanel._openPrompt(self: WardrobePanel)
-	local snap = self._snap
-	if snap == nil or not snap.loaded or snap.busy ~= nil or snap.isFull then
-		return
-	end
-	self._promptBox.Text = ""
-	self._prompt.Visible = true
-	self._promptBox:CaptureFocus()
-end
-
-function WardrobePanel._closePrompt(self: WardrobePanel)
-	if not self._prompt.Visible then
-		return
-	end
-	self._promptBox:ReleaseFocus()
-	self._prompt.Visible = false
-end
-
--- name nil -> server memberi nama bawaan ("Outfit N").
-function WardrobePanel._saveCurrent(self: WardrobePanel, name: string?)
-	local ctl = self._props.controller
-	self:_closePrompt()
-	self:_act("save", nil, name, function()
-		return ctl:save(name)
-	end)
-end
-
 -- Jalankan aksi controller di thread baru; hasil -> onResult (toast).
 function WardrobePanel._act(self: WardrobePanel, op: string, id: number?, name: string?, fn: () -> (boolean, string?))
 	task.spawn(function()
@@ -710,6 +743,204 @@ function WardrobePanel._act(self: WardrobePanel, op: string, id: number?, name: 
 		end
 	end)
 end
+
+-- ===== Tab folder =====
+
+-- Nama folder sebuah outfit untuk baris info di halaman detail.
+function WardrobePanel._folderNames(self: WardrobePanel, outfit: any): string
+	local snap = self._snap
+	local ids = outfit.folders
+	if snap == nil or type(ids) ~= "table" or #ids == 0 then
+		return "None"
+	end
+	local names: { string } = {}
+	for _, folder in snap.folders do
+		if table.find(ids, folder.id) then
+			table.insert(names, folder.name)
+		end
+	end
+	if #names == 0 then
+		return "None"
+	end
+	return table.concat(names, ", ")
+end
+
+-- Bangun ulang tombol tab bila daftar folder berubah; selain itu hanya warnanya yang diperbarui.
+function WardrobePanel._syncTabs(self: WardrobePanel, snap: any)
+	local parts: { string } = { tostring(snap.unfiled) }
+	for _, folder in snap.folders do
+		table.insert(parts, ("%d:%s:%d"):format(folder.id, folder.name, folder.count))
+	end
+	local sig = table.concat(parts, "|")
+	if sig ~= self._tabSig then
+		self._tabSig = sig
+		for _, c in self._tabConns do
+			c:Disconnect()
+		end
+		table.clear(self._tabConns)
+		for _, child in self._tabs:GetChildren() do
+			if child:IsA("TextButton") then
+				child:Destroy()
+			end
+		end
+		table.clear(self._tabButtons)
+
+		local ctl = self._props.controller
+		local entries: { { key: string, text: string, value: any } } = {
+			{ key = "all", text = "All", value = OutfitSort.ALL },
+			{ key = "none", text = ("Not In Any Folders (%d)"):format(snap.unfiled), value = OutfitSort.NONE },
+		}
+		for _, folder in snap.folders do
+			table.insert(entries, {
+				key = tostring(folder.id),
+				text = ("%s (%d)"):format(folder.name, folder.count),
+				value = folder.id,
+			})
+		end
+		for i, entry in entries do
+			local tab = button(entry.text, {
+				Name = "Tab_" .. entry.key,
+				LayoutOrder = i,
+				AutomaticSize = Enum.AutomaticSize.X,
+				Size = UDim2.fromOffset(0, TABS_H),
+				TextSize = Tokens.TextSize.Caption,
+				Parent = self._tabs,
+			})
+			make("UIPadding", {
+				PaddingLeft = UDim.new(0, Tokens.Space.M),
+				PaddingRight = UDim.new(0, Tokens.Space.M),
+				Parent = tab,
+			})
+			self._tabButtons[entry.key] = tab
+			local value = entry.value
+			table.insert(
+				self._tabConns,
+				tab.Activated:Connect(function()
+					self:_setSelecting(false)
+					ctl:setFolderFilter(value)
+				end)
+			)
+		end
+		-- tombol kelola folder (paling kanan)
+		local manage = button("＋", {
+			Name = "Tab_manage",
+			LayoutOrder = #entries + 1,
+			AutomaticSize = Enum.AutomaticSize.X,
+			Size = UDim2.fromOffset(0, TABS_H),
+			Parent = self._tabs,
+		})
+		make("UIPadding", {
+			PaddingLeft = UDim.new(0, Tokens.Space.M),
+			PaddingRight = UDim.new(0, Tokens.Space.M),
+			Parent = manage,
+		})
+		table.insert(
+			self._tabConns,
+			manage.Activated:Connect(function()
+				self._dialog:open("manage")
+			end)
+		)
+	end
+
+	local active = snap.folderFilter
+	for key, tab in self._tabButtons do
+		local id = tonumber(key)
+		local on = (key == "all" and active == OutfitSort.ALL)
+			or (key == "none" and active == OutfitSort.NONE)
+			or (id ~= nil and active == id)
+		tab.BackgroundColor3 = if on then Tokens.Color.Accent else Tokens.Color.PanelRaised
+		tab.BackgroundTransparency = if on then 0 else Tokens.Transparency.PanelRaised
+		tab.TextColor3 = if on then Tokens.Color.AccentText else Tokens.Color.Text
+	end
+end
+
+-- ===== Mode "Select Outfits" =====
+
+function WardrobePanel._setSelecting(self: WardrobePanel, on: boolean)
+	if self._selecting == on then
+		return
+	end
+	self._selecting = on
+	table.clear(self._selected)
+	self:_setDeleteConfirm(false)
+	if on then
+		self:_dismiss()
+		self._sheet:close()
+	elseif self._dialog:mode() == "pick" then
+		self._dialog:close()
+	end
+	for _, card in self._cards do
+		card:setSelectMode(on)
+	end
+	self:_refreshSelection()
+end
+
+function WardrobePanel._toggleSelect(self: WardrobePanel, id: number)
+	self._selected[id] = if self._selected[id] then nil else true
+	self:_setDeleteConfirm(false)
+	local card = self._cards[id]
+	if card then
+		card:setSelected(self._selected[id] == true)
+	end
+	self:_refreshSelection()
+end
+
+function WardrobePanel._selectedIds(self: WardrobePanel): { number }
+	local ids: { number } = {}
+	for id in self._selected do
+		table.insert(ids, id)
+	end
+	table.sort(ids)
+	return ids
+end
+
+-- Bar bawah mengikuti jumlah yang dicentang.
+function WardrobePanel._refreshSelection(self: WardrobePanel)
+	local snap = self._snap
+	local hasOutfits = snap ~= nil and snap.loaded and #snap.outfits > 0
+	self._selectBar.Visible = self._selecting
+	self._footer.Visible = not self._selecting
+	self._selectButton.Visible = not self._selecting and hasOutfits
+	self._selectLabel.Text = ("%d selected"):format(#self:_selectedIds())
+end
+
+-- Hapus massal butuh dua tap ("Sure?").
+function WardrobePanel._setDeleteConfirm(self: WardrobePanel, confirm: boolean)
+	self._deleteConfirm = confirm
+	self._selectDelete.Text = if confirm then "Sure?" else "Delete"
+	self._confirmToken += 1
+	if confirm then
+		local token = self._confirmToken
+		task.delay(CONFIRM_SECONDS, function()
+			if self._confirmToken == token and self._deleteConfirm then
+				self:_setDeleteConfirm(false)
+			end
+		end)
+	end
+end
+
+function WardrobePanel._bulkDelete(self: WardrobePanel)
+	local ids = self:_selectedIds()
+	if #ids == 0 then
+		return
+	end
+	if not self._deleteConfirm then
+		self:_setDeleteConfirm(true)
+		return
+	end
+	self:_setDeleteConfirm(false)
+	local ctl = self._props.controller
+	local name = ("%d outfit"):format(#ids)
+	self:_act("bulkDelete", nil, name, function()
+		local ok, code = ctl:bulkDelete(ids)
+		if ok then
+			self:_setSelecting(false)
+		end
+		return ok, code
+	end)
+end
+
+-- ===== Grid =====
 
 -- Jumlah kolom & ukuran kartu menyesuaikan lebar panel.
 function WardrobePanel._resizeCells(self: WardrobePanel)
@@ -758,6 +989,9 @@ function WardrobePanel._buildCard(self: WardrobePanel, outfit: any, order: numbe
 		onActivated = function(o)
 			self:_arm(o.id)
 		end,
+		onToggleSelect = function(o)
+			self:_toggleSelect(o.id)
+		end,
 		onDismiss = function()
 			self:_dismiss()
 		end,
@@ -775,12 +1009,6 @@ function WardrobePanel._buildCard(self: WardrobePanel, outfit: any, order: numbe
 			local value = not o.favorite
 			self:_act("favorite", o.id, o.name, function()
 				return ctl:favorite(o.id, value)
-			end)
-		end,
-		onDelete = function(o)
-			self:_dismiss()
-			self:_act("delete", o.id, o.name, function()
-				return ctl:delete(o.id)
 			end)
 		end,
 	})
@@ -811,12 +1039,17 @@ function WardrobePanel._syncCards(self: WardrobePanel, visible: { any })
 			card:setFavorite(outfit.favorite)
 			card.outfit = outfit
 		end
+		card:setSelectMode(self._selecting)
+		if self._selecting then
+			card:setSelected(self._selected[outfit.id] == true)
+		end
 	end
 	for id, card in self._cards do
 		if not seen[id] then
 			card:destroy()
 			self._cards[id] = nil
 			self._cardKey[id] = nil
+			self._selected[id] = nil
 			if self._armedId == id then
 				self._armedId = nil
 			end
@@ -826,12 +1059,14 @@ end
 
 function WardrobePanel._render(self: WardrobePanel, snap: any)
 	self._snap = snap
+	self:_syncTabs(snap)
 	self:_syncCards(snap.visible)
+	self._dialog:setFolders(snap.folders, snap.foldersFull)
 
 	-- kartu "+" & tombol sibuk
 	local busy = snap.busy
 	self._add.Text = if busy == "save" then "…" else "+"
-	self._add.Visible = not snap.isFull and snap.loaded
+	self._add.Visible = not snap.isFull and snap.loaded and not self._selecting
 	for id, card in self._cards do
 		card:setBusy(if busy ~= nil and snap.busyId == id then "…" else nil)
 	end
@@ -846,6 +1081,7 @@ function WardrobePanel._render(self: WardrobePanel, snap: any)
 			end
 		end
 	end
+	self:_refreshSelection()
 
 	self._sortButton.Text = OutfitSort.labelOf(snap.sortKey) .. " ▼"
 	if self._search.Text ~= snap.query and not self._search:IsFocused() then
@@ -874,6 +1110,12 @@ function WardrobePanel._render(self: WardrobePanel, snap: any)
 		if snap.query ~= "" then
 			self._statusTitle.Text = "No outfits match your search"
 			self._statusHint.Text = ""
+		elseif snap.folderFilter == OutfitSort.NONE then
+			self._statusTitle.Text = "Semua outfit sudah masuk folder"
+			self._statusHint.Text = ""
+		elseif type(snap.folderFilter) == "number" then
+			self._statusTitle.Text = "Folder ini masih kosong"
+			self._statusHint.Text = "Pakai Select Outfits untuk memindahkan outfit ke sini."
 		else
 			self._statusTitle.Text = "No saved outfits yet"
 			self._statusHint.Text = "Tap + to save what you're wearing."
@@ -901,8 +1143,10 @@ function WardrobePanel.setOpen(self: WardrobePanel, open: boolean)
 		task.spawn(ctl.refresh, ctl)
 		self:_resizeCells()
 	else
+		self:_setSelecting(false)
 		self:_dismiss()
-		self:_closePrompt()
+		self._prompt:close()
+		self._dialog:close()
 		self._sortMenu.Visible = false
 		self._sheet:close()
 		self._search:ReleaseFocus()
@@ -920,6 +1164,12 @@ function WardrobePanel.destroy(self: WardrobePanel)
 		self._cards[id] = nil
 	end
 	self._sheet:destroy()
+	self._dialog:destroy()
+	self._prompt:destroy()
+	for _, c in self._tabConns do
+		c:Disconnect()
+	end
+	table.clear(self._tabConns)
 	for _, c in self._conns do
 		c:Disconnect()
 	end

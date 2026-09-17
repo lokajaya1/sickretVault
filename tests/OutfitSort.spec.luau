@@ -17,10 +17,10 @@ local function ids(rows: { any }): string
 end
 
 local ROWS = {
-	{ id = 1, name = "beach", createdAt = 10, updatedAt = 50, favorite = false },
-	{ id = 2, name = "Party Night", createdAt = 20, updatedAt = 20, favorite = true },
-	{ id = 3, name = "casual", createdAt = 30, updatedAt = 40, favorite = false },
-	{ id = 4, name = "Party", createdAt = 30, updatedAt = 50, favorite = true },
+	{ id = 1, name = "beach", createdAt = 10, updatedAt = 50, favorite = false, folders = { 7 } },
+	{ id = 2, name = "Party Night", createdAt = 20, updatedAt = 20, favorite = true, folders = { 7, 8 } },
+	{ id = 3, name = "casual", createdAt = 30, updatedAt = 40, favorite = false, folders = {} },
+	{ id = 4, name = "Party", createdAt = 30, updatedAt = 50, favorite = true, folders = { 8 } },
 	{ id = 5, name = "a.b%c", createdAt = 5, updatedAt = 5, favorite = false },
 }
 
@@ -53,6 +53,25 @@ return function()
 	eq(OutfitSort.labelOf("za"), "Alphabetical (Z-A)", "label")
 	eq(OutfitSort.labelOf("x"), "Recently Updated", "label key asing")
 	eq(OutfitSort.normalizeQuery(nil), "", "query nil")
+
+	-- 5. tab folder
+	eq(ids(OutfitSort.apply(ROWS, "az", nil, OutfitSort.ALL)), "5,1,3,4,2", "tab All")
+	eq(ids(OutfitSort.apply(ROWS, "az", nil, 7)), "1,2", "folder 7")
+	eq(ids(OutfitSort.apply(ROWS, "az", nil, 8)), "4,2", "folder 8")
+	eq(ids(OutfitSort.apply(ROWS, "az", nil, OutfitSort.NONE)), "5,3", "Not In Any Folders")
+	eq(ids(OutfitSort.apply(ROWS, "az", "party", 8)), "4,2", "folder + cari")
+	eq(ids(OutfitSort.apply(ROWS, "az", "beach", 8)), "", "folder + cari tanpa hasil")
+	eq(ids(OutfitSort.apply(ROWS, "az", nil, 99)), "", "folder kosong")
+
+	-- 6. normalizeFolder: nilai asing / folder terhapus -> All
+	eq(OutfitSort.normalizeFolder(nil), OutfitSort.ALL, "nil")
+	eq(OutfitSort.normalizeFolder("hack"), OutfitSort.ALL, "string asing")
+	eq(OutfitSort.normalizeFolder(2.5), OutfitSort.ALL, "pecahan")
+	eq(OutfitSort.normalizeFolder(-3), OutfitSort.ALL, "negatif")
+	eq(OutfitSort.normalizeFolder(OutfitSort.NONE), OutfitSort.NONE, "none")
+	eq(OutfitSort.normalizeFolder(7), 7, "id folder")
+	eq(OutfitSort.normalizeFolder(7, { [7] = true }), 7, "id dikenal")
+	eq(OutfitSort.normalizeFolder(9, { [7] = true }), OutfitSort.ALL, "folder sudah dihapus")
 
 	print("PASS OutfitSort.spec")
 end

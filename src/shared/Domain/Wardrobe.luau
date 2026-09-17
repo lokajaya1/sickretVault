@@ -5,8 +5,9 @@
 --   Wardrobe.setFavorite(data, id, true)   Wardrobe.remove(data, id)   Wardrobe.find(data, id)
 --   local rows = Wardrobe.list(data)  -- ringkasan untuk client (urut simpan terbaru dulu; client mengurutkan ulang)
 -- Bentuk di DataStore (key pendek supaya hemat ukuran):
---   data.outfits = { { id = 3, n = "Nama", t = 1789000000, u = 1789000500, f = true, o = <encodeOutfit> }, ... }
---   (urut simpan; t = dibuat, u = terakhir diubah (isi/nama), f = favorit (nil = tidak))
+--   data.outfits = { { id = 3, n = "Nama", t = 1789000000, u = 1789000500, f = true, g = { 1, 2 }, o = <encodeOutfit> }, ... }
+--   (urut simpan; t = dibuat, u = terakhir diubah (isi/nama), f = favorit (nil = tidak),
+--    g = id folder (lihat Domain/OutfitFolders; nil = tidak di folder mana pun))
 --   data.nextOutfitId = 4  -- id tidak pernah dipakai ulang (UI yang telat tidak salah sasaran)
 -- Nama dari pemain WAJIB lolos filter teks Roblox di server SEBELUM masuk ke sini (lihat WardrobeService).
 -- Ukuran: 1 outfit ringkas ~1-2 KB -> 30 slot jauh di bawah batas DataStore 4 MB per key.
@@ -25,6 +26,7 @@ export type Entry = {
 	t: number, -- dibuat (os.time)
 	u: number?, -- terakhir diubah: simpan / timpa / ganti nama (nil = sama dengan t, data lama)
 	f: boolean?, -- favorit
+	g: { number }?, -- id folder (OutfitFolders; nil = tidak di folder mana pun)
 	o: any, -- PlayerData.encodeOutfit
 }
 
@@ -34,6 +36,7 @@ export type Summary = {
 	createdAt: number,
 	updatedAt: number,
 	favorite: boolean,
+	folders: { number }, -- id folder tempat outfit ini berada (kosong = "Not In Any Folders")
 	count: number, -- jumlah item non-default (aksesori + baju + part tubuh + animasi)
 	thumbs: { number }, -- assetId untuk thumbnail (maks MAX_THUMBS), cadangan bila render 3D gagal
 	outfit: any, -- outfit ringkas (client: PlayerData.decodeOutfit -> render avatar di kartu)
@@ -51,10 +54,12 @@ end
 
 -- ===== Nama =====
 
--- Bersihkan nama dari client: string, tanpa karakter kontrol, spasi dirapikan, 1..MAX_NAME karakter.
+-- Bersihkan nama dari client: string, tanpa karakter kontrol, spasi dirapikan, 1..max karakter.
+-- `max` bawaan MAX_NAME (nama folder memakai batas sendiri, lihat OutfitFolders).
 -- Return (nama, nil) | (nil, "BAD_NAME" | "EMPTY" | "TOO_LONG"). Belum difilter Roblox!
-function Wardrobe.cleanName(raw: any): (string?, string?)
-	if type(raw) ~= "string" or #raw > Wardrobe.MAX_NAME * 4 or utf8.len(raw) == nil then
+function Wardrobe.cleanName(raw: any, max: number?): (string?, string?)
+	local limit = if type(max) == "number" then max else Wardrobe.MAX_NAME
+	if type(raw) ~= "string" or #raw > limit * 4 or utf8.len(raw) == nil then
 		return nil, "BAD_NAME"
 	end
 	local s = string.gsub(raw, "%c", " ")
@@ -64,7 +69,7 @@ function Wardrobe.cleanName(raw: any): (string?, string?)
 	if len == 0 then
 		return nil, "EMPTY"
 	end
-	if len > Wardrobe.MAX_NAME then
+	if len > limit then
 		return nil, "TOO_LONG"
 	end
 	return s, nil
@@ -188,6 +193,19 @@ end
 
 -- ===== Ringkasan untuk client =====
 
+-- Salinan id folder (defensif: data DataStore bisa rusak sebelum OutfitFolders.sanitize jalan).
+local function folderIds(entry: Entry): { number }
+	local out: { number } = {}
+	if type(entry.g) == "table" then
+		for _, id in ipairs(entry.g :: any) do
+			if isId(id) then
+				table.insert(out, id)
+			end
+		end
+	end
+	return out
+end
+
 -- Hitung item & pilih thumbnail dari outfit ringkas (aksesori dulu, lalu baju, lalu part tubuh).
 function Wardrobe.summarize(entry: Entry): Summary
 	local o = entry.o
@@ -238,6 +256,7 @@ function Wardrobe.summarize(entry: Entry): Summary
 		createdAt = entry.t,
 		updatedAt = entry.u or entry.t,
 		favorite = entry.f == true,
+		folders = folderIds(entry),
 		count = count,
 		thumbs = thumbs,
 		outfit = o,

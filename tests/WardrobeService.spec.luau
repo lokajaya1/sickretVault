@@ -7,6 +7,7 @@ local WardrobeService = require(Server.Services.WardrobeService)
 local PlayerDataService = require(Server.Services.PlayerDataService)
 local Shared = game:GetService("ReplicatedStorage"):WaitForChild("Shared")
 local Wardrobe = require(Shared.Domain.Wardrobe)
+local OutfitFolders = require(Shared.Domain.OutfitFolders)
 local OS = require(Shared.Domain.OutfitState)
 local Log = require(Shared.Util.Log)
 
@@ -242,6 +243,96 @@ return function()
 		eq(s6:handle(p6, { op = "save" }).ok, true, "kunci dilepas setelah error")
 		eq(s6:handle(p6, { op = "hack" }).code, "BAD_ARG", "op asing")
 		s6:forget(p6)
+	end
+
+	-- 13. folder: buat (lewat filter nama), ganti nama, isi lewat setFolders, hapus
+	do
+		local s7, t7, d7, p7 = setup()
+		d7:load(p7)
+		local r = s7:handle(p7, { op = "list" })
+		eq(#r.folders, 0, "list membawa folders")
+		eq(r.maxFolders, OutfitFolders.MAX_FOLDERS, "maxFolders")
+
+		r = s7:handle(p7, { op = "folderAdd", name = "Pesta" })
+		eq(r.ok, true, "folderAdd ok")
+		eq(r.folder, 1, "id folder baru")
+		eq(t7.filtered[1], "Pesta", "nama folder lewat filter")
+		eq(r.folders[1].name, "Pesta", "daftar folder terbaru")
+		eq(s7:handle(p7, { op = "folderAdd", name = "pesta" }).code, "DUPLICATE", "nama ganda")
+		eq(s7:handle(p7, { op = "folderRename", id = 1, name = "Malam" }).folders[1].name, "Malam", "ganti nama")
+		eq(s7:handle(p7, { op = "folderRename", id = 9, name = "X" }).code, "NOT_FOUND", "folder tidak ada")
+
+		eq(s7:handle(p7, { op = "save" }).ok, true, "simpan outfit")
+		r = s7:handle(p7, { op = "setFolders", id = 1, folders = { 1 } })
+		eq(r.ok, true, "setFolders ok")
+		eq(r.outfits[1].folders[1], 1, "outfit membawa id folder")
+		eq(r.folders[1].count, 1, "jumlah di folder")
+		eq(s7:handle(p7, { op = "setFolders", id = 1, folders = { 9 } }).code, "BAD_ARG", "folder tidak ada")
+		eq(s7:handle(p7, { op = "setFolders", id = 9, folders = { 1 } }).code, "NOT_FOUND", "outfit tidak ada")
+
+		r = s7:handle(p7, { op = "folderDelete", id = 1 })
+		eq(r.ok, true, "hapus folder")
+		eq(#r.folders, 0, "folder hilang")
+		eq(#r.outfits, 1, "outfit tetap ada")
+		eq(r.outfits[1].folders[1], nil, "outfit dilepas dari folder")
+	end
+
+	-- 14. nama folder kena filter / TextService error
+	do
+		local s8, _, d8, p8 = setup({
+			filter = function(_player: any, _text: string)
+				return true, "###"
+			end,
+		})
+		d8:load(p8)
+		eq(s8:handle(p8, { op = "folderAdd", name = "Kasar" }).code, "FILTERED", "nama folder ditolak filter")
+		eq(#d8:listFolders(p8), 0, "tidak dibuat")
+
+		local s9, _, d9, p9 = setup({
+			filter = function(_player: any, _text: string)
+				return false, "boom"
+			end,
+		})
+		d9:load(p9)
+		eq(s9:handle(p9, { op = "folderAdd", name = "Pesta" }).code, "FILTER_FAILED", "filter error")
+	end
+
+	-- 15. folder penuh -> FULL tanpa memanggil filter
+	do
+		local s10, t10, d10, p10 = setup()
+		d10:load(p10)
+		for i = 1, OutfitFolders.MAX_FOLDERS do
+			eq(s10:handle(p10, { op = "folderAdd", name = "F" .. i }).ok, true, "folder " .. i)
+		end
+		local filterCalls = #t10.filtered
+		eq(s10:handle(p10, { op = "folderAdd", name = "Lagi" }).code, "FULL", "FULL")
+		eq(#t10.filtered, filterCalls, "tidak memanggil filter saat penuh")
+	end
+
+	-- 16. Select Outfits: hapus banyak & pindah folder banyak
+	do
+		local s11, _, d11, p11 = setup()
+		d11:load(p11)
+		for _ = 1, 4 do
+			eq(s11:handle(p11, { op = "save" }).ok, true, "simpan")
+		end
+		eq(s11:handle(p11, { op = "folderAdd", name = "Pesta" }).ok, true, "folder")
+
+		local r = s11:handle(p11, { op = "bulkFolder", ids = { 1, 2, 99 }, id = 1, value = true })
+		eq(r.ok, true, "bulkFolder ok")
+		eq(r.changed, 2, "2 outfit dipindah")
+		eq(r.skipped, 1, "1 dilewati")
+		eq(r.folders[1].count, 2, "isi folder")
+		eq(s11:handle(p11, { op = "bulkFolder", ids = { 1 }, id = 9, value = true }).code, "NOT_FOUND", "folder asing")
+
+		r = s11:handle(p11, { op = "bulkDelete", ids = { 1, 2, 99 } })
+		eq(r.ok, true, "bulkDelete ok")
+		eq(r.removed, 2, "2 terhapus")
+		eq(#r.outfits, 2, "sisa 2")
+		eq(r.folders[1].count, 0, "folder ikut kosong")
+
+		r = s11:handle(p11, { op = "bulkFolder", ids = { 3 }, id = 1, value = false })
+		eq(r.changed, 0, "lepas yang bukan anggota -> 0")
 	end
 
 	print("PASS WardrobeService.spec")
