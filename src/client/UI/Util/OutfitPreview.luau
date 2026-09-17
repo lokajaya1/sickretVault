@@ -10,8 +10,12 @@
 -- Gagal membuat model -> onFallback() (kartu menampilkan thumbnail item).
 -- Model dibuat BERGANTIAN (antrean, satu per satu) supaya 30 kartu tidak membekukan layar.
 -- Quirk: label nama Humanoid dari model di WorldModel ikut tampil di kamera utama -> DisplayDistanceType None.
+-- TEMUAN 18 Sep 2026: model hasil API ini di CLIENT hanya "badan pajangan" -> 20 part TANPA Motor6D/attachment;
+-- Humanoid:BuildRigFromAttachments() pun tidak membuat sendi. Jadi avatar preview TIDAK BISA dianimasikan.
+-- Gantinya: kamera diputar mengelilingi model (handle.setSpin / handle.addYaw) -> terasa hidup, tanpa animasi.
 
 local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
 
 local Shared = game:GetService("ReplicatedStorage"):WaitForChild("Shared")
 local PlayerData = require(Shared.Domain.PlayerData)
@@ -24,8 +28,23 @@ local CACHE_SIZE = 40
 local FOV = 30
 local MARGIN = 1.12 -- ruang kosong di atas/bawah avatar
 local MAX_EXTENT = 12 -- stud; batas ukuran avatar yang dianggap wajar (R15 ~5.5)
+local SPIN_SPEED = 0.35 -- radian per detik (putaran otomatis)
 
-export type Handle = { cancel: () -> () }
+export type Handle = {
+	cancel: () -> (),
+	setSpin: (boolean) -> (), -- putar otomatis (halaman detail)
+	addYaw: (number) -> (), -- putar manual (drag); menghentikan sementara efek putaran otomatis
+}
+
+-- Satu viewport yang sedang dipajang (kamera mengelilingi model).
+type View = {
+	center: Vector3,
+	dir: Vector3, -- arah kamera saat sudut 0
+	dist: number,
+	yaw: number,
+	ready: boolean,
+	apply: () -> (),
+}
 
 export type Deps = {
 	-- (outfit ringkas) -> Model | error. Default: decode -> HumanoidDescription -> CreateHumanoidModelFromDescriptionAsync
@@ -47,6 +66,8 @@ export type OutfitPreview = typeof(setmetatable(
 		_queue: { string },
 		_running: boolean,
 		_destroyed: boolean,
+		_spin: { [View]: boolean },
+		_conn: RBXScriptConnection?,
 	},
 	OutfitPreview
 ))
@@ -90,7 +111,8 @@ local function prepare(model: Model)
 end
 
 -- Kamera dari depan, seluruh badan masuk bingkai (lebar juga diperhitungkan).
-function OutfitPreview.frame(model: Model, camera: Camera, aspect: number)
+-- Return posisi tengah, arah kamera pada sudut 0, dan jaraknya (dipakai untuk memutar kamera).
+function OutfitPreview.frame(model: Model, camera: Camera, aspect: number): (Vector3, Vector3, number)
 	local cf, raw = model:GetBoundingBox()
 	-- pengaman: kalau ada part nyasar, jangan biarkan kamera mundur jauh
 	local size = Vector3.new(math.min(raw.X, MAX_EXTENT), math.min(raw.Y, MAX_EXTENT), math.min(raw.Z, MAX_EXTENT))
@@ -101,6 +123,7 @@ function OutfitPreview.frame(model: Model, camera: Camera, aspect: number)
 	local dist = math.max(distV, distH) * MARGIN + size.Z / 2
 	camera.FieldOfView = FOV
 	camera.CFrame = CFrame.lookAt(cf.Position + cf.LookVector * dist, cf.Position)
+	return cf.Position, cf.LookVector, dist
 end
 
 function OutfitPreview.new(deps: Deps?): OutfitPreview
@@ -114,7 +137,30 @@ function OutfitPreview.new(deps: Deps?): OutfitPreview
 		_queue = {},
 		_running = false,
 		_destroyed = false,
+		_spin = {},
+		_conn = nil,
 	}, OutfitPreview)
+end
+
+-- Loop tunggal untuk semua viewport yang berputar (bukan satu loop per kartu).
+function OutfitPreview._spinStart(self: OutfitPreview)
+	if self._conn ~= nil then
+		return
+	end
+	self._conn = RunService.RenderStepped:Connect(function(dt: number)
+		for view in self._spin do
+			view.yaw += SPIN_SPEED * dt
+			view.apply()
+		end
+	end)
+end
+
+function OutfitPreview._spinStop(self: OutfitPreview)
+	local conn = self._conn
+	if conn ~= nil and next(self._spin) == nil then
+		conn:Disconnect()
+		self._conn = nil
+	end
 end
 
 function OutfitPreview._touch(self: OutfitPreview, key: string)
@@ -216,6 +262,23 @@ function OutfitPreview.mount(
 	camera.Parent = viewport
 	viewport.CurrentCamera = camera
 
+	local view: View = {
+		center = Vector3.zero,
+		dir = Vector3.new(0, 0, 1),
+		dist = 12,
+		yaw = 0,
+		ready = false,
+		apply = function() end,
+	}
+	local function applyCamera()
+		if not view.ready then
+			return
+		end
+		local offset = (CFrame.Angles(0, view.yaw, 0) * view.dir) * view.dist
+		camera.CFrame = CFrame.lookAt(view.center + offset, view.center)
+	end
+	view.apply = applyCamera
+
 	local alive = true
 	local conn: RBXScriptConnection? = nil
 	local stop = self:_request(key, outfit, function(template: Model?)
@@ -232,7 +295,12 @@ function OutfitPreview.mount(
 		model.Parent = world
 		local function refit()
 			local s = viewport.AbsoluteSize
-			OutfitPreview.frame(model, camera, if s.Y > 0 then s.X / s.Y else 1)
+			local center, dir, dist = OutfitPreview.frame(model, camera, if s.Y > 0 then s.X / s.Y else 1)
+			view.center = center
+			view.dir = dir
+			view.dist = dist
+			view.ready = true
+			applyCamera()
 		end
 		refit()
 		conn = viewport:GetPropertyChangedSignal("AbsoluteSize"):Connect(refit)
@@ -244,12 +312,33 @@ function OutfitPreview.mount(
 				return
 			end
 			alive = false
+			self._spin[view] = nil
+			self:_spinStop()
 			stop()
 			if conn then
 				conn:Disconnect()
 			end
 			world:Destroy()
 			camera:Destroy()
+		end,
+		setSpin = function(on: boolean)
+			if not alive then
+				return
+			end
+			if on then
+				self._spin[view] = true
+				self:_spinStart()
+			else
+				self._spin[view] = nil
+				self:_spinStop()
+			end
+		end,
+		addYaw = function(delta: number)
+			if not alive then
+				return
+			end
+			view.yaw += delta
+			applyCamera()
 		end,
 	}
 end
@@ -269,6 +358,12 @@ end
 
 function OutfitPreview.destroy(self: OutfitPreview)
 	self._destroyed = true
+	table.clear(self._spin)
+	local conn = self._conn
+	if conn ~= nil then
+		conn:Disconnect()
+		self._conn = nil
+	end
 	table.clear(self._queue)
 	table.clear(self._jobs)
 	for _, model in self._cache do
