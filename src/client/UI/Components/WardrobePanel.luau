@@ -38,6 +38,7 @@ export type Props = {
 	controller: any, -- WardrobeController
 	previews: any, -- OutfitPreview
 	onResult: ((op: string, ok: boolean, code: string?, name: string?) -> ())?,
+	onItem: ((item: any) -> ())?, -- tap item di halaman detail -> App membuka detail item katalog
 	onBack: (() -> ())?, -- tombol X (default: setOpen(false))
 }
 
@@ -482,6 +483,7 @@ function WardrobePanel.new(props: Props): WardrobePanel
 				return ctl:favorite(outfit.id, not outfit.favorite)
 			end)
 		end,
+		onItem = props.onItem,
 		onWear = function(outfit)
 			self:_act("wear", outfit.id, outfit.name, function()
 				return ctl:wear(outfit.id)
