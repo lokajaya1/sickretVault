@@ -9,7 +9,7 @@
 --   })
 --   sheet:open(outfit)   sheet:setBusy("Saving…")   sheet:close()   sheet:destroy()
 -- Delete butuh dua tap ("Sure?" selama CONFIRM_SECONDS). Ganti nama: Enter menyimpan, klik di luar batal.
--- Layar sempit -> dua kolom ditumpuk (preview di atas). Panel yang memutuskan aksinya; lembar ini tampilan saja.
+-- Selalu dua kolom (avatar kiri, detail kanan) supaya cocok di layar pendek/HP; lebar kolom kiri menyesuaikan.
 -- Harga: dari server (op "items"). Item tanpa harga tidak dihitung ke Total Cost.
 
 local Tokens = require(script.Parent.Parent.Theme.Tokens)
@@ -20,11 +20,12 @@ local NAME_H = 34
 local ROW_H = 30
 local OPTION_H = 32
 local STAR_SIZE = 32
-local STACK_PREVIEW_H = 240
-local CELL = Vector2.new(96, 132)
+local CELL = Vector2.new(88, 140)
+local LEFT_FRACTION = 0.4 -- lebar kolom preview
+local LEFT_MIN = 120
+local LEFT_MAX = 280
 local MAX_NAME = 32 -- sama dengan Wardrobe.MAX_NAME (server tetap memvalidasi)
 local CONFIRM_SECONDS = 3
-local NARROW = 560 -- lebar di bawah ini -> kolom ditumpuk
 local ROBUX = utf8.char(0xE002)
 local STAR_ON = "★"
 local STAR_OFF = "☆"
@@ -546,24 +547,21 @@ function OutfitDetailSheet.new(props: Props): OutfitDetailSheet
 	return self
 end
 
--- Dua kolom bila cukup lebar, kalau sempit ditumpuk (preview di atas).
+-- Selalu dua kolom: avatar kiri (lebar menyesuaikan, dibatasi LEFT_MIN/LEFT_MAX), detail kanan.
 function OutfitDetailSheet._layout(self: OutfitDetailSheet)
 	local gap = Tokens.Space.S
 	local body = self._left.Parent :: Frame
-	local stacked = body.AbsoluteSize.X > 0 and body.AbsoluteSize.X < NARROW
-	if stacked then
-		self._left.Position = UDim2.new()
-		self._left.Size = UDim2.new(1, 0, 0, STACK_PREVIEW_H)
-		self._right.AnchorPoint = Vector2.new(0, 0)
-		self._right.Position = UDim2.fromOffset(0, STACK_PREVIEW_H + gap)
-		self._right.Size = UDim2.new(1, 0, 1, -(STACK_PREVIEW_H + gap))
-	else
-		self._left.Position = UDim2.new()
-		self._left.Size = UDim2.new(0.44, -gap, 1, 0)
-		self._right.AnchorPoint = Vector2.new(1, 0)
-		self._right.Position = UDim2.fromScale(1, 0)
-		self._right.Size = UDim2.new(0.56, 0, 1, 0)
+	local width = body.AbsoluteSize.X
+	if width <= 0 then
+		return
 	end
+	local leftW = math.clamp(math.floor(width * LEFT_FRACTION), LEFT_MIN, math.max(LEFT_MIN, LEFT_MAX))
+	leftW = math.min(leftW, math.max(math.floor(width * 0.5), LEFT_MIN))
+	self._left.Position = UDim2.new()
+	self._left.Size = UDim2.new(0, leftW, 1, 0)
+	self._right.AnchorPoint = Vector2.new(1, 0)
+	self._right.Position = UDim2.fromScale(1, 0)
+	self._right.Size = UDim2.new(1, -(leftW + gap), 1, 0)
 end
 
 function OutfitDetailSheet._setConfirm(self: OutfitDetailSheet, confirm: boolean)
@@ -621,12 +619,13 @@ function OutfitDetailSheet._showItems(self: OutfitDetailSheet, data: any)
 			ZIndex = Z,
 			Parent = self._grid,
 		}, { corner(Tokens.Radius.Small) })
+		local line = Tokens.TextSize.Caption + 2
 		make("ImageLabel", {
 			Name = "Thumb",
 			BackgroundTransparency = 1,
 			Image = ("rbxthumb://type=Asset&id=%d&w=150&h=150"):format(item.id),
 			ScaleType = Enum.ScaleType.Fit,
-			Size = UDim2.new(1, 0, 1, -(Tokens.TextSize.Caption * 2 + gap * 3)),
+			Size = UDim2.new(1, 0, 1, -(line * 3 + gap * 2)),
 			ZIndex = Z,
 			Parent = cell,
 		})
@@ -636,8 +635,19 @@ function OutfitDetailSheet._showItems(self: OutfitDetailSheet, data: any)
 			TextSize = Tokens.TextSize.Caption,
 			TextXAlignment = Enum.TextXAlignment.Center,
 			AnchorPoint = Vector2.new(0.5, 1),
-			Position = UDim2.new(0.5, 0, 1, -(Tokens.TextSize.Caption + gap * 2)),
-			Size = UDim2.new(1, -gap * 2, 0, Tokens.TextSize.Caption + 2),
+			Position = UDim2.new(0.5, 0, 1, -(line * 2 + gap)),
+			Size = UDim2.new(1, -gap * 2, 0, line),
+			Parent = cell,
+		})
+		label({
+			Name = "Creator",
+			Text = if type(item.creator) == "string" and item.creator ~= "" then "by " .. item.creator else "",
+			TextSize = Tokens.TextSize.Caption,
+			TextColor3 = Tokens.Color.TextMuted,
+			TextXAlignment = Enum.TextXAlignment.Center,
+			AnchorPoint = Vector2.new(0.5, 1),
+			Position = UDim2.new(0.5, 0, 1, -(line + gap)),
+			Size = UDim2.new(1, -gap * 2, 0, line),
 			Parent = cell,
 		})
 		label({
@@ -649,7 +659,7 @@ function OutfitDetailSheet._showItems(self: OutfitDetailSheet, data: any)
 			TextXAlignment = Enum.TextXAlignment.Center,
 			AnchorPoint = Vector2.new(0.5, 1),
 			Position = UDim2.new(0.5, 0, 1, -gap),
-			Size = UDim2.new(1, -gap * 2, 0, Tokens.TextSize.Caption + 2),
+			Size = UDim2.new(1, -gap * 2, 0, line),
 			Parent = cell,
 		})
 	end
