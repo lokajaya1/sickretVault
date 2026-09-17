@@ -7,6 +7,7 @@
 --   })
 --   panel:setOpen(true)   panel:isOpen()   panel:destroy()
 -- Isi: Search + X; tab "All" + dropdown sort; grid kartu (kartu pertama "+" = simpan outfit sekarang);
+-- Kartu punya ikon hapus (dua tap) selain bintang favorit.
 -- Tombol "+" membuka dialog nama dulu (boleh dikosongkan -> server memberi nama "Outfit N").
 -- bawah: toggle "Wear last outfit when joining". Tap kartu -> WEAR / VIEW; VIEW -> OutfitDetailSheet.
 -- Folder & "Select Outfits" menyusul di PR berikutnya (lihat claude/Pedoman_Layout_CAC.md).
@@ -772,6 +773,12 @@ function WardrobePanel._buildCard(self: WardrobePanel, outfit: any, order: numbe
 			local value = not o.favorite
 			self:_act("favorite", o.id, o.name, function()
 				return ctl:favorite(o.id, value)
+			end)
+		end,
+		onDelete = function(o)
+			self:_dismiss()
+			self:_act("delete", o.id, o.name, function()
+				return ctl:delete(o.id)
 			end)
 		end,
 	})
