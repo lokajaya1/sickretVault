@@ -10,6 +10,7 @@
 --   card:setArmed(true)   card:setFavorite(true)   card:setBusy("Wearing…")   card:destroy()
 -- Render 3D gagal -> otomatis menampilkan thumbnail item (maks 4) sebagai cadangan.
 -- Bintang: selalu tampil bila favorit; selain itu muncul saat hover (PC) atau kartu armed (HP).
+-- Ikon hapus (kiri atas) muncul bersama bintang; perlu DUA kali tap ("?") supaya tidak terhapus tak sengaja.
 
 local Tokens = require(script.Parent.Parent.Theme.Tokens)
 
@@ -18,6 +19,9 @@ local STAR_SIZE = 28
 local ACTION_H = 34
 local STAR_ON = "★"
 local STAR_OFF = "☆"
+local TRASH = "🗑"
+local TRASH_CONFIRM = "?"
+local CONFIRM_SECONDS = 3
 
 export type Outfit = {
 	id: number,
@@ -39,6 +43,7 @@ export type Props = {
 	onWear: Callback,
 	onView: Callback,
 	onFavorite: Callback, -- tombol bintang
+	onDelete: Callback, -- ikon hapus (sesudah konfirmasi tap kedua)
 	onDismiss: Callback, -- tap bagian kosong overlay
 }
 
@@ -53,11 +58,14 @@ export type OutfitCard = typeof(setmetatable(
 		_fallback: Frame,
 		_name: TextLabel,
 		_star: TextButton,
+		_trash: TextButton,
 		_overlay: TextButton,
 		_busy: TextLabel,
 		_preview: any, -- OutfitPreview.Handle
 		_hover: boolean,
 		_armed: boolean,
+		_confirm: boolean,
+		_confirmToken: number,
 		_conns: { RBXScriptConnection },
 	},
 	OutfitCard
@@ -193,6 +201,24 @@ function OutfitCard.new(props: Props): OutfitCard
 		Parent = root,
 	}, { corner(Tokens.Radius.Pill) })
 
+	local trash: TextButton = make("TextButton", {
+		Name = "Delete",
+		Text = TRASH,
+		FontFace = Tokens.Font.Bold,
+		TextSize = Tokens.TextSize.Body,
+		TextColor3 = Tokens.Color.Text,
+		BackgroundColor3 = Tokens.Color.Background,
+		BackgroundTransparency = 0.35,
+		BorderSizePixel = 0,
+		AutoButtonColor = true,
+		Visible = false,
+		AnchorPoint = Vector2.new(0, 0),
+		Position = UDim2.fromOffset(pad, pad),
+		Size = UDim2.fromOffset(STAR_SIZE, STAR_SIZE),
+		ZIndex = Z + 1,
+		Parent = root,
+	}, { corner(Tokens.Radius.Pill) })
+
 	-- Overlay WEAR / VIEW (muncul saat kartu di-tap)
 	local overlay: TextButton = make("TextButton", {
 		Name = "Overlay",
@@ -254,11 +280,14 @@ function OutfitCard.new(props: Props): OutfitCard
 		_fallback = fallback,
 		_name = nameLabel,
 		_star = star,
+		_trash = trash,
 		_overlay = overlay,
 		_busy = busy,
 		_preview = nil,
 		_hover = false,
 		_armed = false,
+		_confirm = false,
+		_confirmToken = 0,
 		_conns = {},
 	}, OutfitCard)
 
@@ -285,6 +314,14 @@ function OutfitCard.new(props: Props): OutfitCard
 		star.Activated:Connect(function()
 			fire(props.onFavorite)
 		end),
+		trash.Activated:Connect(function()
+			if not self._confirm then
+				self:_setConfirm(true)
+				return
+			end
+			self:_setConfirm(false)
+			fire(props.onDelete)
+		end),
 		wear.Activated:Connect(function()
 			fire(props.onWear)
 		end),
@@ -310,7 +347,29 @@ function OutfitCard.new(props: Props): OutfitCard
 end
 
 function OutfitCard._refreshStar(self: OutfitCard)
-	self._star.Visible = self.outfit.favorite or self._hover or self._armed
+	local shown = self._hover or self._armed
+	self._star.Visible = self.outfit.favorite or shown
+	self._trash.Visible = shown
+	if not shown and self._confirm then
+		self:_setConfirm(false)
+	end
+end
+
+-- Tap pertama ikon hapus hanya meminta kepastian; balik sendiri setelah CONFIRM_SECONDS.
+function OutfitCard._setConfirm(self: OutfitCard, confirm: boolean)
+	self._confirm = confirm
+	self._trash.Text = if confirm then TRASH_CONFIRM else TRASH
+	self._trash.BackgroundColor3 = if confirm then Tokens.Color.Danger else Tokens.Color.Background
+	self._trash.BackgroundTransparency = if confirm then 0 else 0.35
+	self._confirmToken += 1
+	if confirm then
+		local token = self._confirmToken
+		task.delay(CONFIRM_SECONDS, function()
+			if self._confirmToken == token and self._confirm then
+				self:_setConfirm(false)
+			end
+		end)
+	end
 end
 
 function OutfitCard.setFavorite(self: OutfitCard, favorite: boolean)
