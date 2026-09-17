@@ -1,10 +1,12 @@
 --!strict
 -- DOMAIN MURNI: slot outfit tersimpan (Wardrobe) di dalam data pemain (PlayerData v2).
 --   local entry, err = Wardrobe.add(data, name, PlayerData.encodeOutfit(state), os.time())
---   Wardrobe.rename(data, id, name)   Wardrobe.remove(data, id)   Wardrobe.find(data, id)
---   local rows = Wardrobe.list(data)  -- ringkasan untuk client (terbaru dulu)
+--   Wardrobe.rename(data, id, name, now)   Wardrobe.overwrite(data, id, encoded, now)
+--   Wardrobe.setFavorite(data, id, true)   Wardrobe.remove(data, id)   Wardrobe.find(data, id)
+--   local rows = Wardrobe.list(data)  -- ringkasan untuk client (urut simpan terbaru dulu; client mengurutkan ulang)
 -- Bentuk di DataStore (key pendek supaya hemat ukuran):
---   data.outfits = { { id = 3, n = "Nama", t = 1789000000, o = <encodeOutfit> }, ... } (urut simpan)
+--   data.outfits = { { id = 3, n = "Nama", t = 1789000000, u = 1789000500, f = true, o = <encodeOutfit> }, ... }
+--   (urut simpan; t = dibuat, u = terakhir diubah (isi/nama), f = favorit (nil = tidak))
 --   data.nextOutfitId = 4  -- id tidak pernah dipakai ulang (UI yang telat tidak salah sasaran)
 -- Nama dari pemain WAJIB lolos filter teks Roblox di server SEBELUM masuk ke sini (lihat WardrobeService).
 -- Ukuran: 1 outfit ringkas ~1-2 KB -> 30 slot jauh di bawah batas DataStore 4 MB per key.
@@ -21,6 +23,8 @@ export type Entry = {
 	id: number,
 	n: string, -- nama (sudah difilter)
 	t: number, -- dibuat (os.time)
+	u: number?, -- terakhir diubah: simpan / timpa / ganti nama (nil = sama dengan t, data lama)
+	f: boolean?, -- favorit
 	o: any, -- PlayerData.encodeOutfit
 }
 
@@ -28,14 +32,21 @@ export type Summary = {
 	id: number,
 	name: string,
 	createdAt: number,
+	updatedAt: number,
+	favorite: boolean,
 	count: number, -- jumlah item non-default (aksesori + baju + part tubuh + animasi)
-	thumbs: { number }, -- assetId untuk thumbnail (maks MAX_THUMBS)
+	thumbs: { number }, -- assetId untuk thumbnail (maks MAX_THUMBS), cadangan bila render 3D gagal
+	outfit: any, -- outfit ringkas (client: PlayerData.decodeOutfit -> render avatar di kartu)
 }
 
 type Data = { outfits: { Entry }, nextOutfitId: number }
 
 local function isId(x: any): boolean
 	return type(x) == "number" and x > 0 and x % 1 == 0 and x <= MAX_ID
+end
+
+local function isTime(x: any): boolean
+	return type(x) == "number" and x == x and x >= 0 and x < math.huge
 end
 
 -- ===== Nama =====
@@ -67,12 +78,7 @@ end
 -- ===== Skema =====
 
 local function validEntry(e: any): boolean
-	return type(e) == "table"
-		and isId(e.id)
-		and type(e.n) == "string"
-		and type(e.t) == "number"
-		and e.t == e.t
-		and type(e.o) == "table"
+	return type(e) == "table" and isId(e.id) and type(e.n) == "string" and isTime(e.t) and type(e.o) == "table"
 end
 
 -- Lengkapi data.outfits & data.nextOutfitId (dipanggil dari PlayerData.migrate). Mengubah di tempat.
@@ -85,6 +91,12 @@ function Wardrobe.sanitize(data: any)
 		for _, e in ipairs(data.outfits) do
 			if validEntry(e) and not seen[e.id] then
 				seen[e.id] = true
+				if not isTime(e.u) then
+					e.u = nil
+				end
+				if e.f ~= true then
+					e.f = nil -- hanya simpan true (hemat ukuran)
+				end
 				maxId = math.max(maxId, e.id)
 				table.insert(clean, e)
 			end
@@ -124,28 +136,44 @@ function Wardrobe.add(data: Data, name: string, encoded: any, now: number): (Ent
 	if Wardrobe.isFull(data) then
 		return nil, "FULL"
 	end
-	local entry: Entry = { id = data.nextOutfitId, n = name, t = now, o = encoded }
+	local entry: Entry = { id = data.nextOutfitId, n = name, t = now, u = now, o = encoded }
 	data.nextOutfitId += 1
 	table.insert(data.outfits, entry)
 	return entry, nil
 end
 
 -- Timpa isi outfit di slot yang ada (nama tetap). Return (true) | (false, "NOT_FOUND").
-function Wardrobe.overwrite(data: Data, id: any, encoded: any): (boolean, string?)
+function Wardrobe.overwrite(data: Data, id: any, encoded: any, now: number?): (boolean, string?)
 	local entry = Wardrobe.find(data, id)
 	if entry == nil then
 		return false, "NOT_FOUND"
 	end
 	entry.o = encoded
+	if now then
+		entry.u = now
+	end
 	return true, nil
 end
 
-function Wardrobe.rename(data: Data, id: any, name: string): (boolean, string?)
+function Wardrobe.rename(data: Data, id: any, name: string, now: number?): (boolean, string?)
 	local entry = Wardrobe.find(data, id)
 	if entry == nil then
 		return false, "NOT_FOUND"
 	end
 	entry.n = name
+	if now then
+		entry.u = now
+	end
+	return true, nil
+end
+
+-- Tandai / hapus favorit (tidak mengubah "terakhir diubah").
+function Wardrobe.setFavorite(data: Data, id: any, value: boolean): (boolean, string?)
+	local entry = Wardrobe.find(data, id)
+	if entry == nil then
+		return false, "NOT_FOUND"
+	end
+	entry.f = if value then true else nil
 	return true, nil
 end
 
@@ -204,7 +232,16 @@ function Wardrobe.summarize(entry: Entry): Summary
 			end
 		end
 	end
-	return { id = entry.id, name = entry.n, createdAt = entry.t, count = count, thumbs = thumbs }
+	return {
+		id = entry.id,
+		name = entry.n,
+		createdAt = entry.t,
+		updatedAt = entry.u or entry.t,
+		favorite = entry.f == true,
+		count = count,
+		thumbs = thumbs,
+		outfit = o,
+	}
 end
 
 -- Semua slot, terbaru dulu.

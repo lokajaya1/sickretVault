@@ -125,5 +125,35 @@ return function()
 	eq(err, "FULL", "FULL")
 	eq(full.nextOutfitId, Wardrobe.MAX_SLOTS + 1, "id tidak naik saat gagal")
 
+	-- 8. favorit & "terakhir diubah"
+	local fav = newData()
+	local a = Wardrobe.add(fav, "A", ENC, 100)
+	assert(a, "add fav")
+	eq(a.u, 100, "u = waktu simpan")
+	local sa = Wardrobe.summarize(a)
+	eq(sa.updatedAt, 100, "updatedAt")
+	eq(sa.favorite, false, "belum favorit")
+	eq(sa.outfit, ENC, "outfit ikut dikirim")
+	eq(Wardrobe.setFavorite(fav, a.id, true), true, "favorit")
+	eq(a.f, true, "f true")
+	eq(a.u, 100, "favorit tidak mengubah u")
+	eq(Wardrobe.summarize(a).favorite, true, "summary favorit")
+	eq(Wardrobe.setFavorite(fav, a.id, false), true, "hapus favorit")
+	eq(a.f, nil, "f dihapus (hemat)")
+	eq(select(2, Wardrobe.setFavorite(fav, 99, true)), "NOT_FOUND", "favorit tidak ada")
+	Wardrobe.rename(fav, a.id, "B", 200)
+	eq(a.u, 200, "rename mengubah u")
+	Wardrobe.overwrite(fav, a.id, {}, 300)
+	eq(a.u, 300, "overwrite mengubah u")
+	Wardrobe.rename(fav, a.id, "C")
+	eq(a.u, 300, "tanpa now -> u tetap")
+	-- data lama (tanpa u/f) & nilai rusak
+	local old: any =
+		{ outfits = { { id = 1, n = "x", t = 50, o = {} }, { id = 2, n = "y", t = 60, u = "x", f = "ya", o = {} } } }
+	Wardrobe.sanitize(old)
+	eq(Wardrobe.summarize(old.outfits[1]).updatedAt, 50, "u nil -> t")
+	eq(old.outfits[2].u, nil, "u rusak dibuang")
+	eq(old.outfits[2].f, nil, "f rusak dibuang")
+
 	print("PASS Wardrobe.spec")
 end
