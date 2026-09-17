@@ -66,6 +66,13 @@ return function()
 	rejects({ op = "favorite", id = 4, value = "ya" }, "BAD_ARG", "favorite value bukan bool")
 	rejects({ op = "favorite", value = true }, "BAD_ARG", "favorite tanpa id")
 
+	-- 5c. items: hanya id
+	local iv = V.validate({ op = "items", id = 7 }) :: any
+	assert(iv, "items valid")
+	eq(iv.id, 7, "items id")
+	rejects({ op = "items" }, "BAD_ARG", "items tanpa id")
+	rejects({ op = "items", id = 7, value = true }, "BAD_ARG", "items field asing")
+
 	-- 6. setSetting: key dari TEMPLATE, tipe harus sama
 	local s = V.validate({ op = "setSetting", key = "restoreOutfit", value = false }) :: any
 	assert(s, "setSetting valid")

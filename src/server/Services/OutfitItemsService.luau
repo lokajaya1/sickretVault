@@ -1,0 +1,149 @@
+--!strict
+-- Detail item di dalam satu outfit tersimpan (untuk halaman detail Saved Outfits).
+--   local items = OutfitItemsService.new({ api = api })
+--   local ok, res = items:list(state)   -- YIELD (GetBatchItemDetailsAsync lewat gateway)
+--   res = { items = { { id, name, price, assetType, isForSale } }, total = 123, missing = 1 }
+-- Urutan: aksesori (urut dipakai) -> classic -> body part -> animasi, supaya tampilan stabil.
+-- Harga mengikuti aturan katalog: Price, kalau nil pakai LowestPrice; keduanya nil = tidak dijual.
+-- `total` hanya menjumlahkan item yang ada harganya (item tidak dijual tidak dihitung).
+-- Tidak memanggil API Roblox langsung (lewat `api`); `toEnum` bisa diganti saat test.
+
+local Shared = game:GetService("ReplicatedStorage"):WaitForChild("Shared")
+local Types = require(Shared.Domain.Types)
+local Log = require(Shared.Util.Log)
+
+local log = Log.new("OutfitItemsService")
+
+type State = Types.OutfitState
+
+export type Item = {
+	id: number,
+	name: string,
+	assetType: string?,
+	price: number?, -- nil = tidak dijual / tidak diketahui
+	isForSale: boolean,
+}
+
+export type Result = {
+	items: { Item },
+	total: number, -- jumlah harga item yang dijual
+	missing: number, -- id yang tidak dikembalikan API (dilewati)
+}
+
+export type Deps = {
+	api: any, -- RobloxApi (getBatchItemDetails)
+	toEnum: ((enumName: string, itemName: string) -> any)?,
+}
+
+local OutfitItemsService = {}
+OutfitItemsService.__index = OutfitItemsService
+
+export type OutfitItemsService = typeof(setmetatable(
+	{} :: {
+		_api: any,
+		_assetItemType: any,
+	},
+	OutfitItemsService
+))
+
+local function defaultToEnum(enumName: string, itemName: string): any
+	local ok, item = pcall(function()
+		return (Enum :: any)[enumName][itemName]
+	end)
+	return if ok then item else nil
+end
+
+function OutfitItemsService.new(deps: Deps): OutfitItemsService
+	assert(deps and deps.api, "OutfitItemsService butuh deps.api")
+	local toEnum = deps.toEnum or defaultToEnum
+	return setmetatable({
+		_api = deps.api,
+		_assetItemType = toEnum("AvatarItemType", "Asset"),
+	}, OutfitItemsService)
+end
+
+-- Kumpulkan assetId dari OutfitState dengan urutan stabil (tanpa duplikat).
+function OutfitItemsService.idsOf(state: State): { number }
+	local out: { number } = {}
+	local seen: { [number]: boolean } = {}
+	local function add(id: any)
+		if type(id) == "number" and id > 0 and id % 1 == 0 and not seen[id] then
+			seen[id] = true
+			table.insert(out, id)
+		end
+	end
+
+	local accessories = {}
+	for _, a in state.accessories do
+		table.insert(accessories, a)
+	end
+	table.sort(accessories, function(x, y)
+		if (x.seq or 0) ~= (y.seq or 0) then
+			return (x.seq or 0) < (y.seq or 0)
+		end
+		return x.assetId < y.assetId
+	end)
+	for _, a in accessories do
+		add(a.assetId)
+	end
+
+	for _, group in { state.classic, state.bodyParts, state.animations } do
+		local slots = {}
+		for slot in group do
+			table.insert(slots, slot)
+		end
+		table.sort(slots)
+		for _, slot in slots do
+			add(group[slot].id)
+		end
+	end
+	return out
+end
+
+local function toItem(id: number, raw: any): Item?
+	if type(raw) ~= "table" then
+		return nil
+	end
+	local price = raw.Price
+	if type(price) ~= "number" then
+		price = if type(raw.LowestPrice) == "number" then raw.LowestPrice else nil
+	end
+	return {
+		id = id,
+		name = if type(raw.Name) == "string" and raw.Name ~= "" then raw.Name else "Item " .. tostring(id),
+		assetType = if type(raw.AssetType) == "string" then raw.AssetType else nil,
+		price = price,
+		isForSale = price ~= nil,
+	}
+end
+
+-- YIELD. Return (true, Result) | (false, { code = "BAD_ARG" | "FAILED" }).
+function OutfitItemsService.list(self: OutfitItemsService, state: State): (boolean, any)
+	if type(state) ~= "table" or type(state.accessories) ~= "table" then
+		return false, { code = "BAD_ARG" }
+	end
+	local ids = OutfitItemsService.idsOf(state)
+	if #ids == 0 then
+		return true, { items = {}, total = 0, missing = 0 }
+	end
+	local ok, details = self._api:getBatchItemDetails(ids, self._assetItemType)
+	if not ok then
+		log.debug("detail item gagal", details and details.code)
+		return false, { code = "FAILED" }
+	end
+
+	local items: { Item } = {}
+	local total, missing = 0, 0
+	for _, id in ids do
+		local item = toItem(id, details[id])
+		if item == nil then
+			missing += 1
+		else
+			table.insert(items, item)
+			total += item.price or 0
+		end
+	end
+	return true, { items = items, total = total, missing = missing }
+end
+
+return OutfitItemsService

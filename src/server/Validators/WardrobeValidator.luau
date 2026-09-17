@@ -10,6 +10,7 @@
 --   { op = "rename", id = number, name = string }
 --   { op = "delete", id = number }
 --   { op = "favorite", id = number, value = boolean }
+--   { op = "items", id = number }        -- nama & harga item di dalam outfit
 --   { op = "setSetting", key = string, value = any }  -- key & tipe harus ada di PlayerData.TEMPLATE.settings
 -- Return permintaan BARU yang bersih (nama sudah dirapikan, BELUM difilter Roblox), atau (nil, kode).
 -- Murni: tanpa service, tanpa yield -> dites dengan Lune.
@@ -27,6 +28,7 @@ export type Request =
 	| { op: "rename", id: number, name: string }
 	| { op: "delete", id: number }
 	| { op: "favorite", id: number, value: boolean }
+	| { op: "items", id: number }
 	| { op: "setSetting", key: string, value: any }
 
 -- op -> field yang diizinkan (selain `op`)
@@ -38,6 +40,7 @@ local SCHEMA: { [string]: { [string]: "id" | "name" | "name?" | "key" | "value" 
 	rename = { id = "id", name = "name" },
 	delete = { id = "id" },
 	favorite = { id = "id", value = "bool" },
+	items = { id = "id" },
 	setSetting = { key = "key", value = "value" },
 }
 

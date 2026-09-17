@@ -24,6 +24,7 @@ local AvatarService = require(script.Services.AvatarService)
 local AvatarRules = require(script.Services.AvatarRules)
 local PlayerDataService = require(script.Services.PlayerDataService)
 local WardrobeService = require(script.Services.WardrobeService)
+local OutfitItemsService = require(script.Services.OutfitItemsService)
 local Inspect = require(script.Dev.Inspect)
 
 local log = Log.new("Server")
@@ -86,7 +87,7 @@ avatar = AvatarService.new({
 
 -- Wardrobe (slot outfit) butuh data pemain.
 local wardrobe = if playerData and Features.Wardrobe
-	then WardrobeService.new({ playerData = playerData, avatar = avatar })
+	then WardrobeService.new({ playerData = playerData, avatar = avatar, items = OutfitItemsService.new({ api = api }) })
 	else nil
 
 -- 3. Rate limiter per remote (preset dari Limits.Rate).

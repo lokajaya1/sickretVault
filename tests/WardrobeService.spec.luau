@@ -54,9 +54,18 @@ local function setup(opts: { filter: any?, noState: boolean? }?)
 		table.insert(t.worn, state)
 		return true, nil
 	end
+	local itemsService: any = {}
+	function itemsService.list(_self: any, state: any)
+		t.listed = state
+		if t.itemsFail then
+			return false, { code = "FAILED" }
+		end
+		return true, { items = { { id = 20, name = "Topi", price = 50, isForSale = true } }, total = 50, missing = 0 }
+	end
 	local svc = WardrobeService.new({
 		playerData = data,
 		avatar = avatar,
+		items = itemsService,
 		filterName = o.filter or function(_player: any, text: string)
 			table.insert(t.filtered, text)
 			return true, text
@@ -176,6 +185,20 @@ return function()
 	eq(res.outfits[1].favorite, true, "favorit di daftar")
 	eq(svc:handle(p, { op = "favorite", id = 999, value = true }).code, "NOT_FOUND", "favorite tidak ada")
 	svc:handle(p, { op = "delete", id = favId })
+
+	-- 8c. items: nama & harga item di dalam outfit
+	res = svc:handle(p, { op = "save" })
+	local itemsId = res.outfit.id
+	res = svc:handle(p, { op = "items", id = itemsId })
+	eq(res.ok, true, "items ok")
+	eq(res.total, 50, "total harga")
+	eq(res.items[1].name, "Topi", "item pertama")
+	eq(t.listed.accessories ~= nil, true, "state dikirim ke OutfitItemsService")
+	eq(svc:handle(p, { op = "items", id = 999 }).code, "NOT_FOUND", "items slot tidak ada")
+	t.itemsFail = true
+	eq(svc:handle(p, { op = "items", id = itemsId }).code, "FAILED", "items gagal")
+	t.itemsFail = nil
+	svc:handle(p, { op = "delete", id = itemsId })
 
 	-- 9. setSetting
 	res = svc:handle(p, { op = "setSetting", key = "restoreOutfit", value = false })

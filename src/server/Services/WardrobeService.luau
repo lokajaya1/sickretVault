@@ -25,6 +25,7 @@ export type FilterName = (player: any, text: string) -> (boolean, string?)
 export type Deps = {
 	playerData: any, -- PlayerDataService
 	avatar: any, -- AvatarService (getState, wearOutfit)
+	items: any?, -- OutfitItemsService (nama & harga item); nil = op "items" menjawab DISABLED
 	filterName: FilterName?, -- default TextService (Broadcast)
 }
 
@@ -35,6 +36,7 @@ export type WardrobeService = typeof(setmetatable(
 	{} :: {
 		_data: any,
 		_avatar: any,
+		_itemsService: any,
 		_filter: FilterName,
 		_busy: { [any]: boolean },
 	},
@@ -62,6 +64,7 @@ function WardrobeService.new(deps: Deps): WardrobeService
 	return setmetatable({
 		_data = deps.playerData,
 		_avatar = deps.avatar,
+		_itemsService = deps.items,
 		_filter = deps.filterName or defaultFilter,
 		_busy = {},
 	}, WardrobeService)
@@ -173,6 +176,22 @@ function WardrobeService._delete(self: WardrobeService, player: any, id: number)
 	return self:_changed(player)
 end
 
+-- Nama & harga item di dalam outfit (halaman detail). YIELD (API katalog lewat gateway).
+function WardrobeService._items(self: WardrobeService, player: any, id: number): any
+	if self._itemsService == nil then
+		return fail("DISABLED")
+	end
+	local state, code = self._data:getOutfit(player, id)
+	if state == nil then
+		return fail(code or "NOT_FOUND")
+	end
+	local ok, res = self._itemsService:list(state)
+	if not ok then
+		return fail((res and res.code) or "FAILED")
+	end
+	return { ok = true, id = id, items = res.items, total = res.total, missing = res.missing }
+end
+
 function WardrobeService._favorite(self: WardrobeService, player: any, id: number, value: boolean): any
 	local ok, code = self._data:favoriteOutfit(player, id, value)
 	if not ok then
@@ -210,6 +229,8 @@ function WardrobeService.handle(self: WardrobeService, player: any, req: any): a
 			return self:_rename(player, req.id, req.name)
 		elseif op == "delete" then
 			return self:_delete(player, req.id)
+		elseif op == "items" then
+			return self:_items(player, req.id)
 		elseif op == "favorite" then
 			return self:_favorite(player, req.id, req.value)
 		elseif op == "setSetting" then
