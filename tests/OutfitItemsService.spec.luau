@@ -52,7 +52,7 @@ return function()
 
 	-- 2. harga: Price, lalu LowestPrice, lalu tidak dijual
 	local svc, t = setup({
-		[20] = { Name = "Topi", AssetType = "Hat", Price = 50 },
+		[20] = { Name = "Topi", AssetType = "Hat", Price = 50, CreatorName = "Roblox" },
 		[21] = { Name = "Rambut", AssetType = "HairAccessory", LowestPrice = 25 },
 		[31] = { Name = "Celana", AssetType = "Pants" },
 		[30] = { Name = "", AssetType = "Shirt", Price = 0 },
@@ -65,6 +65,8 @@ return function()
 	eq(res.missing, 1, "1 item hilang")
 	eq(res.total, 80, "total harga")
 	eq(res.items[1].name, "Topi", "urutan sama dengan idsOf")
+	eq(res.items[1].creator, "Roblox", "nama pembuat ikut")
+	eq(res.items[2].creator, nil, "tanpa CreatorName -> nil")
 	eq(res.items[2].price, 25, "LowestPrice dipakai")
 	eq(res.items[3].price, nil, "tanpa harga")
 	eq(res.items[3].isForSale, false, "tidak dijual")
