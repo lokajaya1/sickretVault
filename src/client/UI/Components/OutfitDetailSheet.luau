@@ -797,6 +797,9 @@ function OutfitDetailSheet.open(self: OutfitDetailSheet, outfit: Outfit)
 	self._star.TextColor3 = if outfit.favorite then Tokens.Color.Warning else Tokens.Color.TextMuted
 	self._meta.Text = dateText(outfit.createdAt) .. "\nFolders: None"
 	self:_setConfirm(false)
+	if not same then
+		self._right.CanvasPosition = Vector2.zero -- outfit lain -> mulai dari atas (nama & Total Cost)
+	end
 
 	if changed then
 		self:_loadItems(outfit)
