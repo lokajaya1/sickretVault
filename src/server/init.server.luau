@@ -13,6 +13,7 @@ local Log = require(Shared.Util.Log)
 local Features = require(Shared.Config.Features)
 local PlayerData = require(Shared.Domain.PlayerData)
 local IntentValidator = require(script.Validators.IntentValidator)
+local WardrobeValidator = require(script.Validators.WardrobeValidator)
 local RobloxApi = require(script.Gateways.RobloxApi)
 local CatalogService = require(script.Services.CatalogService)
 local ItemInfoService = require(script.Services.ItemInfoService)
@@ -22,6 +23,7 @@ local CheckoutService = require(script.Services.CheckoutService)
 local AvatarService = require(script.Services.AvatarService)
 local AvatarRules = require(script.Services.AvatarRules)
 local PlayerDataService = require(script.Services.PlayerDataService)
+local WardrobeService = require(script.Services.WardrobeService)
 local Inspect = require(script.Dev.Inspect)
 
 local log = Log.new("Server")
@@ -82,6 +84,11 @@ avatar = AvatarService.new({
 	end,
 })
 
+-- Wardrobe (slot outfit) butuh data pemain.
+local wardrobe = if playerData and Features.Wardrobe
+	then WardrobeService.new({ playerData = playerData, avatar = avatar })
+	else nil
+
 -- 3. Rate limiter per remote (preset dari Limits.Rate).
 local intentLimiter = RateLimiter.fromLimits(RemoteNames.Events.AvatarIntent)
 local searchLimiter = RateLimiter.fromLimits(RemoteNames.Functions.CatalogSearch)
@@ -89,6 +96,7 @@ local stateLimiter = RateLimiter.fromLimits(RemoteNames.Functions.GetState)
 local bundleLimiter = RateLimiter.fromLimits(RemoteNames.Functions.GetBundle)
 local detailLimiter = RateLimiter.fromLimits(RemoteNames.Functions.GetItemDetail)
 local checkoutLimiter = RateLimiter.fromLimits(RemoteNames.Functions.Checkout)
+local wardrobeLimiter = RateLimiter.fromLimits(RemoteNames.Functions.Wardrobe)
 
 -- 4. AvatarIntent: rate limit -> validasi -> AvatarService. Gagal -> Notify { code, op }.
 Remotes.event(RemoteNames.Events.AvatarIntent).OnServerEvent:Connect(function(player: Player, raw: any)
@@ -206,7 +214,32 @@ Remotes.func(RemoteNames.Functions.Checkout).OnServerInvoke = function(player: P
 	return { ok = true }
 end
 
--- 5d. Muat data pemain lalu pasang outfit terakhir (YIELD). Gagal -> tetap avatar asli.
+-- 5d. Wardrobe: { op, ... } -> { ok, outfits?, outfit?, settings?, max? } | { ok = false, code }.
+-- Flag mati / data pemain mati -> DISABLED. save & rename YIELD (filter teks).
+Remotes.func(RemoteNames.Functions.Wardrobe).OnServerInvoke = function(player: Player, raw: any)
+	if not wardrobeLimiter:take(player.UserId) then
+		return { ok = false, code = "RATE_LIMITED" }
+	end
+	if wardrobe == nil then
+		return { ok = false, code = "DISABLED" }
+	end
+	local req, err = WardrobeValidator.validate(raw)
+	if not req then
+		log.debug("Wardrobe ditolak", err, player.Name)
+		return { ok = false, code = err or "BAD_ARG" }
+	end
+	local pOk, res = pcall(wardrobe.handle, wardrobe, player, req)
+	if not pOk then
+		log.error("Wardrobe error", res, player.Name)
+		return { ok = false, code = "FAILED" }
+	end
+	if not res.ok then
+		log.debug("Wardrobe", req.op, res.code, player.Name)
+	end
+	return res
+end
+
+-- 5e. Muat data pemain lalu pasang outfit terakhir (YIELD). Gagal -> tetap avatar asli.
 local function loadPlayerData(player: Player)
 	if playerData == nil or not playerData:load(player) then
 		return
@@ -227,7 +260,7 @@ local function loadPlayerData(player: Player)
 	end
 end
 
--- 5e. Sesi avatar per pemain. attach yield (ambil avatar asli) -> task.spawn.
+-- 5f. Sesi avatar per pemain. attach yield (ambil avatar asli) -> task.spawn.
 local function onPlayerAdded(player: Player)
 	local ok, err = pcall(avatar.attach, avatar, player)
 	if not ok then
@@ -254,6 +287,10 @@ Players.PlayerRemoving:Connect(function(player: Player)
 	bundleLimiter:reset(player.UserId)
 	detailLimiter:reset(player.UserId)
 	checkoutLimiter:reset(player.UserId)
+	wardrobeLimiter:reset(player.UserId)
+	if wardrobe then
+		wardrobe:forget(player)
+	end
 end)
 
 -- Ambil rules avatar sekali di awal supaya klik pertama tidak menunggu.
