@@ -57,6 +57,7 @@ export type Props = {
 	onRename: (Outfit, string) -> (),
 	onDelete: (Outfit) -> (),
 	onFavorite: ((Outfit) -> ())?,
+	onItem: ((item: any) -> ())?, -- tap kartu item -> buka detail item katalog
 	onBack: () -> (),
 }
 
@@ -90,6 +91,7 @@ export type OutfitDetailSheet = typeof(setmetatable(
 		_confirm: boolean,
 		_confirmToken: number,
 		_itemsToken: number,
+		_itemConns: { RBXScriptConnection },
 		_conns: { RBXScriptConnection },
 	},
 	OutfitDetailSheet
@@ -488,6 +490,7 @@ function OutfitDetailSheet.new(props: Props): OutfitDetailSheet
 		_confirm = false,
 		_confirmToken = 0,
 		_itemsToken = 0,
+		_itemConns = {},
 		_conns = {},
 	}, OutfitDetailSheet)
 
@@ -666,6 +669,15 @@ local function clearChildren(parent: Instance)
 	end
 end
 
+-- Bersihkan kartu item beserta sambungannya.
+function OutfitDetailSheet._clearItems(self: OutfitDetailSheet)
+	for _, c in self._itemConns do
+		c:Disconnect()
+	end
+	table.clear(self._itemConns)
+	clearChildren(self._grid)
+end
+
 function OutfitDetailSheet._setStatus(self: OutfitDetailSheet, text: string?, retry: boolean)
 	self._status.Text = text or ""
 	self._status.Visible = text ~= nil
@@ -675,12 +687,15 @@ end
 
 -- Tampilkan item + Total Cost dari balasan server.
 function OutfitDetailSheet._showItems(self: OutfitDetailSheet, data: any)
-	clearChildren(self._grid)
+	self:_clearItems()
 	local items = if type(data) == "table" and type(data.items) == "table" then data.items else {}
 	local gap = Tokens.Space.XS
+	local onItem = self._props.onItem
 	for i, item in items do
-		local cell: Frame = make("Frame", {
+		local cell: TextButton = make("TextButton", {
 			Name = "Item" .. tostring(item.id),
+			Text = "",
+			AutoButtonColor = onItem ~= nil,
 			BackgroundColor3 = Tokens.Color.PanelRaised,
 			BackgroundTransparency = Tokens.Transparency.PanelRaised,
 			BorderSizePixel = 0,
@@ -688,6 +703,14 @@ function OutfitDetailSheet._showItems(self: OutfitDetailSheet, data: any)
 			ZIndex = Z,
 			Parent = self._grid,
 		}, { corner(Tokens.Radius.Small) })
+		if onItem ~= nil then
+			table.insert(
+				self._itemConns,
+				cell.Activated:Connect(function()
+					onItem(item)
+				end)
+			)
+		end
 		local line = Tokens.TextSize.Caption + 2
 		make("ImageLabel", {
 			Name = "Thumb",
@@ -762,7 +785,7 @@ function OutfitDetailSheet._loadItems(self: OutfitDetailSheet, outfit: Outfit, f
 		end
 	end
 
-	clearChildren(self._grid)
+	self:_clearItems()
 	self._total.Text = "—"
 	self._total.TextColor3 = Tokens.Color.TextMuted
 	self._itemsTitle.Text = ("Items (%d)"):format(outfit.count)
@@ -856,6 +879,7 @@ function OutfitDetailSheet.close(self: OutfitDetailSheet)
 end
 
 function OutfitDetailSheet.destroy(self: OutfitDetailSheet)
+	self:_clearItems()
 	self:_clearPreview()
 	for _, c in self._conns do
 		c:Disconnect()
