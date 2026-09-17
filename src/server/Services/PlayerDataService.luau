@@ -7,6 +7,9 @@
 --   data:setLastOutfit(player, state | nil) -- dipanggil setiap state berubah (murah, tanpa yield)
 --   data:setSetting(player, "restoreOutfit", false)  -- toggle "pakai outfit terakhir"
 --   data:addOutfit(player, name?, state) / getOutfit / renameOutfit / deleteOutfit / favoriteOutfit / listOutfits
+--   data:deleteOutfits(player, { 1, 2 })    -- hapus banyak sekaligus ("Select Outfits")
+--   data:listFolders(player) / addFolder / renameFolder / deleteFolder
+--   data:setOutfitFolders(player, outfitId, { 1 }) / applyFolder(player, { 1, 2 }, folderId, true)
 --   data:release(player)                    -- saat PlayerRemoving (ProfileStore menyimpan & melepas lock)
 -- Auto save berkala (AUTO_SAVE_PERIOD, bawaan 300 dtk), simpan saat EndSession & saat server mati
 -- sudah ditangani ProfileStore sendiri.
@@ -17,6 +20,7 @@ local Shared = game:GetService("ReplicatedStorage"):WaitForChild("Shared")
 local Types = require(Shared.Domain.Types)
 local PlayerData = require(Shared.Domain.PlayerData)
 local Wardrobe = require(Shared.Domain.Wardrobe)
+local OutfitFolders = require(Shared.Domain.OutfitFolders)
 local Log = require(Shared.Util.Log)
 
 local log = Log.new("PlayerData")
@@ -289,6 +293,110 @@ function PlayerDataService.deleteOutfit(self: PlayerDataService, player: any, id
 		return false, "NOT_LOADED"
 	end
 	return Wardrobe.remove(data, id)
+end
+
+-- Hapus banyak slot sekaligus. Id yang tidak ada dilewati (bukan gagal).
+-- Return (jumlahTerhapus, nil) | (nil, "NOT_LOADED").
+function PlayerDataService.deleteOutfits(self: PlayerDataService, player: any, ids: { number }): (number?, string?)
+	local data = writable(self, player)
+	if data == nil then
+		return nil, "NOT_LOADED"
+	end
+	local removed = 0
+	local done: { [number]: boolean } = {}
+	for _, id in ids do
+		if not done[id] then
+			done[id] = true
+			if Wardrobe.remove(data, id) then
+				removed += 1
+			end
+		end
+	end
+	return removed, nil
+end
+
+-- ===== Folder outfit =====
+-- Kode sama seperti slot: NOT_LOADED | NOT_FOUND | FULL | DUPLICATE | TOO_MANY | BAD_ARG.
+
+function PlayerDataService.listFolders(self: PlayerDataService, player: any): ({ OutfitFolders.Summary }?, string?)
+	local data = readable(self, player)
+	if data == nil then
+		return nil, "NOT_LOADED"
+	end
+	return OutfitFolders.list(data), nil
+end
+
+-- Cek awal sebelum filter nama (yield): penuh? | nil bila data belum dimuat.
+function PlayerDataService.folderSlotInfo(self: PlayerDataService, player: any): boolean?
+	local data = writable(self, player)
+	if data == nil then
+		return nil
+	end
+	return OutfitFolders.isFull(data)
+end
+
+-- `name` harus sudah bersih + difilter.
+function PlayerDataService.addFolder(self: PlayerDataService, player: any, name: string): (number?, string?)
+	local data = writable(self, player)
+	if data == nil then
+		return nil, "NOT_LOADED"
+	end
+	local entry, err = OutfitFolders.add(data, name, os.time())
+	if entry == nil then
+		return nil, err
+	end
+	return entry.id, nil
+end
+
+function PlayerDataService.renameFolder(
+	self: PlayerDataService,
+	player: any,
+	id: number,
+	name: string
+): (boolean, string?)
+	local data = writable(self, player)
+	if data == nil then
+		return false, "NOT_LOADED"
+	end
+	return OutfitFolders.rename(data, id, name)
+end
+
+-- Hapus folder saja; outfit di dalamnya tetap ada (hanya dilepas).
+function PlayerDataService.deleteFolder(self: PlayerDataService, player: any, id: number): (boolean, string?)
+	local data = writable(self, player)
+	if data == nil then
+		return false, "NOT_LOADED"
+	end
+	return OutfitFolders.remove(data, id)
+end
+
+-- Ganti total folder satu outfit ("Modify Folders").
+function PlayerDataService.setOutfitFolders(
+	self: PlayerDataService,
+	player: any,
+	outfitId: number,
+	ids: { number }
+): (boolean, string?)
+	local data = writable(self, player)
+	if data == nil then
+		return false, "NOT_LOADED"
+	end
+	return OutfitFolders.setFolders(data, outfitId, ids)
+end
+
+-- Tambah / lepas satu folder untuk banyak outfit ("Select Outfits").
+function PlayerDataService.applyFolder(
+	self: PlayerDataService,
+	player: any,
+	outfitIds: { number },
+	folderId: number,
+	value: boolean
+): (OutfitFolders.BulkResult?, string?)
+	local data = writable(self, player)
+	if data == nil then
+		return nil, "NOT_LOADED"
+	end
+	return OutfitFolders.apply(data, outfitIds, folderId, value)
 end
 
 function PlayerDataService.release(self: PlayerDataService, player: any)

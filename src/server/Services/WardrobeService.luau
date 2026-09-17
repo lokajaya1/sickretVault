@@ -1,11 +1,14 @@
 --!strict
--- Wardrobe (server): simpan outfit sekarang ke slot, daftar, pakai, timpa, ganti nama, favorit, hapus, setting.
+-- Wardrobe (server): simpan outfit sekarang ke slot, daftar, pakai, timpa, ganti nama, favorit, hapus, setting,
+-- plus folder outfit (buat/ganti nama/hapus, pindah satu atau banyak) & hapus banyak sekaligus.
 --   local wardrobe = WardrobeService.new({ playerData = playerData, avatar = avatar })
 --   local res = wardrobe:handle(player, req)  -- req SUDAH lolos WardrobeValidator (YIELD: filter nama)
---   res = { ok = true, outfits?, outfit?, settings?, max? } | { ok = false, code }
+--   res = { ok = true, outfits?, folders?, outfit?, settings?, max?, maxFolders?, removed?, changed?, skipped? }
+--       | { ok = false, code }
 -- Kode gagal: NOT_LOADED (data belum/gagal dimuat) | NOT_READY (avatar belum siap) | FULL | NOT_FOUND
 --   | INVALID (slot rusak) | BUSY (permintaan lain masih jalan) | FILTER_FAILED (TextService error)
---   | FILTERED (nama kena filter -> minta nama lain) | BAD_ARG.
+--   | FILTERED (nama kena filter -> minta nama lain) | DUPLICATE (nama folder sudah ada)
+--   | TOO_MANY (folder per outfit melebihi batas) | BAD_ARG.
 -- Nama dari pemain WAJIB lewat filter teks Roblox di server sebelum disimpan (aturan Roblox).
 -- Konteks Broadcast dipakai karena nama bisa tampil ke pemain lain nanti (Community Outfits).
 -- Nama yang berubah oleh filter (jadi ###) DITOLAK, bukan disimpan -> pemain memilih nama lain.
@@ -14,6 +17,7 @@
 
 local Shared = game:GetService("ReplicatedStorage"):WaitForChild("Shared")
 local Wardrobe = require(Shared.Domain.Wardrobe)
+local OutfitFolders = require(Shared.Domain.OutfitFolders)
 local Retry = require(Shared.Util.Retry)
 local Log = require(Shared.Util.Log)
 
@@ -70,7 +74,8 @@ function WardrobeService.new(deps: Deps): WardrobeService
 	}, WardrobeService)
 end
 
--- Filter nama (yield). Return (nama, nil) | (nil, "FILTER_FAILED" | "FILTERED").
+-- Filter nama (yield). Dipakai untuk nama outfit DAN nama folder.
+-- Return (nama, nil) | (nil, "FILTER_FAILED" | "FILTERED").
 function WardrobeService._filterName(self: WardrobeService, player: any, name: string): (string?, string?)
 	local pOk, ok, result = pcall(self._filter, player, name)
 	if not pOk or not ok or type(result) ~= "string" then
@@ -88,7 +93,14 @@ function WardrobeService._list(self: WardrobeService, player: any): any
 	if outfits == nil then
 		return fail(code or "NOT_LOADED")
 	end
-	return { ok = true, outfits = outfits, max = Wardrobe.MAX_SLOTS, settings = self._data:getSettings(player) }
+	return {
+		ok = true,
+		outfits = outfits,
+		folders = self._data:listFolders(player) or {},
+		max = Wardrobe.MAX_SLOTS,
+		maxFolders = OutfitFolders.MAX_FOLDERS,
+		settings = self._data:getSettings(player),
+	}
 end
 
 -- Sukses mengubah data -> balas daftar terbaru (+ field tambahan).
@@ -200,6 +212,79 @@ function WardrobeService._favorite(self: WardrobeService, player: any, id: numbe
 	return self:_changed(player)
 end
 
+-- ===== Folder =====
+
+function WardrobeService._folderAdd(self: WardrobeService, player: any, name: string): any
+	local full = self._data:folderSlotInfo(player)
+	if full == nil then
+		return fail("NOT_LOADED")
+	elseif full then
+		return fail("FULL")
+	end
+	local filtered, code = self:_filterName(player, name) -- yield
+	if filtered == nil then
+		return fail(code :: string)
+	end
+	local id, addCode = self._data:addFolder(player, filtered)
+	if id == nil then
+		return fail(addCode or "FAILED")
+	end
+	return self:_changed(player, { folder = id })
+end
+
+function WardrobeService._folderRename(self: WardrobeService, player: any, id: number, name: string): any
+	local filtered, code = self:_filterName(player, name) -- yield
+	if filtered == nil then
+		return fail(code :: string)
+	end
+	local ok, renameCode = self._data:renameFolder(player, id, filtered)
+	if not ok then
+		return fail(renameCode or "FAILED")
+	end
+	return self:_changed(player)
+end
+
+-- Hapus folder saja: outfit di dalamnya tetap ada.
+function WardrobeService._folderDelete(self: WardrobeService, player: any, id: number): any
+	local ok, code = self._data:deleteFolder(player, id)
+	if not ok then
+		return fail(code or "FAILED")
+	end
+	return self:_changed(player)
+end
+
+function WardrobeService._setFolders(self: WardrobeService, player: any, id: number, folders: { number }): any
+	local ok, code = self._data:setOutfitFolders(player, id, folders)
+	if not ok then
+		return fail(code or "FAILED")
+	end
+	return self:_changed(player)
+end
+
+-- ===== Banyak sekaligus ("Select Outfits") =====
+
+function WardrobeService._bulkDelete(self: WardrobeService, player: any, ids: { number }): any
+	local removed, code = self._data:deleteOutfits(player, ids)
+	if removed == nil then
+		return fail(code or "FAILED")
+	end
+	return self:_changed(player, { removed = removed })
+end
+
+function WardrobeService._bulkFolder(
+	self: WardrobeService,
+	player: any,
+	ids: { number },
+	folderId: number,
+	value: boolean
+): any
+	local res, code = self._data:applyFolder(player, ids, folderId, value)
+	if res == nil then
+		return fail(code or "FAILED")
+	end
+	return self:_changed(player, { changed = res.changed, skipped = res.skipped })
+end
+
 function WardrobeService._setSetting(self: WardrobeService, player: any, key: string, value: any): any
 	local ok, code = self._data:setSetting(player, key, value)
 	if not ok then
@@ -235,6 +320,18 @@ function WardrobeService.handle(self: WardrobeService, player: any, req: any): a
 			return self:_favorite(player, req.id, req.value)
 		elseif op == "setSetting" then
 			return self:_setSetting(player, req.key, req.value)
+		elseif op == "folderAdd" then
+			return self:_folderAdd(player, req.name)
+		elseif op == "folderRename" then
+			return self:_folderRename(player, req.id, req.name)
+		elseif op == "folderDelete" then
+			return self:_folderDelete(player, req.id)
+		elseif op == "setFolders" then
+			return self:_setFolders(player, req.id, req.folders)
+		elseif op == "bulkDelete" then
+			return self:_bulkDelete(player, req.ids)
+		elseif op == "bulkFolder" then
+			return self:_bulkFolder(player, req.ids, req.id, req.value)
 		end
 		return fail("BAD_ARG")
 	end)

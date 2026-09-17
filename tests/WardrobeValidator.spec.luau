@@ -4,7 +4,9 @@
 -- Lokal : lune run tools/run-tests.luau
 local Server = game:GetService("ServerScriptService"):WaitForChild("Server")
 local V = require(Server.Validators.WardrobeValidator)
-local Wardrobe = require(game:GetService("ReplicatedStorage"):WaitForChild("Shared").Domain.Wardrobe)
+local Shared = game:GetService("ReplicatedStorage"):WaitForChild("Shared")
+local Wardrobe = require(Shared.Domain.Wardrobe)
+local OutfitFolders = require(Shared.Domain.OutfitFolders)
 
 local function eq(a: any, b: any, msg: string)
 	assert(a == b, ("%s: expected %s, got %s"):format(msg, tostring(b), tostring(a)))
@@ -82,6 +84,63 @@ return function()
 	rejects({ op = "setSetting", key = "restoreOutfit" }, "BAD_ARG", "tanpa value")
 	rejects({ op = "setSetting", key = "admin", value = true }, "BAD_ARG", "key asing")
 	rejects({ op = "setSetting", key = 1, value = true }, "BAD_ARG", "key bukan string")
+
+	-- 7. folder: nama pakai batas OutfitFolders (24), bukan batas nama outfit (32)
+	local fa = V.validate({ op = "folderAdd", name = "  Pesta  Malam " }) :: any
+	assert(fa, "folderAdd valid")
+	eq(fa.name, "Pesta Malam", "nama folder dirapikan")
+	rejects({ op = "folderAdd" }, "BAD_NAME", "folderAdd tanpa nama")
+	rejects({ op = "folderAdd", name = "   " }, "EMPTY", "folderAdd nama kosong")
+	rejects(
+		{ op = "folderAdd", name = string.rep("a", OutfitFolders.MAX_NAME + 1) },
+		"TOO_LONG",
+		"folderAdd terlalu panjang"
+	)
+	eq(Wardrobe.MAX_NAME > OutfitFolders.MAX_NAME, true, "batas folder lebih pendek dari batas outfit")
+	local fr = V.validate({ op = "folderRename", id = 2, name = "Santai" }) :: any
+	assert(fr, "folderRename valid")
+	eq(fr.id, 2, "folderRename id")
+	rejects({ op = "folderRename", id = 2 }, "BAD_NAME", "folderRename tanpa nama")
+	eq((V.validate({ op = "folderDelete", id = 3 }) :: any).id, 3, "folderDelete")
+	rejects({ op = "folderDelete" }, "BAD_ARG", "folderDelete tanpa id")
+
+	-- 8. setFolders: daftar id folder (boleh kosong), maks MAX_PER_OUTFIT
+	local raw2 = { op = "setFolders", id = 1, folders = { 3, 5 } }
+	local sf = V.validate(raw2) :: any
+	assert(sf, "setFolders valid")
+	eq(sf.folders ~= raw2.folders, true, "daftar disalin")
+	eq(#sf.folders, 2, "isi daftar")
+	eq(#(V.validate({ op = "setFolders", id = 1, folders = {} }) :: any).folders, 0, "boleh kosong")
+	local tooMany = {}
+	for i = 1, OutfitFolders.MAX_PER_OUTFIT + 1 do
+		tooMany[i] = i
+	end
+	rejects({ op = "setFolders", id = 1, folders = tooMany }, "BAD_ARG", "folder melebihi batas")
+	rejects({ op = "setFolders", id = 1, folders = { 1, 0 } }, "BAD_ARG", "id folder 0")
+	rejects({ op = "setFolders", id = 1, folders = { 1, "2" } }, "BAD_ARG", "id folder string")
+	rejects({ op = "setFolders", id = 1, folders = { [2] = 5 } }, "BAD_ARG", "array berlubang")
+	local mixed: any = { 1 } -- dibuat bertahap: tabel campur langsung ditolak selene (mixed_table)
+	mixed.x = 2
+	rejects({ op = "setFolders", id = 1, folders = mixed }, "BAD_ARG", "key asing di daftar")
+	rejects({ op = "setFolders", id = 1, folders = "1,2" }, "BAD_ARG", "bukan tabel")
+	rejects({ op = "setFolders", folders = { 1 } }, "BAD_ARG", "tanpa id outfit")
+
+	-- 9. bulkDelete / bulkFolder: daftar outfit 1..MAX_SLOTS
+	local bd = V.validate({ op = "bulkDelete", ids = { 4, 5, 5 } }) :: any
+	assert(bd, "bulkDelete valid")
+	eq(#bd.ids, 3, "id ganda dibiarkan (domain yang menyaring)")
+	rejects({ op = "bulkDelete", ids = {} }, "BAD_ARG", "daftar kosong")
+	local over = {}
+	for i = 1, Wardrobe.MAX_SLOTS + 1 do
+		over[i] = i
+	end
+	rejects({ op = "bulkDelete", ids = over }, "BAD_ARG", "melebihi jumlah slot")
+	local bf = V.validate({ op = "bulkFolder", ids = { 1, 2 }, id = 3, value = false }) :: any
+	assert(bf, "bulkFolder valid")
+	eq(bf.value, false, "value false tetap")
+	eq(bf.id, 3, "id folder")
+	rejects({ op = "bulkFolder", ids = { 1 }, id = 3 }, "BAD_ARG", "tanpa value")
+	rejects({ op = "bulkFolder", ids = { 1 }, value = true }, "BAD_ARG", "tanpa id folder")
 
 	print("PASS WardrobeValidator.spec")
 end

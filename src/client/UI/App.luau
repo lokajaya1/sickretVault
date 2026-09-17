@@ -90,6 +90,12 @@ local WARDROBE_OK_TEXT: { [string]: string } = {
 	overwrite = "Updated %s",
 	rename = "Renamed to %s",
 	delete = "Deleted %s",
+	bulkDelete = "Deleted %s",
+	folderAdd = "Folder %s created",
+	folderRename = "Folder renamed to %s",
+	folderDelete = "Folder %s deleted",
+	setFolders = "Folders updated",
+	bulkFolder = "Moved to %s",
 }
 
 local WARDROBE_FAIL_TEXT: { [string]: string } = {
@@ -102,6 +108,8 @@ local WARDROBE_FAIL_TEXT: { [string]: string } = {
 	NOT_LOADED = "Your data is still loading, try again",
 	NOT_READY = "Avatar is loading, try again",
 	NOT_FOUND = "That outfit no longer exists",
+	DUPLICATE = "You already have a folder with that name",
+	TOO_MANY = ("An outfit can be in %d folders at most"):format(8), -- OutfitFolders.MAX_PER_OUTFIT
 	INVALID = "This outfit can't be loaded",
 	RATE_LIMITED = "Slow down a little",
 	NETWORK = "Couldn't reach the server",

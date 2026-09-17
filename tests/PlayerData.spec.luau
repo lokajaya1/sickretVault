@@ -168,5 +168,25 @@ return function()
 	eq(worn.classic.Shirt.id, 30, "isi slot utuh")
 	eq(PlayerData.migrate({ v = 2, settings = {}, outfits = { "rusak" } }).outfits[1], nil, "slot rusak dibuang")
 
+	-- 11. v2 -> v3: folder outfit ditambahkan, id folder mati dilepas dari slot
+	local old = {
+		v = 2,
+		settings = { restoreOutfit = true },
+		outfits = { { id = 1, n = "Pesta", t = 1, o = { ov = 1, r = "R15" }, g = { 4, 99 } } },
+		nextOutfitId = 2,
+		folders = { { id = 4, n = "Malam", t = 5 } },
+	}
+	local v3 = PlayerData.migrate(old)
+	eq(v3.v, PlayerData.VERSION, "naik ke v3")
+	eq(#v3.folders, 1, "folder dipertahankan")
+	eq(v3.folders[1].n, "Malam", "nama folder")
+	eq(v3.nextFolderId, 5, "nextFolderId > id terbesar")
+	eq(#v3.outfits[1].g, 1, "id folder mati dilepas")
+	eq(v3.outfits[1].g[1], 4, "id folder yang ada tetap")
+	eq(#PlayerData.migrate({ v = 2, settings = {} }).folders, 0, "data v2 tanpa folder -> kosong")
+	eq(PlayerData.migrate({ v = 2, settings = {} }).nextFolderId, 1, "nextFolderId bawaan")
+	eq(#PlayerData.TEMPLATE.folders, 0, "template folders")
+	eq(PlayerData.TEMPLATE.nextFolderId, 1, "template nextFolderId")
+
 	print("PASS PlayerData.spec")
 end

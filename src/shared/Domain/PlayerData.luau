@@ -9,6 +9,7 @@ local Types = require(script.Parent.Types)
 local Map = require(script.Parent.AssetTypeMap)
 local OutfitState = require(script.Parent.OutfitState)
 local Wardrobe = require(script.Parent.Wardrobe)
+local OutfitFolders = require(script.Parent.OutfitFolders)
 local LayerOrder = require(script.Parent.Parent.Config.LayerOrder)
 local Limits = require(script.Parent.Parent.Config.Limits)
 
@@ -16,7 +17,7 @@ type State = Types.OutfitState
 
 local PlayerData = {}
 
-PlayerData.VERSION = 2
+PlayerData.VERSION = 3
 PlayerData.OUTFIT_VERSION = 1
 
 local MAX_ID = 2 ^ 53
@@ -32,6 +33,8 @@ export type Data = {
 	settings: Settings,
 	outfits: { Wardrobe.Entry }, -- slot wardrobe (v2)
 	nextOutfitId: number, -- id slot berikutnya (v2)
+	folders: { OutfitFolders.Entry }, -- folder outfit (v3)
+	nextFolderId: number, -- id folder berikutnya (v3)
 }
 
 -- Template untuk ProfileStore (Reconcile mengisi key yang hilang). Jangan diubah langsung.
@@ -40,6 +43,8 @@ PlayerData.TEMPLATE = table.freeze({
 	settings = table.freeze({ restoreOutfit = true }),
 	outfits = table.freeze({}),
 	nextOutfitId = 1,
+	folders = table.freeze({}),
+	nextFolderId = 1,
 })
 
 local function isId(x: any): boolean
@@ -71,7 +76,9 @@ function PlayerData.migrate(data: any): (Data, boolean)
 	end
 	-- v1 -> v2: slot wardrobe (sanitize juga merapikan data rusak setiap load)
 	Wardrobe.sanitize(data)
-	-- (migrasi v2 -> v3 dst. ditambahkan di sini, berurutan)
+	-- v2 -> v3: folder outfit (HARUS setelah Wardrobe.sanitize: membuang id folder mati dari tiap outfit)
+	OutfitFolders.sanitize(data)
+	-- (migrasi v3 -> v4 dst. ditambahkan di sini, berurutan)
 	data.v = PlayerData.VERSION
 	return data, false
 end

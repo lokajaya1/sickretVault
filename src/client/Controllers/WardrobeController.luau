@@ -7,6 +7,11 @@
 --   wardrobe:wear(id) / overwrite(id) / rename(id, name) / delete(id) / favorite(id, bool)
 --   wardrobe:setRestoreOutfit(bool)                                                         -- YIELD
 --   wardrobe:setSort("az")   wardrobe:setQuery("pesta")  -- tanpa server; snap.visible = hasil cari + urut
+--   wardrobe:setFolderFilter(id | OutfitSort.ALL | OutfitSort.NONE)  -- tab folder (tanpa server)
+--   wardrobe:folderAdd(name) / folderRename(id, name) / folderDelete(id)  -- YIELD
+--   wardrobe:setFolders(outfitId, { 1, 2 })                               -- YIELD ("Modify Folders")
+--   local ok, code, res = wardrobe:bulkDelete({ 1, 2 })   -- res.removed
+--   local ok, code, res = wardrobe:bulkFolder({ 1, 2 }, folderId, true) -- res.changed / res.skipped
 --   local ok, data = wardrobe:items(id)         -- YIELD; { items = { {id,name,price,...} }, total, missing }
 -- Semua aksi YIELD (InvokeServer) -> panggil dari task.spawn di UI.
 -- Satu aksi pada satu waktu (busy); aksi lain saat busy -> (false, "BUSY") tanpa memanggil server.
@@ -21,12 +26,20 @@ local OutfitSort = require(Shared.Domain.OutfitSort)
 
 local log = Log.new("WardrobeController")
 
+export type Folder = {
+	id: number,
+	name: string,
+	createdAt: number,
+	count: number,
+}
+
 export type Summary = {
 	id: number,
 	name: string,
 	createdAt: number,
 	updatedAt: number,
 	favorite: boolean,
+	folders: { number },
 	count: number,
 	thumbs: { number },
 	outfit: any, -- outfit ringkas (PlayerData.decodeOutfit) untuk render kartu
@@ -42,8 +55,13 @@ export type Snapshot = {
 	visible: { Summary }, -- hasil cari + urut (yang ditampilkan panel)
 	sortKey: string,
 	query: string,
+	folders: { Folder }, -- folder pemain (urut dibuat)
+	folderFilter: OutfitSort.Folder, -- tab aktif: ALL | NONE | id folder
+	unfiled: number, -- jumlah outfit tanpa folder (label tab "Not In Any Folders")
 	max: number,
+	maxFolders: number,
 	isFull: boolean,
+	foldersFull: boolean,
 	restoreOutfit: boolean?, -- nil = belum diketahui
 }
 
@@ -62,9 +80,12 @@ export type WardrobeController = typeof(setmetatable(
 		_error: string?,
 		_outfits: { Summary },
 		_max: number,
+		_maxFolders: number,
 		_restore: boolean?,
 		_sortKey: string,
 		_query: string,
+		_folders: { Folder },
+		_folderFilter: OutfitSort.Folder,
 		_items: { [string]: any },
 		_itemsBusy: { [string]: boolean },
 		_listeners: { (Snapshot) -> () },
@@ -73,6 +94,7 @@ export type WardrobeController = typeof(setmetatable(
 ))
 
 local DEFAULT_MAX = 30
+local DEFAULT_MAX_FOLDERS = 12
 local ITEMS_CACHE_MAX = 20
 
 -- Kunci cache detail item: ikut updatedAt supaya "update" otomatis memuat ulang.
@@ -96,16 +118,34 @@ function WardrobeController.new(invoke: Invoke?): WardrobeController
 		_error = nil,
 		_outfits = {},
 		_max = DEFAULT_MAX,
+		_maxFolders = DEFAULT_MAX_FOLDERS,
 		_restore = nil,
 		_sortKey = OutfitSort.DEFAULT,
 		_query = "",
+		_folders = {},
+		_folderFilter = OutfitSort.ALL,
 		_items = {},
 		_itemsBusy = {},
 		_listeners = {},
 	}, WardrobeController)
 end
 
+-- Id folder yang masih ada (untuk memvalidasi tab aktif).
+function WardrobeController._folderSet(self: WardrobeController): { [number]: boolean }
+	local set: { [number]: boolean } = {}
+	for _, f in self._folders do
+		set[f.id] = true
+	end
+	return set
+end
+
 function WardrobeController.getSnapshot(self: WardrobeController): Snapshot
+	local unfiled = 0
+	for _, o in self._outfits do
+		if type(o.folders) ~= "table" or #o.folders == 0 then
+			unfiled += 1
+		end
+	end
 	return {
 		loaded = self._loaded,
 		loading = self._loading,
@@ -113,11 +153,16 @@ function WardrobeController.getSnapshot(self: WardrobeController): Snapshot
 		busyId = self._busyId,
 		error = self._error,
 		outfits = table.clone(self._outfits),
-		visible = OutfitSort.apply(self._outfits, self._sortKey, self._query),
+		visible = OutfitSort.apply(self._outfits, self._sortKey, self._query, self._folderFilter),
 		sortKey = self._sortKey,
 		query = self._query,
+		folders = table.clone(self._folders),
+		folderFilter = self._folderFilter,
+		unfiled = unfiled,
 		max = self._max,
+		maxFolders = self._maxFolders,
 		isFull = #self._outfits >= self._max,
+		foldersFull = #self._folders >= self._maxFolders,
 		restoreOutfit = self._restore,
 	}
 end
@@ -172,8 +217,16 @@ function WardrobeController._apply(self: WardrobeController, res: any)
 		self._loaded = true
 		self._error = nil
 	end
+	if type(res.folders) == "table" then
+		self._folders = res.folders
+		-- folder yang dihapus (mungkin dari perangkat lain) -> tab kembali ke All
+		self._folderFilter = OutfitSort.normalizeFolder(self._folderFilter, self:_folderSet())
+	end
 	if type(res.max) == "number" then
 		self._max = res.max
+	end
+	if type(res.maxFolders) == "number" then
+		self._maxFolders = res.maxFolders
 	end
 	if type(res.settings) == "table" and type(res.settings.restoreOutfit) == "boolean" then
 		self._restore = res.settings.restoreOutfit
@@ -198,10 +251,10 @@ function WardrobeController.refresh(self: WardrobeController): (boolean, string?
 	return res ~= nil, code
 end
 
--- Jalankan satu aksi (busy selama menunggu server).
-function WardrobeController._run(self: WardrobeController, request: { [string]: any }): (boolean, string?)
+-- Jalankan satu aksi (busy selama menunggu server). Nilai ketiga = balasan server (untuk jumlah bulk).
+function WardrobeController._run(self: WardrobeController, request: { [string]: any }): (boolean, string?, any)
 	if self._busy then
-		return false, "BUSY"
+		return false, "BUSY", nil
 	end
 	self._busy = request.op
 	self._busyId = request.id
@@ -213,7 +266,7 @@ function WardrobeController._run(self: WardrobeController, request: { [string]: 
 		self:_apply(res)
 	end
 	self:_emit()
-	return res ~= nil, code
+	return res ~= nil, code, res
 end
 
 -- Simpan outfit yang sedang dipakai. name nil / kosong -> nama bawaan.
@@ -243,6 +296,59 @@ end
 
 function WardrobeController.favorite(self: WardrobeController, id: number, value: boolean): (boolean, string?)
 	return self:_run({ op = "favorite", id = id, value = value })
+end
+
+-- ===== Folder =====
+
+-- Tab folder (tanpa server). Folder yang tidak dikenal -> All.
+function WardrobeController.setFolderFilter(self: WardrobeController, value: any)
+	local nextFilter = OutfitSort.normalizeFolder(value, self:_folderSet())
+	if nextFilter ~= self._folderFilter then
+		self._folderFilter = nextFilter
+		self:_emit()
+	end
+end
+
+function WardrobeController.folderAdd(self: WardrobeController, name: string): (boolean, string?)
+	if #self._folders >= self._maxFolders then
+		return false, "FULL" -- tidak perlu tanya server
+	end
+	return self:_run({ op = "folderAdd", name = name })
+end
+
+function WardrobeController.folderRename(self: WardrobeController, id: number, name: string): (boolean, string?)
+	return self:_run({ op = "folderRename", id = id, name = name })
+end
+
+-- Hapus folder saja (outfit di dalamnya tetap ada).
+function WardrobeController.folderDelete(self: WardrobeController, id: number): (boolean, string?)
+	return self:_run({ op = "folderDelete", id = id })
+end
+
+-- Ganti total folder satu outfit ("Modify Folders"). `ids` boleh kosong.
+function WardrobeController.setFolders(self: WardrobeController, id: number, ids: { number }): (boolean, string?)
+	return self:_run({ op = "setFolders", id = id, folders = ids })
+end
+
+-- ===== Banyak sekaligus ("Select Outfits") =====
+
+function WardrobeController.bulkDelete(self: WardrobeController, ids: { number }): (boolean, string?, any)
+	if #ids == 0 then
+		return false, "BAD_ARG", nil
+	end
+	return self:_run({ op = "bulkDelete", ids = ids })
+end
+
+function WardrobeController.bulkFolder(
+	self: WardrobeController,
+	ids: { number },
+	folderId: number,
+	value: boolean
+): (boolean, string?, any)
+	if #ids == 0 then
+		return false, "BAD_ARG", nil
+	end
+	return self:_run({ op = "bulkFolder", ids = ids, id = folderId, value = value })
 end
 
 -- Pilihan sort (OutfitSort.OPTIONS). Key asing -> bawaan.

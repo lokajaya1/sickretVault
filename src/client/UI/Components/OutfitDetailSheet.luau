@@ -6,6 +6,7 @@
 --   	loadItems = function(outfit) return wardrobe:items(outfit.id) end,      -- YIELD (dipanggil di task.spawn)
 --   	cachedItems = function(outfit) return wardrobe:itemsCached(outfit.id) end,
 --   	onWear = fn, onUpdate = fn, onRename = fn, onDelete = fn, onFavorite = fn, onBack = fn,
+--   	onModifyFolders = fn, folderNames = function(outfit) return "Pesta, Malam" end,
 --   })
 --   sheet:open(outfit)   sheet:setBusy("Saving…")   sheet:close()   sheet:destroy()
 -- Delete butuh dua tap ("Sure?" selama CONFIRM_SECONDS). Ganti nama: Enter menyimpan, klik di luar batal.
@@ -42,6 +43,7 @@ export type Outfit = {
 	createdAt: number,
 	updatedAt: number,
 	favorite: boolean,
+	folders: { number }?,
 	count: number,
 	thumbs: { number },
 	outfit: any,
@@ -58,6 +60,8 @@ export type Props = {
 	onDelete: (Outfit) -> (),
 	onFavorite: ((Outfit) -> ())?,
 	onItem: ((item: any) -> ())?, -- tap kartu item -> buka detail item katalog
+	onModifyFolders: ((Outfit) -> ())?, -- tombol "Modify Folders" (panel yang membuka dialognya)
+	folderNames: ((Outfit) -> string)?, -- teks folder untuk baris info ("None" bila kosong)
 	onBack: () -> (),
 }
 
@@ -85,6 +89,7 @@ export type OutfitDetailSheet = typeof(setmetatable(
 		_wear: TextButton,
 		_update: TextButton,
 		_delete: TextButton,
+		_folders: TextButton,
 		_busy: TextLabel,
 		_outfit: Outfit?,
 		_preview: any,
@@ -447,7 +452,13 @@ function OutfitDetailSheet.new(props: Props): OutfitDetailSheet
 		Parent = options,
 	})
 	soonButton("Share", 4, options)
-	soonButton("Modify Folders", 5, options)
+	local folders = button("Modify Folders", {
+		Name = "ModifyFolders",
+		LayoutOrder = 5,
+		Size = half,
+		TextSize = Tokens.TextSize.Caption,
+		Parent = options,
+	})
 
 	local busy: TextLabel = make("TextLabel", {
 		Name = "Busy",
@@ -484,6 +495,7 @@ function OutfitDetailSheet.new(props: Props): OutfitDetailSheet
 		_wear = wear,
 		_update = update,
 		_delete = del,
+		_folders = folders,
 		_busy = busy,
 		_outfit = nil,
 		_preview = nil,
@@ -573,6 +585,12 @@ function OutfitDetailSheet.new(props: Props): OutfitDetailSheet
 		end),
 		rename.Activated:Connect(function()
 			nameBox:CaptureFocus()
+		end),
+		folders.Activated:Connect(function()
+			local outfit = current()
+			if outfit and props.onModifyFolders then
+				props.onModifyFolders(outfit)
+			end
 		end),
 		status.Activated:Connect(function()
 			local outfit = current()
@@ -818,7 +836,8 @@ function OutfitDetailSheet.open(self: OutfitDetailSheet, outfit: Outfit)
 	end
 	self._star.Text = if outfit.favorite then STAR_ON else STAR_OFF
 	self._star.TextColor3 = if outfit.favorite then Tokens.Color.Warning else Tokens.Color.TextMuted
-	self._meta.Text = dateText(outfit.createdAt) .. "\nFolders: None"
+	local names = if self._props.folderNames then self._props.folderNames(outfit) else "None"
+	self._meta.Text = dateText(outfit.createdAt) .. "\nFolders: " .. names
 	self:_setConfirm(false)
 	if not same then
 		self._right.CanvasPosition = Vector2.zero -- outfit lain -> mulai dari atas (nama & Total Cost)

@@ -8,20 +8,21 @@
 --   })
 --   card.instance.Parent = grid
 --   card:setArmed(true)   card:setFavorite(true)   card:setBusy("Wearing…")   card:destroy()
+--   card:setSelectMode(true)  card:setSelected(true)   -- mode "Select Outfits" (pilih banyak)
+-- Mode pilih: tap kartu = centang/hapus centang (onToggleSelect), overlay & bintang & ikon hapus tidak muncul.
 -- Render 3D gagal -> otomatis menampilkan thumbnail item (maks 4) sebagai cadangan.
 -- Bintang: selalu tampil bila favorit; selain itu muncul saat hover (PC) atau kartu armed (HP).
--- Ikon hapus (kiri atas) muncul bersama bintang; perlu DUA kali tap ("?") supaya tidak terhapus tak sengaja.
+-- Hapus TIDAK ada di kartu: lewat halaman detail (VIEW -> Delete) atau mode "Select Outfits".
 
 local Tokens = require(script.Parent.Parent.Theme.Tokens)
 
 local NAME_H = 28
 local STAR_SIZE = 28
 local ACTION_H = 34
+local CHECK_SIZE = 26
+local CHECK_ON = "✓"
 local STAR_ON = "★"
 local STAR_OFF = "☆"
-local TRASH = "🗑"
-local TRASH_CONFIRM = "?"
-local CONFIRM_SECONDS = 3
 
 export type Outfit = {
 	id: number,
@@ -39,11 +40,11 @@ export type Props = {
 	outfit: Outfit,
 	previews: any, -- OutfitPreview
 	layoutOrder: number?,
+	onToggleSelect: Callback, -- tap kartu saat mode pilih
 	onActivated: Callback, -- tap kartu (belum armed)
 	onWear: Callback,
 	onView: Callback,
 	onFavorite: Callback, -- tombol bintang
-	onDelete: Callback, -- ikon hapus (sesudah konfirmasi tap kedua)
 	onDismiss: Callback, -- tap bagian kosong overlay
 }
 
@@ -58,14 +59,15 @@ export type OutfitCard = typeof(setmetatable(
 		_fallback: Frame,
 		_name: TextLabel,
 		_star: TextButton,
-		_trash: TextButton,
+		_check: TextLabel,
+		_stroke: UIStroke,
 		_overlay: TextButton,
 		_busy: TextLabel,
 		_preview: any, -- OutfitPreview.Handle
 		_hover: boolean,
 		_armed: boolean,
-		_confirm: boolean,
-		_confirmToken: number,
+		_select: boolean,
+		_selected: boolean,
 		_conns: { RBXScriptConnection },
 	},
 	OutfitCard
@@ -125,6 +127,14 @@ function OutfitCard.new(props: Props): OutfitCard
 		Size = UDim2.fromScale(1, 1),
 		ZIndex = Z,
 	}, { corner(Tokens.Radius.Medium) })
+
+	-- Garis tepi saat kartu tercentang (mode pilih)
+	local stroke: UIStroke = make("UIStroke", {
+		Color = Tokens.Color.Accent,
+		Thickness = 0,
+		Transparency = 0,
+		Parent = root,
+	})
 
 	-- Render avatar 3D
 	local viewport: ViewportFrame = make("ViewportFrame", {
@@ -201,21 +211,21 @@ function OutfitCard.new(props: Props): OutfitCard
 		Parent = root,
 	}, { corner(Tokens.Radius.Pill) })
 
-	local trash: TextButton = make("TextButton", {
-		Name = "Delete",
-		Text = TRASH,
+	-- Centang mode pilih (label, bukan tombol: tap tetap mengenai kartu)
+	local check: TextLabel = make("TextLabel", {
+		Name = "Check",
+		Text = "",
 		FontFace = Tokens.Font.Bold,
 		TextSize = Tokens.TextSize.Body,
-		TextColor3 = Tokens.Color.Text,
+		TextColor3 = Tokens.Color.AccentText,
 		BackgroundColor3 = Tokens.Color.Background,
-		BackgroundTransparency = 0.35,
+		BackgroundTransparency = 0.25,
 		BorderSizePixel = 0,
-		AutoButtonColor = true,
 		Visible = false,
-		AnchorPoint = Vector2.new(0, 0),
-		Position = UDim2.fromOffset(pad, pad),
-		Size = UDim2.fromOffset(STAR_SIZE, STAR_SIZE),
-		ZIndex = Z + 1,
+		AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.new(1, -pad, 0, pad),
+		Size = UDim2.fromOffset(CHECK_SIZE, CHECK_SIZE),
+		ZIndex = Z + 2,
 		Parent = root,
 	}, { corner(Tokens.Radius.Pill) })
 
@@ -280,14 +290,15 @@ function OutfitCard.new(props: Props): OutfitCard
 		_fallback = fallback,
 		_name = nameLabel,
 		_star = star,
-		_trash = trash,
+		_check = check,
+		_stroke = stroke,
 		_overlay = overlay,
 		_busy = busy,
 		_preview = nil,
 		_hover = false,
 		_armed = false,
-		_confirm = false,
-		_confirmToken = 0,
+		_select = false,
+		_selected = false,
 		_conns = {},
 	}, OutfitCard)
 
@@ -299,7 +310,9 @@ function OutfitCard.new(props: Props): OutfitCard
 
 	self._conns = {
 		root.Activated:Connect(function()
-			if not self._armed then
+			if self._select then
+				fire(props.onToggleSelect)
+			elseif not self._armed then
 				fire(props.onActivated)
 			end
 		end),
@@ -313,14 +326,6 @@ function OutfitCard.new(props: Props): OutfitCard
 		end),
 		star.Activated:Connect(function()
 			fire(props.onFavorite)
-		end),
-		trash.Activated:Connect(function()
-			if not self._confirm then
-				self:_setConfirm(true)
-				return
-			end
-			self:_setConfirm(false)
-			fire(props.onDelete)
 		end),
 		wear.Activated:Connect(function()
 			fire(props.onWear)
@@ -347,29 +352,8 @@ function OutfitCard.new(props: Props): OutfitCard
 end
 
 function OutfitCard._refreshStar(self: OutfitCard)
-	local shown = self._hover or self._armed
-	self._star.Visible = self.outfit.favorite or shown
-	self._trash.Visible = shown
-	if not shown and self._confirm then
-		self:_setConfirm(false)
-	end
-end
-
--- Tap pertama ikon hapus hanya meminta kepastian; balik sendiri setelah CONFIRM_SECONDS.
-function OutfitCard._setConfirm(self: OutfitCard, confirm: boolean)
-	self._confirm = confirm
-	self._trash.Text = if confirm then TRASH_CONFIRM else TRASH
-	self._trash.BackgroundColor3 = if confirm then Tokens.Color.Danger else Tokens.Color.Background
-	self._trash.BackgroundTransparency = if confirm then 0 else 0.35
-	self._confirmToken += 1
-	if confirm then
-		local token = self._confirmToken
-		task.delay(CONFIRM_SECONDS, function()
-			if self._confirmToken == token and self._confirm then
-				self:_setConfirm(false)
-			end
-		end)
-	end
+	local shown = (self._hover or self._armed) and not self._select
+	self._star.Visible = (self.outfit.favorite or shown) and not self._select
 end
 
 function OutfitCard.setFavorite(self: OutfitCard, favorite: boolean)
@@ -380,9 +364,36 @@ function OutfitCard.setFavorite(self: OutfitCard, favorite: boolean)
 end
 
 function OutfitCard.setArmed(self: OutfitCard, armed: boolean)
-	self._armed = armed
-	self._overlay.Visible = armed
+	self._armed = armed and not self._select
+	self._overlay.Visible = self._armed
 	self:_refreshStar()
+end
+
+-- Mode "Select Outfits": kartu jadi kotak centang, aksi lain dimatikan.
+function OutfitCard.setSelectMode(self: OutfitCard, on: boolean)
+	if self._select == on then
+		return
+	end
+	self._select = on
+	if on then
+		self:setArmed(false)
+	else
+		self:setSelected(false)
+	end
+	self._check.Visible = on
+	self:_refreshStar()
+end
+
+function OutfitCard.setSelected(self: OutfitCard, selected: boolean)
+	self._selected = selected
+	self._check.Text = if selected then CHECK_ON else ""
+	self._check.BackgroundColor3 = if selected then Tokens.Color.Accent else Tokens.Color.Background
+	self._check.BackgroundTransparency = if selected then 0 else 0.25
+	self._stroke.Thickness = if selected then 2 else 0
+end
+
+function OutfitCard.isSelected(self: OutfitCard): boolean
+	return self._selected
 end
 
 function OutfitCard.isArmed(self: OutfitCard): boolean

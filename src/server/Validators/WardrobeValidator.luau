@@ -12,11 +12,18 @@
 --   { op = "favorite", id = number, value = boolean }
 --   { op = "items", id = number }        -- nama & harga item di dalam outfit
 --   { op = "setSetting", key = string, value = any }  -- key & tipe harus ada di PlayerData.TEMPLATE.settings
+--   { op = "folderAdd", name = string }              -- buat folder
+--   { op = "folderRename", id = number, name = string }
+--   { op = "folderDelete", id = number }             -- outfit di dalamnya tidak ikut terhapus
+--   { op = "setFolders", id = number, folders = { number } } -- ganti total folder satu outfit (boleh kosong)
+--   { op = "bulkDelete", ids = { number } }          -- hapus banyak outfit ("Select Outfits")
+--   { op = "bulkFolder", ids = { number }, id = number, value = boolean } -- tambah/lepas 1 folder
 -- Return permintaan BARU yang bersih (nama sudah dirapikan, BELUM difilter Roblox), atau (nil, kode).
 -- Murni: tanpa service, tanpa yield -> dites dengan Lune.
 
 local Shared = game:GetService("ReplicatedStorage"):WaitForChild("Shared")
 local Wardrobe = require(Shared.Domain.Wardrobe)
+local OutfitFolders = require(Shared.Domain.OutfitFolders)
 local PlayerData = require(Shared.Domain.PlayerData)
 local GameConfig = require(Shared.Config.GameConfig)
 
@@ -30,9 +37,17 @@ export type Request =
 	| { op: "favorite", id: number, value: boolean }
 	| { op: "items", id: number }
 	| { op: "setSetting", key: string, value: any }
+	| { op: "folderAdd", name: string }
+	| { op: "folderRename", id: number, name: string }
+	| { op: "folderDelete", id: number }
+	| { op: "setFolders", id: number, folders: { number } }
+	| { op: "bulkDelete", ids: { number } }
+	| { op: "bulkFolder", ids: { number }, id: number, value: boolean }
 
 -- op -> field yang diizinkan (selain `op`)
-local SCHEMA: { [string]: { [string]: "id" | "name" | "name?" | "key" | "value" | "bool" } } = {
+type Kind = "id" | "name" | "name?" | "fname" | "key" | "value" | "bool" | "ids" | "folders"
+
+local SCHEMA: { [string]: { [string]: Kind } } = {
 	list = {},
 	save = { name = "name?" },
 	wear = { id = "id" },
@@ -42,9 +57,16 @@ local SCHEMA: { [string]: { [string]: "id" | "name" | "name?" | "key" | "value" 
 	favorite = { id = "id", value = "bool" },
 	items = { id = "id" },
 	setSetting = { key = "key", value = "value" },
+	folderAdd = { name = "fname" },
+	folderRename = { id = "id", name = "fname" },
+	folderDelete = { id = "id" },
+	setFolders = { id = "id", folders = "folders" },
+	bulkDelete = { ids = "ids" },
+	bulkFolder = { ids = "ids", id = "id", value = "bool" },
 }
 
 local MAX_KEYS = 4
+local MAX_BULK = Wardrobe.MAX_SLOTS -- tidak mungkin memilih lebih banyak dari jumlah slot
 
 local WardrobeValidator = {}
 
@@ -54,6 +76,7 @@ WardrobeValidator.Errors = {
 	UNKNOWN_FIELD = "BAD_ARG",
 	BAD_OP = "BAD_ARG",
 	BAD_ID = "BAD_ARG",
+	BAD_LIST = "BAD_ARG",
 	BAD_SETTING = "BAD_ARG",
 	BAD_BOOL = "BAD_ARG",
 	-- nama: dikirim balik ke UI supaya pesannya jelas
@@ -65,6 +88,29 @@ local E = WardrobeValidator.Errors
 
 local function isId(n: any): boolean
 	return type(n) == "number" and n == n and n % 1 == 0 and n > 0 and n <= GameConfig.Intent.MaxId
+end
+
+-- Daftar id dari client: tabel array rapat, jumlah min..max, semuanya id sah. Salinan baru.
+-- `min` 0 dipakai untuk setFolders (mengosongkan folder sebuah outfit).
+local function cleanIds(v: any, min: number, max: number): { number }?
+	if type(v) ~= "table" then
+		return nil
+	end
+	local n = 0
+	for _ in v do
+		n += 1
+	end
+	if n ~= #v or n < min or n > max then
+		return nil -- key asing / bukan array rapat / jumlah di luar batas
+	end
+	local out: { number } = {}
+	for _, id in ipairs(v) do
+		if not isId(id) then
+			return nil
+		end
+		table.insert(out, id)
+	end
+	return out
 end
 
 function WardrobeValidator.validate(raw: any): (Request?, string?)
@@ -109,6 +155,20 @@ function WardrobeValidator.validate(raw: any): (Request?, string?)
 				return nil, (E :: any)[err or "BAD_NAME"] or E.BAD_NAME
 			end
 			out[field] = name
+		elseif kind == "fname" then
+			local name, err = OutfitFolders.cleanName(v)
+			if name == nil then
+				return nil, (E :: any)[err or "BAD_NAME"] or E.BAD_NAME
+			end
+			out[field] = name
+		elseif kind == "ids" or kind == "folders" then
+			local folders = kind == "folders"
+			local max = if folders then OutfitFolders.MAX_PER_OUTFIT else MAX_BULK
+			local ids = cleanIds(v, if folders then 0 else 1, max)
+			if ids == nil then
+				return nil, E.BAD_LIST
+			end
+			out[field] = ids
 		elseif kind == "key" then
 			local default = if type(v) == "string" then (PlayerData.TEMPLATE.settings :: any)[v] else nil
 			if default == nil then
