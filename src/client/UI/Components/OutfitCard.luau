@@ -121,10 +121,11 @@ function OutfitCard.new(props: Props): OutfitCard
 	-- Render avatar 3D
 	local viewport: ViewportFrame = make("ViewportFrame", {
 		Name = "Preview",
-		BackgroundTransparency = 1,
-		Ambient = Color3.fromRGB(190, 190, 200),
-		LightColor = Color3.fromRGB(255, 255, 255),
-		LightDirection = Vector3.new(-0.3, -1, -0.6),
+		BackgroundColor3 = Tokens.Color.Background,
+		BackgroundTransparency = 0,
+		Ambient = Color3.fromRGB(120, 120, 134),
+		LightColor = Color3.fromRGB(236, 236, 245),
+		LightDirection = Vector3.new(-0.4, -1, -0.65),
 		Size = UDim2.new(1, 0, 1, -NAME_H),
 		ZIndex = Z,
 		Parent = root,
