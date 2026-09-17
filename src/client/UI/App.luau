@@ -315,12 +315,20 @@ function App.mount(opts: Options?): App
 
 	-- Panel outfit tersimpan (kartu render avatar 3D): setingkat panel keranjang.
 	local previews = OutfitPreview.new()
+	-- true = panel detail item dibuka dari Saved Outfits -> Back kembali ke sana, bukan ke katalog.
+	local wardrobeReturn = false
+
 	local wardrobePanel = WardrobePanel.new({
 		parent = panel.instance,
 		controller = wardrobe,
 		previews = previews,
 		onResult = function(op, ok, code, name)
 			self:_showWardrobeResult(op, ok, code, name)
+		end,
+		onItem = function(item)
+			wardrobeReturn = true
+			self:closeWardrobe()
+			self:openDetail(item.id, "Asset")
 		end,
 		onBack = function()
 			self:closeWardrobe()
@@ -376,6 +384,13 @@ function App.mount(opts: Options?): App
 		end,
 		isInCart = function(d)
 			return cart:has(d.id, d.itemType)
+		end,
+		onBack = function()
+			detail:close()
+			if wardrobeReturn then
+				wardrobeReturn = false
+				self:openWardrobe()
+			end
 		end,
 		-- Tap part bundle: sedang dipakai -> lepas part itu; belum -> pakai part itu saja.
 		onPartActivated = function(part, d)
