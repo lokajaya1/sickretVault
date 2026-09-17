@@ -23,6 +23,7 @@ local log = Log.new("OutfitPreview")
 local CACHE_SIZE = 40
 local FOV = 30
 local MARGIN = 1.12 -- ruang kosong di atas/bawah avatar
+local MAX_EXTENT = 12 -- stud; batas ukuran avatar yang dianggap wajar (R15 ~5.5)
 
 export type Handle = { cancel: () -> () }
 
@@ -68,11 +69,17 @@ local function prepare(model: Model)
 		if x:IsA("BaseScript") then
 			x:Destroy()
 		elseif x:IsA("BasePart") then
-			x.Anchored = true
+			-- JANGAN anchor semua part: badan & aksesori dirakit Motor6D/Weld setelah dibuat.
+			-- Uji Studio 18 Sep 2026: anchor semua -> part berserakan, bounding box 326x21x282 stud.
+			x.Massless = true
 			x.CanCollide = false
 			x.CanQuery = false
 			x.CanTouch = false
 		end
+	end
+	local root = model.PrimaryPart or model:FindFirstChild("HumanoidRootPart")
+	if root and root:IsA("BasePart") then
+		root.Anchored = true -- cukup root; sisanya menempel lewat weld
 	end
 	local humanoid = model:FindFirstChildOfClass("Humanoid")
 	if humanoid then
@@ -84,7 +91,9 @@ end
 
 -- Kamera dari depan, seluruh badan masuk bingkai (lebar juga diperhitungkan).
 function OutfitPreview.frame(model: Model, camera: Camera, aspect: number)
-	local cf, size = model:GetBoundingBox()
+	local cf, raw = model:GetBoundingBox()
+	-- pengaman: kalau ada part nyasar, jangan biarkan kamera mundur jauh
+	local size = Vector3.new(math.min(raw.X, MAX_EXTENT), math.min(raw.Y, MAX_EXTENT), math.min(raw.Z, MAX_EXTENT))
 	local halfV = math.rad(FOV / 2)
 	local halfH = math.atan(math.tan(halfV) * math.max(aspect, 0.1))
 	local distV = (size.Y / 2) / math.tan(halfV)
@@ -138,6 +147,7 @@ function OutfitPreview._work(self: OutfitPreview)
 				local model: Model? = nil
 				if ok and typeof(result) == "Instance" and result:IsA("Model") then
 					prepare(result)
+					result:PivotTo(CFrame.new()) -- posisi pasti di titik nol
 					if self._destroyed then
 						result:Destroy()
 					else
