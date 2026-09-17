@@ -168,6 +168,15 @@ return function()
 	eq(#res.outfits, 0, "terhapus")
 	eq(svc:handle(p, { op = "delete", id = 1 }).code, "NOT_FOUND", "delete dua kali")
 
+	-- 8b. favorite membalas daftar terbaru
+	res = svc:handle(p, { op = "save" })
+	local favId = res.outfit.id
+	res = svc:handle(p, { op = "favorite", id = favId, value = true })
+	eq(res.ok, true, "favorite")
+	eq(res.outfits[1].favorite, true, "favorit di daftar")
+	eq(svc:handle(p, { op = "favorite", id = 999, value = true }).code, "NOT_FOUND", "favorite tidak ada")
+	svc:handle(p, { op = "delete", id = favId })
+
 	-- 9. setSetting
 	res = svc:handle(p, { op = "setSetting", key = "restoreOutfit", value = false })
 	eq(res.ok, true, "setSetting")

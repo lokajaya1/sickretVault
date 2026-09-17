@@ -9,6 +9,7 @@
 --   { op = "overwrite", id = number }        -- timpa slot dengan outfit sekarang
 --   { op = "rename", id = number, name = string }
 --   { op = "delete", id = number }
+--   { op = "favorite", id = number, value = boolean }
 --   { op = "setSetting", key = string, value = any }  -- key & tipe harus ada di PlayerData.TEMPLATE.settings
 -- Return permintaan BARU yang bersih (nama sudah dirapikan, BELUM difilter Roblox), atau (nil, kode).
 -- Murni: tanpa service, tanpa yield -> dites dengan Lune.
@@ -25,16 +26,18 @@ export type Request =
 	| { op: "overwrite", id: number }
 	| { op: "rename", id: number, name: string }
 	| { op: "delete", id: number }
+	| { op: "favorite", id: number, value: boolean }
 	| { op: "setSetting", key: string, value: any }
 
 -- op -> field yang diizinkan (selain `op`)
-local SCHEMA: { [string]: { [string]: "id" | "name" | "name?" | "key" | "value" } } = {
+local SCHEMA: { [string]: { [string]: "id" | "name" | "name?" | "key" | "value" | "bool" } } = {
 	list = {},
 	save = { name = "name?" },
 	wear = { id = "id" },
 	overwrite = { id = "id" },
 	rename = { id = "id", name = "name" },
 	delete = { id = "id" },
+	favorite = { id = "id", value = "bool" },
 	setSetting = { key = "key", value = "value" },
 }
 
@@ -49,6 +52,7 @@ WardrobeValidator.Errors = {
 	BAD_OP = "BAD_ARG",
 	BAD_ID = "BAD_ARG",
 	BAD_SETTING = "BAD_ARG",
+	BAD_BOOL = "BAD_ARG",
 	-- nama: dikirim balik ke UI supaya pesannya jelas
 	BAD_NAME = "BAD_NAME",
 	EMPTY = "EMPTY",
@@ -106,6 +110,11 @@ function WardrobeValidator.validate(raw: any): (Request?, string?)
 			local default = if type(v) == "string" then (PlayerData.TEMPLATE.settings :: any)[v] else nil
 			if default == nil then
 				return nil, E.BAD_SETTING
+			end
+			out[field] = v
+		elseif kind == "bool" then
+			if type(v) ~= "boolean" then
+				return nil, E.BAD_BOOL
 			end
 			out[field] = v
 		elseif kind == "value" then

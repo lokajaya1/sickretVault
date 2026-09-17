@@ -58,6 +58,14 @@ return function()
 	rejects({ op = "delete", id = "1" }, "BAD_ARG", "id string")
 	rejects({ op = "delete", id = 2 ^ 60 }, "BAD_ARG", "id terlalu besar")
 
+	-- 5b. favorite: value wajib boolean
+	local fv = V.validate({ op = "favorite", id = 4, value = false }) :: any
+	assert(fv, "favorite valid")
+	eq(fv.value, false, "value false tetap")
+	rejects({ op = "favorite", id = 4 }, "BAD_ARG", "favorite tanpa value")
+	rejects({ op = "favorite", id = 4, value = "ya" }, "BAD_ARG", "favorite value bukan bool")
+	rejects({ op = "favorite", value = true }, "BAD_ARG", "favorite tanpa id")
+
 	-- 6. setSetting: key dari TEMPLATE, tipe harus sama
 	local s = V.validate({ op = "setSetting", key = "restoreOutfit", value = false }) :: any
 	assert(s, "setSetting valid")

@@ -1,5 +1,5 @@
 --!strict
--- Wardrobe (server): simpan outfit sekarang ke slot, daftar, pakai, timpa, ganti nama, hapus, setting.
+-- Wardrobe (server): simpan outfit sekarang ke slot, daftar, pakai, timpa, ganti nama, favorit, hapus, setting.
 --   local wardrobe = WardrobeService.new({ playerData = playerData, avatar = avatar })
 --   local res = wardrobe:handle(player, req)  -- req SUDAH lolos WardrobeValidator (YIELD: filter nama)
 --   res = { ok = true, outfits?, outfit?, settings?, max? } | { ok = false, code }
@@ -173,6 +173,14 @@ function WardrobeService._delete(self: WardrobeService, player: any, id: number)
 	return self:_changed(player)
 end
 
+function WardrobeService._favorite(self: WardrobeService, player: any, id: number, value: boolean): any
+	local ok, code = self._data:favoriteOutfit(player, id, value)
+	if not ok then
+		return fail(code or "FAILED")
+	end
+	return self:_changed(player)
+end
+
 function WardrobeService._setSetting(self: WardrobeService, player: any, key: string, value: any): any
 	local ok, code = self._data:setSetting(player, key, value)
 	if not ok then
@@ -202,6 +210,8 @@ function WardrobeService.handle(self: WardrobeService, player: any, req: any): a
 			return self:_rename(player, req.id, req.name)
 		elseif op == "delete" then
 			return self:_delete(player, req.id)
+		elseif op == "favorite" then
+			return self:_favorite(player, req.id, req.value)
 		elseif op == "setSetting" then
 			return self:_setSetting(player, req.key, req.value)
 		end
