@@ -3,6 +3,7 @@
 -- Lokal : lune run tools/run-tests.luau
 local Shared = game:GetService("ReplicatedStorage"):WaitForChild("Shared")
 local PlayerData = require(Shared.Domain.PlayerData)
+local Wardrobe = require(Shared.Domain.Wardrobe)
 local OS = require(Shared.Domain.OutfitState)
 local Limits = require(Shared.Config.Limits)
 
@@ -144,6 +145,28 @@ return function()
 	end
 	eq(n, Limits.MaxRigidAccessories, "dipotong ke batas")
 	eq(m.accessories["1001"] ~= nil, true, "yang awal dipertahankan")
+
+	-- 9. v1 -> v2: slot wardrobe ditambahkan, data lama tetap
+	local v1 = { v = 1, settings = { restoreOutfit = false }, lastOutfit = { ov = 1, r = "R15" } }
+	local v2 = PlayerData.migrate(v1)
+	eq(v2.v, PlayerData.VERSION, "naik ke versi terbaru")
+	eq(#v2.outfits, 0, "outfits kosong")
+	eq(v2.nextOutfitId, 1, "nextOutfitId")
+	eq(v2.settings.restoreOutfit, false, "setting v1 tetap")
+	eq(v2.lastOutfit.r, "R15", "lastOutfit v1 tetap")
+	eq(#PlayerData.TEMPLATE.outfits, 0, "template outfits")
+	eq(PlayerData.TEMPLATE.nextOutfitId, 1, "template nextOutfitId")
+
+	-- 10. slot wardrobe bertahan saat load ulang & isinya bisa di-decode
+	assert(Wardrobe.add(v2, "Pesta", PlayerData.encodeOutfit(sample()), 123), "add slot")
+	local again = PlayerData.migrate(v2)
+	eq(#again.outfits, 1, "slot dipertahankan")
+	eq(again.outfits[1].n, "Pesta", "nama slot")
+	eq(again.nextOutfitId, 2, "id berikutnya")
+	local worn = PlayerData.decodeOutfit(again.outfits[1].o)
+	assert(worn, "decode slot")
+	eq(worn.classic.Shirt.id, 30, "isi slot utuh")
+	eq(PlayerData.migrate({ v = 2, settings = {}, outfits = { "rusak" } }).outfits[1], nil, "slot rusak dibuang")
 
 	print("PASS PlayerData.spec")
 end

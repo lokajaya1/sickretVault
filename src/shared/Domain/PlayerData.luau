@@ -8,6 +8,7 @@
 local Types = require(script.Parent.Types)
 local Map = require(script.Parent.AssetTypeMap)
 local OutfitState = require(script.Parent.OutfitState)
+local Wardrobe = require(script.Parent.Wardrobe)
 local LayerOrder = require(script.Parent.Parent.Config.LayerOrder)
 local Limits = require(script.Parent.Parent.Config.Limits)
 
@@ -15,7 +16,7 @@ type State = Types.OutfitState
 
 local PlayerData = {}
 
-PlayerData.VERSION = 1
+PlayerData.VERSION = 2
 PlayerData.OUTFIT_VERSION = 1
 
 local MAX_ID = 2 ^ 53
@@ -29,12 +30,16 @@ export type Data = {
 	v: number,
 	lastOutfit: any?, -- hasil encodeOutfit (nil = pakai avatar asli)
 	settings: Settings,
+	outfits: { Wardrobe.Entry }, -- slot wardrobe (v2)
+	nextOutfitId: number, -- id slot berikutnya (v2)
 }
 
 -- Template untuk ProfileStore (Reconcile mengisi key yang hilang). Jangan diubah langsung.
 PlayerData.TEMPLATE = table.freeze({
 	v = PlayerData.VERSION,
 	settings = table.freeze({ restoreOutfit = true }),
+	outfits = table.freeze({}),
+	nextOutfitId = 1,
 })
 
 local function isId(x: any): boolean
@@ -64,7 +69,9 @@ function PlayerData.migrate(data: any): (Data, boolean)
 	if type(data.settings.restoreOutfit) ~= "boolean" then
 		data.settings.restoreOutfit = PlayerData.TEMPLATE.settings.restoreOutfit
 	end
-	-- (migrasi v1 -> v2 dst. ditambahkan di sini, berurutan)
+	-- v1 -> v2: slot wardrobe (sanitize juga merapikan data rusak setiap load)
+	Wardrobe.sanitize(data)
+	-- (migrasi v2 -> v3 dst. ditambahkan di sini, berurutan)
 	data.v = PlayerData.VERSION
 	return data, false
 end

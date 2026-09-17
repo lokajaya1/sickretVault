@@ -15,5 +15,6 @@ return {
 		GetBundle = "GetBundle",
 		GetItemDetail = "GetItemDetail",
 		GetState = "GetState",
+		Wardrobe = "Wardrobe", -- client -> server: WardrobeValidator.Request -> { ok, code?, outfits?, ... }
 	},
 }

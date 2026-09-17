@@ -1,9 +1,13 @@
 --!strict
--- Akar UI: ScreenGui + tombol atas (Catalog, Stores) + panel katalog + panel detail + panel keranjang
--- + dock (Undo/Redo/Reset + strip Wearing).
+-- Akar UI: ScreenGui + tombol atas (Catalog, Stores) + kolom samping kiri/kanan + panel katalog
+-- + panel detail + panel keranjang + panel outfit tersimpan + dock (Undo/Redo/Reset + strip Wearing).
+-- Tata letak layar utama mengikuti claude/Pedoman_Layout_CAC.md (kolom kanan: Saved Outfits, Emotes;
+-- kolom kiri: Community Outfits, Outfit Loader). Kolom samping hanya tampil saat katalog tertutup.
 --   local app = App.mount({ onItemActivated = function(item) ... end })  -- hook tambahan (log) saat kartu di-tap
 -- Kartu: tap -> overlay TRY / BUY / ⓘ / 🛒. ⓘ & paste link -> panel detail. 🛒 di header -> panel keranjang.
 --   app:toggleCatalog()   app:openDetail(id, "Asset")   app:openCart()   app:checkout()
+--   app:openWardrobe()    app:closeWardrobe()
+-- Panel keranjang & wardrobe menutupi isi katalog; hanya satu yang terbuka.
 --   app.toast:show("Hello", "info")   app:destroy()
 
 local MarketplaceService = game:GetService("MarketplaceService")
@@ -19,10 +23,14 @@ local ActionBar = require(script.Parent.Components.ActionBar)
 local WornStrip = require(script.Parent.Components.WornStrip)
 local ItemDetailPanel = require(script.Parent.Components.ItemDetailPanel)
 local CartPanel = require(script.Parent.Components.CartPanel)
+local WardrobePanel = require(script.Parent.Components.WardrobePanel)
+local SideRail = require(script.Parent.Components.SideRail)
+local OutfitPreview = require(script.Parent.Util.OutfitPreview)
 local CatalogController = require(script.Parent.Parent.Controllers.CatalogController)
 local OutfitController = require(script.Parent.Parent.Controllers.OutfitController)
 local DetailController = require(script.Parent.Parent.Controllers.DetailController)
 local CartController = require(script.Parent.Parent.Controllers.CartController)
+local WardrobeController = require(script.Parent.Parent.Controllers.WardrobeController)
 local TryOnCamera = require(script.Parent.Parent.Controllers.TryOnCamera)
 
 export type Options = {
@@ -74,6 +82,40 @@ local function toCartItem(x: any): any
 	}
 end
 
+-- Teks toast wardrobe (teks pemain berbahasa Inggris). %s = nama outfit.
+-- favorite & setSetting sengaja tanpa toast (bintang / switch sudah berubah sendiri).
+local WARDROBE_OK_TEXT: { [string]: string } = {
+	save = "Outfit saved",
+	wear = "Wearing %s",
+	overwrite = "Updated %s",
+	rename = "Renamed to %s",
+	delete = "Deleted %s",
+}
+
+local WARDROBE_FAIL_TEXT: { [string]: string } = {
+	FULL = "Your outfit slots are full",
+	FILTERED = "That name isn't allowed. Try another one",
+	FILTER_FAILED = "Couldn't check that name, try again",
+	BAD_NAME = "Enter a valid name",
+	EMPTY = "Enter a name",
+	TOO_LONG = "That name is too long",
+	NOT_LOADED = "Your data is still loading, try again",
+	NOT_READY = "Avatar is loading, try again",
+	NOT_FOUND = "That outfit no longer exists",
+	INVALID = "This outfit can't be loaded",
+	RATE_LIMITED = "Slow down a little",
+	NETWORK = "Couldn't reach the server",
+	DISABLED = "Outfits are unavailable right now",
+}
+
+local WARDROBE_INFO_CODES: { [string]: boolean } = {
+	RATE_LIMITED = true,
+	NOT_LOADED = true,
+	NOT_READY = true,
+}
+
+local SOON_SECONDS = 1.2
+
 local function plural(n: number, word: string): string
 	return ("%d %s%s"):format(n, word, if n == 1 then "" else "s")
 end
@@ -88,6 +130,11 @@ export type App = typeof(setmetatable(
 		detailPanel: ItemDetailPanel.ItemDetailPanel,
 		cart: CartController.CartController,
 		cartPanel: CartPanel.CartPanel,
+		wardrobe: WardrobeController.WardrobeController,
+		wardrobePanel: WardrobePanel.WardrobePanel,
+		previews: OutfitPreview.OutfitPreview,
+		leftRail: SideRail.SideRail,
+		rightRail: SideRail.SideRail,
 		toast: Toast.Toast,
 		actions: ActionBar.ActionBar,
 		strip: WornStrip.WornStrip,
@@ -171,6 +218,7 @@ function App.mount(opts: Options?): App
 	local outfit = OutfitController.new()
 	local detail = DetailController.new()
 	local cart = CartController.new()
+	local wardrobe = WardrobeController.new()
 	local self: App
 
 	-- Dock (kiri bawah, dekat avatar): Undo / Redo / Reset -> server lewat OutfitController.
@@ -265,6 +313,56 @@ function App.mount(opts: Options?): App
 		end,
 	})
 
+	-- Panel outfit tersimpan (kartu render avatar 3D): setingkat panel keranjang.
+	local previews = OutfitPreview.new()
+	-- true = panel detail item dibuka dari Saved Outfits -> Back kembali ke sana, bukan ke katalog.
+	local wardrobeReturn = false
+
+	local wardrobePanel = WardrobePanel.new({
+		parent = panel.instance,
+		controller = wardrobe,
+		previews = previews,
+		onResult = function(op, ok, code, name)
+			self:_showWardrobeResult(op, ok, code, name)
+		end,
+		onItem = function(item)
+			wardrobeReturn = true
+			self:closeWardrobe()
+			self:openDetail(item.id, "Asset")
+		end,
+		onBack = function()
+			self:closeWardrobe()
+		end,
+	})
+
+	-- Kolom samping (pola CAC). Fitur yang belum ada -> teks redup + "Soon".
+	local leftRail = SideRail.new({
+		parent = gui,
+		side = "left",
+		items = {
+			{ key = "community", text = "Community Outfits", muted = true },
+			{ key = "loader", text = "Outfit Loader", muted = true },
+		},
+		onActivated = function(key)
+			self.leftRail:flash(key, "Soon", SOON_SECONDS)
+		end,
+	})
+	local rightRail = SideRail.new({
+		parent = gui,
+		side = "right",
+		items = {
+			{ key = "outfits", text = "Saved Outfits" },
+			{ key = "emotes", text = "Emotes", muted = true },
+		},
+		onActivated = function(key)
+			if key == "outfits" then
+				self:openWardrobe()
+			else
+				self.rightRail:flash(key, "Soon", SOON_SECONDS)
+			end
+		end,
+	})
+
 	-- Panel detail: menutupi isi panel katalog.
 	local detailPanel = ItemDetailPanel.new({
 		parent = panel.instance,
@@ -286,6 +384,13 @@ function App.mount(opts: Options?): App
 		end,
 		isInCart = function(d)
 			return cart:has(d.id, d.itemType)
+		end,
+		onBack = function()
+			detail:close()
+			if wardrobeReturn then
+				wardrobeReturn = false
+				self:openWardrobe()
+			end
 		end,
 		-- Tap part bundle: sedang dipakai -> lepas part itu; belum -> pakai part itu saja.
 		onPartActivated = function(part, d)
@@ -320,6 +425,11 @@ function App.mount(opts: Options?): App
 		detailPanel = detailPanel,
 		cart = cart,
 		cartPanel = cartPanel,
+		wardrobe = wardrobe,
+		wardrobePanel = wardrobePanel,
+		previews = previews,
+		leftRail = leftRail,
+		rightRail = rightRail,
 		toast = toast,
 		actions = actions,
 		strip = strip,
@@ -407,6 +517,9 @@ function App._refreshButtons(self: App)
 	if not open then
 		self.detail:close() -- katalog ditutup (X / tombol / C) -> detail & keranjang ikut tertutup
 		self.cartPanel:setOpen(false)
+		if self.wardrobePanel:isOpen() then
+			self.wardrobePanel:setOpen(false)
+		end
 	end
 	self._catalogButton.BackgroundColor3 = if open then Tokens.Color.Accent else Tokens.Color.Panel
 	self._catalogButton.BackgroundTransparency = if open then 0 else Tokens.Transparency.Panel
@@ -414,6 +527,11 @@ function App._refreshButtons(self: App)
 	-- (tutup lewat X). Dock (tombol aksi + strip) hanya tampil saat katalog terbuka, di kiri bawah.
 	local L = self.panel:getLayout()
 	self._topBar.Visible = not (open and L.compact)
+	-- Kolom samping: hanya saat katalog tertutup (panel katalog menutupi sisi kanan).
+	for _, rail in { self.leftRail, self.rightRail } do
+		rail:setVisible(not open)
+		rail:setCompact(L.compact)
+	end
 	local bar = self.actions.instance
 	bar.Visible = open
 	bar.AnchorPoint = Vector2.zero
@@ -451,7 +569,46 @@ function App.openCart(self: App)
 		self:_refreshButtons()
 	end
 	self.detail:close()
+	if self.wardrobePanel:isOpen() then
+		self.wardrobePanel:setOpen(false)
+	end
 	self.cartPanel:setOpen(true)
+end
+
+-- Tombol Saved Outfits: buka katalog + panel outfit tersimpan (detail & keranjang ditutup).
+function App.openWardrobe(self: App)
+	if not self.panel:isVisible() then
+		self.panel:setVisible(true)
+		self:_refreshButtons()
+	end
+	self.detail:close()
+	self.cartPanel:setOpen(false)
+	if not self.wardrobePanel:isOpen() then
+		self.wardrobePanel:setOpen(true) -- memuat ulang daftar
+	end
+end
+
+-- Back di panel outfit: kembali ke katalog.
+function App.closeWardrobe(self: App)
+	self.wardrobePanel:setOpen(false)
+end
+
+-- Hasil aksi wardrobe -> toast. Sukses setting tidak perlu toast (switch sudah berubah).
+function App._showWardrobeResult(self: App, op: string, ok: boolean, code: string?, name: string?)
+	if ok then
+		local text = WARDROBE_OK_TEXT[op]
+		if text then
+			self.toast:show(text:format(name or "outfit"), "info")
+		end
+		return
+	end
+	local c = code or "FAILED"
+	local text = WARDROBE_FAIL_TEXT[c] or "Something went wrong, try again"
+	local kind: any = if WARDROBE_INFO_CODES[c]
+		then "info"
+		elseif c == "FAILED" or c == "NETWORK" then "error"
+		else "warning"
+	self.toast:show(text, kind)
 end
 
 -- Tombol 🛒 (kartu / detail): tambah atau buang dari keranjang; gagal -> toast.
@@ -514,6 +671,10 @@ function App.destroy(self: App)
 	self.outfit:stop()
 	self.cart:stop()
 	self.cartPanel:destroy()
+	self.wardrobePanel:destroy()
+	self.previews:destroy()
+	self.leftRail:destroy()
+	self.rightRail:destroy()
 	self.detailPanel:destroy()
 	self.detail:close()
 	self.panel:destroy()
