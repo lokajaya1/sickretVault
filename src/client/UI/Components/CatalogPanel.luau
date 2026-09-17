@@ -1,5 +1,9 @@
 --!strict
--- Panel katalog: judul + tutup, kotak cari, tab (Wearing + kategori), grid ItemCard (infinite scroll), status.
+-- Panel katalog DUA TINGKAT (lihat claude/Pedoman_Layout_CAC.md "Layar KATALOG"):
+--   1) halaman MENU kategori (mozaik CategoryMenu) -> tampil pertama saat katalog dibuka;
+--   2) halaman DAFTAR ITEM: kotak cari + DUA baris tab bergaris bawah (baris 1 = grup mozaik,
+--      baris 2 = kategori di dalam grup aktif) + grid ItemCard, plus tombol kembali ke menu.
+--   panel:showMenu()   panel:openGroup(group)   panel:page() -- "menu" | "list"
 -- Posisi & ukuran dari Shared/Util/PanelLayout: layar lebar -> panel di kanan; ponsel tegak -> panel dari bawah.
 -- Hanya MENAMPILKAN state CatalogController dan meneruskan aksi pemain ke controller.
 --   local panel = CatalogPanel.new({ controller = catalog, parent = screenGui, onItemActivated = fn })
@@ -11,10 +15,12 @@
 
 local Shared = game:GetService("ReplicatedStorage"):WaitForChild("Shared")
 local Categories = require(Shared.Config.Categories)
+local CatalogMenu = require(Shared.Config.CatalogMenu)
 local PanelLayout = require(Shared.Util.PanelLayout)
 local ItemLink = require(Shared.Util.ItemLink)
 local Tokens = require(script.Parent.Parent.Theme.Tokens)
 local ItemCard = require(script.Parent.ItemCard)
+local CategoryMenu = require(script.Parent.CategoryMenu)
 local CartIcon = require(script.Parent.Parent.Util.CartIcon)
 
 local SEARCH_DEBOUNCE = 0.6 -- detik setelah berhenti mengetik
@@ -24,6 +30,7 @@ local WEARING = "__wearing" -- kunci tab Wearing di _tabs (bukan kategori server
 local STATUS_H = 28
 local STATUS_H_COMPACT = 20
 local CART_BTN_W = 60
+local BACK_W = 36
 
 export type Props = {
 	controller: any, -- CatalogController
@@ -50,6 +57,18 @@ export type CatalogPanel = typeof(setmetatable(
 		instance: Frame,
 		_props: Props,
 		_grid: ScrollingFrame,
+		_menu: CategoryMenu.CategoryMenu,
+		_title: TextLabel,
+		_back: TextButton,
+		_tabBar: ScrollingFrame,
+		_groupBar: ScrollingFrame,
+		_groupTabs: { [string]: TextButton },
+		_page: "menu" | "list",
+		_group: CatalogMenu.Group?,
+		_hasError: boolean,
+		_innerW: number,
+		_innerH: number,
+		_contentTop: number,
 		_status: TextLabel,
 		_retry: TextButton,
 		_search: TextBox,
@@ -102,6 +121,15 @@ local function textButton(text: string, props: { [string]: any }): TextButton
 		base[k] = v
 	end
 	return make("TextButton", base, { corner(Tokens.Radius.Pill) })
+end
+
+-- Tab bergaris bawah (pola CAC): latar transparan; aktif = teks terang + garis aksen di bawahnya.
+local function setTabActive(b: TextButton, active: boolean)
+	b.TextColor3 = if active then Tokens.Color.Text else Tokens.Color.TextMuted
+	local line = b:FindFirstChild("Line")
+	if line then
+		(line :: Frame).Visible = active
+	end
 end
 
 -- Jalankan fungsi controller di thread baru (remote akan yield).
@@ -162,6 +190,15 @@ function CatalogPanel.new(props: Props): CatalogPanel
 		Parent = root,
 	})
 
+	-- Tombol kembali ke halaman menu kategori (hanya di halaman daftar item)
+	local back = textButton("<", {
+		Name = "Back",
+		Position = UDim2.fromOffset(0, HEADER_H + GAP),
+		Size = UDim2.fromOffset(BACK_W, Tokens.Size.SearchHeight),
+		Visible = false,
+		Parent = root,
+	})
+
 	-- Kotak cari
 	local searchTop = HEADER_H + GAP
 	local search: TextBox = make("TextBox", {
@@ -186,8 +223,34 @@ function CatalogPanel.new(props: Props): CatalogPanel
 		make("UIPadding", { PaddingLeft = UDim.new(0, Tokens.Space.M), PaddingRight = UDim.new(0, Tokens.Space.M) }),
 	})
 
+	-- Dua baris tab yang bisa digeser: grup (atas) & kategori dalam grup (bawah)
+	local function tabStrip(name: string, top: number): ScrollingFrame
+		return make("ScrollingFrame", {
+			Name = name,
+			BackgroundTransparency = 1,
+			BorderSizePixel = 0,
+			Position = UDim2.fromOffset(0, top),
+			Size = UDim2.new(1, 0, 0, Tokens.Size.TabHeight + 6),
+			CanvasSize = UDim2.new(),
+			AutomaticCanvasSize = Enum.AutomaticSize.X,
+			ScrollingDirection = Enum.ScrollingDirection.X,
+			ScrollBarThickness = 3,
+			ZIndex = Tokens.ZIndex.Panel,
+			Parent = root,
+		}, {
+			make("UIListLayout", {
+				FillDirection = Enum.FillDirection.Horizontal,
+				SortOrder = Enum.SortOrder.LayoutOrder,
+				Padding = UDim.new(0, Tokens.Space.XS + 2),
+			}),
+		})
+	end
+
+	local groupsTop = searchTop + Tokens.Size.SearchHeight + GAP
+	local groupBar: ScrollingFrame = tabStrip("GroupTabs", groupsTop)
+
 	-- Tab kategori (geser horizontal)
-	local tabsTop = searchTop + Tokens.Size.SearchHeight + GAP
+	local tabsTop = groupsTop + Tokens.Size.TabHeight + 6 + GAP
 	local tabBar: ScrollingFrame = make("ScrollingFrame", {
 		Name = "Tabs",
 		BackgroundTransparency = 1,
@@ -209,24 +272,53 @@ function CatalogPanel.new(props: Props): CatalogPanel
 	})
 
 	local tabs: { [string]: TextButton } = {}
+	local groupTabs: { [string]: TextButton } = {}
 	local conns: { RBXScriptConnection } = {}
 	local self: CatalogPanel
-	local function tabButton(id: string, label: string, order: number): TextButton
+	local function stripTab(name: string, label: string, order: number, parent: Instance, bold: boolean): TextButton
 		local b = textButton(label, {
-			Name = "Tab_" .. id,
+			Name = name,
 			LayoutOrder = order,
 			AutomaticSize = Enum.AutomaticSize.X,
 			Size = UDim2.fromOffset(0, Tokens.Size.TabHeight),
-			TextSize = Tokens.TextSize.Body,
-			Parent = tabBar,
+			TextSize = if bold then Tokens.TextSize.Button else Tokens.TextSize.Body,
+			TextColor3 = Tokens.Color.TextMuted,
+			BackgroundTransparency = 1,
+			Parent = parent,
 		})
 		make("UIPadding", {
 			PaddingLeft = UDim.new(0, Tokens.Space.M),
 			PaddingRight = UDim.new(0, Tokens.Space.M),
 			Parent = b,
 		})
+		make("Frame", {
+			Name = "Line",
+			BackgroundColor3 = Tokens.Color.Accent,
+			BorderSizePixel = 0,
+			AnchorPoint = Vector2.new(0, 1),
+			Position = UDim2.new(0, 0, 1, 0),
+			Size = UDim2.new(1, 0, 0, 2),
+			Visible = false,
+			ZIndex = Tokens.ZIndex.Panel,
+			Parent = b,
+		})
+		return b
+	end
+	local function tabButton(id: string, label: string, order: number): TextButton
+		local b = stripTab("Tab_" .. id, label, order, tabBar, false)
 		tabs[id] = b
 		return b
+	end
+	-- Baris 1: grup mozaik; selalu lengkap supaya bisa pindah grup tanpa kembali ke menu.
+	for i, group in CatalogMenu.list do
+		local b = stripTab("Group_" .. group.id, group.label, i, groupBar, true)
+		groupTabs[group.id] = b
+		table.insert(
+			conns,
+			b.Activated:Connect(function()
+				self:openGroup(group)
+			end)
+		)
 	end
 	if props.getWearing then
 		local b = tabButton(WEARING, "Wearing", 0)
@@ -300,10 +392,30 @@ function CatalogPanel.new(props: Props): CatalogPanel
 		Parent = root,
 	})
 
+	-- Halaman menu kategori (mozaik). Tap kartu -> halaman daftar item grup itu.
+	local menu = CategoryMenu.new({
+		parent = root,
+		onGroup = function(group)
+			self:openGroup(group)
+		end,
+	})
+
 	self = setmetatable({
 		instance = root,
 		_props = props,
 		_grid = grid,
+		_menu = menu,
+		_title = title,
+		_back = back,
+		_tabBar = tabBar,
+		_groupBar = groupBar,
+		_groupTabs = groupTabs,
+		_page = "menu",
+		_group = nil,
+		_hasError = false,
+		_innerW = 0,
+		_innerH = 0,
+		_contentTop = HEADER_H + GAP,
 		_status = status,
 		_retry = retry,
 		_search = search,
@@ -325,6 +437,12 @@ function CatalogPanel.new(props: Props): CatalogPanel
 			if props.onClose then
 				props.onClose()
 			end
+		end)
+	)
+	table.insert(
+		conns,
+		back.Activated:Connect(function()
+			self:showMenu()
 		end)
 	)
 	table.insert(
@@ -423,11 +541,17 @@ function CatalogPanel.new(props: Props): CatalogPanel
 		cartButton.Position = if c then UDim2.new(1, -(closeW + GAP), 0, 0) else UDim2.new(1, -(closeW + GAP), 0, 4)
 		cartButton.Size = if c then UDim2.fromOffset(CART_BTN_W, sh) else UDim2.fromOffset(CART_BTN_W, 32)
 		local sTop = if c then 0 else HEADER_H + GAP
-		search.Position = UDim2.fromOffset(0, sTop)
+		-- Tombol kembali di kiri kotak cari; kotak cari menyusut selebar tombol itu.
+		back.Position = UDim2.fromOffset(0, sTop)
+		back.Size = UDim2.fromOffset(BACK_W, sh)
+		local leftW = BACK_W + GAP
+		search.Position = UDim2.fromOffset(leftW, sTop)
 		-- compact: cari + (keranjang) + tutup satu baris
 		local rightW = sh + GAP + (if hasCart then CART_BTN_W + GAP else 0)
-		search.Size = if c then UDim2.new(1, -rightW, 0, sh) else UDim2.new(1, 0, 0, sh)
-		local tTop = sTop + sh + (if c then 6 else GAP)
+		search.Size = if c then UDim2.new(1, -(rightW + leftW), 0, sh) else UDim2.new(1, -leftW, 0, sh)
+		local grTop = sTop + sh + (if c then 6 else GAP)
+		groupBar.Position = UDim2.fromOffset(0, grTop)
+		local tTop = grTop + Tokens.Size.TabHeight + 6 + (if c then 2 else 4)
 		tabBar.Position = UDim2.fromOffset(0, tTop)
 		local gTop = tTop + Tokens.Size.TabHeight + 6 + (if c then 4 else GAP)
 		local stH = if c then STATUS_H_COMPACT else STATUS_H
@@ -436,6 +560,12 @@ function CatalogPanel.new(props: Props): CatalogPanel
 		status.Size = UDim2.new(1, -90, 0, stH)
 		status.TextSize = if c then Tokens.TextSize.Caption else Tokens.TextSize.Body
 		retry.Size = UDim2.fromOffset(80, stH - 4)
+
+		-- Area isi untuk halaman menu kategori (di bawah judul / tombol tutup yang mengambang).
+		self._innerW = L.w - Tokens.Space.M * 2
+		self._innerH = L.h - Tokens.Space.M * 2
+		self._contentTop = if c then sh + 4 else HEADER_H + GAP
+		self:_applyPage()
 	end
 	applyLayout()
 	table.insert(conns, host:GetPropertyChangedSignal("AbsoluteSize"):Connect(applyLayout))
@@ -449,7 +579,7 @@ end
 
 function CatalogPanel._maybeLoadMore(self: CatalogPanel)
 	local grid = self._grid
-	if not self.instance.Visible or self._wearing then
+	if not self.instance.Visible or self._wearing or self._page ~= "list" then
 		return
 	end
 	local state = self._props.controller:getState()
@@ -544,11 +674,12 @@ function CatalogPanel._renderCards(self: CatalogPanel, items: { any })
 end
 
 function CatalogPanel._render(self: CatalogPanel, state: any)
+	if self._page == "menu" then
+		return -- halaman mozaik: tidak ada grid yang perlu digambar
+	end
 	-- Tab aktif
 	for id, b in self._tabs do
-		local active = if self._wearing then id == WEARING else id == state.categoryId
-		b.BackgroundColor3 = if active then Tokens.Color.Accent else Tokens.Color.PanelRaised
-		b.TextColor3 = if active then Tokens.Color.AccentText else Tokens.Color.TextMuted
+		setTabActive(b, if self._wearing then id == WEARING else id == state.categoryId)
 	end
 
 	if self._wearing then
@@ -557,6 +688,7 @@ function CatalogPanel._render(self: CatalogPanel, state: any)
 		self:_renderCards(items)
 		self._status.Text = if #items == 0 then "Nothing worn yet" else ("%d items worn"):format(#items)
 		self._status.TextColor3 = Tokens.Color.TextMuted
+		self._hasError = false
 		self._retry.Visible = false
 		return
 	end
@@ -582,7 +714,8 @@ function CatalogPanel._render(self: CatalogPanel, state: any)
 	end
 	self._status.Text = text
 	self._status.TextColor3 = if state.error then Tokens.Color.Warning else Tokens.Color.TextMuted
-	self._retry.Visible = state.error ~= nil
+	self._hasError = state.error ~= nil
+	self._retry.Visible = self._hasError and self._page == "list"
 
 	-- Isi belum memenuhi layar? muat halaman berikutnya setelah layout diperbarui
 	if not state.loading and state.hasMore and not state.error then
@@ -622,14 +755,82 @@ function CatalogPanel.refreshSelection(self: CatalogPanel)
 	end
 end
 
+-- Halaman aktif: "menu" (mozaik kategori) atau "list" (daftar item).
+function CatalogPanel.page(self: CatalogPanel): "menu" | "list"
+	return self._page
+end
+
+-- Kembali ke halaman menu kategori (tombol <, atau saat panel baru dibuka).
+function CatalogPanel.showMenu(self: CatalogPanel)
+	self:disarm()
+	self._page = "menu"
+	self._group = nil
+	self:_applyPage()
+end
+
+-- Buka halaman daftar item sebuah grup mozaik; tab = kategori milik grup itu.
+function CatalogPanel.openGroup(self: CatalogPanel, group: CatalogMenu.Group)
+	self:disarm()
+	self._page = "list"
+	self._group = group
+	self._wearing = false
+	self._lastCount = 0
+	self._grid.CanvasPosition = Vector2.zero
+	self._tabBar.CanvasPosition = Vector2.zero
+	self._groupBar.CanvasPosition = Vector2.zero
+	self:_applyPage()
+	spawnCall(self._props.controller.setCategory, self._props.controller, CatalogMenu.firstCategory(group))
+end
+
+-- Tampilkan bagian yang sesuai halaman aktif (dipanggil applyLayout & saat halaman berganti).
+function CatalogPanel._applyPage(self: CatalogPanel)
+	local isMenu = self._page == "menu"
+	local group = self._group
+	self._menu:setVisible(isMenu)
+	self._search.Visible = not isMenu
+	self._back.Visible = not isMenu
+	self._tabBar.Visible = not isMenu
+	self._groupBar.Visible = not isMenu
+	for gid, b in self._groupTabs do
+		setTabActive(b, group ~= nil and gid == group.id)
+	end
+	self._grid.Visible = not isMenu
+	self._status.Visible = not isMenu
+	self._retry.Visible = not isMenu and self._hasError
+	self._title.Text = if isMenu or group == nil then "Catalog" else group.label
+
+	if isMenu then
+		self._menu:setArea(0, self._contentTop, self._innerW, self._innerH - self._contentTop)
+		return
+	end
+
+	-- Tab: hanya kategori milik grup ini (Wearing tetap di paling kiri bila ada).
+	local order: { [string]: number } = {}
+	for i, id in CatalogMenu.categoryIds(group :: CatalogMenu.Group) do
+		order[id] = i
+	end
+	for id, b in self._tabs do
+		if id == WEARING then
+			b.Visible = true
+			b.LayoutOrder = 0
+		else
+			local n = order[id]
+			b.Visible = n ~= nil
+			b.LayoutOrder = n or 999
+		end
+	end
+	self:_render(self._props.controller:getState())
+end
+
 function CatalogPanel.setVisible(self: CatalogPanel, visible: boolean)
 	self.instance.Visible = visible
 	if not visible then
+		-- ditutup -> dibuka lagi selalu mulai dari halaman menu kategori
 		self:disarm()
-	end
-	local state = self._props.controller:getState()
-	if visible and state.page == 0 and not state.loading then
-		spawnCall(self._props.controller.setCategory, self._props.controller, state.categoryId)
+		self._page = "menu"
+		self._group = nil
+	else
+		self:_applyPage()
 	end
 end
 
@@ -650,6 +851,7 @@ function CatalogPanel.destroy(self: CatalogPanel)
 	for _, card in self._cards do
 		card:destroy()
 	end
+	self._menu:destroy()
 	self.instance:Destroy()
 end
 

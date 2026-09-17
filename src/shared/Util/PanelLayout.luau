@@ -5,6 +5,8 @@
 --   L.compact   -- layar pendek (ponsel mendatar): header ringkas, panel setinggi layar, kartu lebih kecil
 --   L.x, L.y, L.w, L.h           -- kotak panel
 --   L.columns, L.cellW, L.cellH  -- ukuran kartu grid
+--   PanelLayout.mosaicNarrow(innerW)              -- true = mozaik memakai susunan 2 kolom
+--   PanelLayout.mosaic(innerW, innerH, cols, rows) -- ukuran satu unit kartu mozaik (menu kategori)
 --   L.anchorX, L.anchorY         -- titik tengah area kosong (piksel) untuk kamera try-on
 --   L.dockX, L.dockY, L.dockW, L.dockH -- area kiri bawah (di bawah avatar) untuk tombol aksi + strip Wearing
 --   L.actionsH, L.stripH         -- tinggi baris tombol aksi & strip di dalam dock
@@ -48,6 +50,10 @@ PanelLayout.CARD_MIN = 104 -- lebar kartu minimum
 PanelLayout.CARD_MIN_COMPACT = 76
 PanelLayout.MIN_COLUMNS = 3
 PanelLayout.MAX_COLUMNS = 6
+PanelLayout.MOSAIC_GAP = 8 -- jarak antar kartu mozaik (halaman menu kategori)
+PanelLayout.MOSAIC_COLUMNS = 4 -- susunan mozaik normal (Config/CatalogMenu)
+PanelLayout.MOSAIC_MIN_CARD = 90 -- kartu 4 kolom lebih sempit dari ini -> pakai susunan 2 kolom
+PanelLayout.MOSAIC_MIN_UNIT = 64 -- tinggi minimum satu unit kartu mozaik
 PanelLayout.TEXT_AREA = 34 -- tinggi nama + harga di bawah gambar
 PanelLayout.TEXT_AREA_COMPACT = 30
 PanelLayout.ACTIONS_H = 44 -- tombol Undo/Redo/Reset
@@ -71,6 +77,37 @@ function PanelLayout.grid(innerWidth: number, compact: boolean?): (number, numbe
 	local cellW = math.floor((usable - P.GAP * (cols - 1)) / cols)
 	cellW = math.max(cellW, 40)
 	return cols, cellW, cellW + textArea
+end
+
+-- Panel terlalu sempit untuk mozaik 4 kolom (label besar jadi tidak terbaca) -> susunan 2 kolom.
+-- Patokannya LEBAR panel, bukan tinggi layar: ponsel mendatar panelnya pendek tapi lebar.
+function PanelLayout.mosaicNarrow(innerWidth: number): boolean
+	local P = PanelLayout
+	local usable = math.max(0, innerWidth - P.SCROLLBAR)
+	local cols = P.MOSAIC_COLUMNS
+	return (usable - P.MOSAIC_GAP * (cols - 1)) / cols < P.MOSAIC_MIN_CARD
+end
+
+-- Ukuran satu unit kartu mozaik (halaman menu kategori). `cols`/`rows` dari Config/CatalogMenu.
+-- Kembalian: lebar unit, tinggi unit, tinggi seluruh mozaik (canvas ScrollingFrame).
+-- Unit dibuat selebar mungkin; tingginya mengisi ruang yang ada tapi tidak pernah lebih jangkung
+-- dari lebarnya (kartu tetap proporsional) dan tidak lebih pendek dari MOSAIC_MIN_UNIT
+-- (mozaik boleh lebih tinggi dari panel -> halaman menu digulir).
+function PanelLayout.mosaic(
+	innerWidth: number,
+	innerHeight: number,
+	cols: number,
+	rows: number
+): (number, number, number)
+	local P = PanelLayout
+	local gap = P.MOSAIC_GAP
+	cols = math.max(1, math.floor(cols))
+	rows = math.max(1, math.floor(rows))
+	local usableW = math.max(0, innerWidth - P.SCROLLBAR)
+	local unitW = math.max(math.floor((usableW - gap * (cols - 1)) / cols), 40)
+	local fitH = math.floor((innerHeight - gap * (rows - 1)) / rows)
+	local unitH = math.floor(clamp(fitH, P.MOSAIC_MIN_UNIT, unitW))
+	return unitW, unitH, unitH * rows + gap * (rows - 1)
 end
 
 function PanelLayout.compute(width: number, height: number): Layout

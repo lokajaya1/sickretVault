@@ -32,7 +32,8 @@ local list: { Category } = {
 		assetTypes = { "PantsAccessory", "ShortsAccessory", "DressSkirtAccessory" },
 	},
 	{ id = "classic", label = "Classic", assetTypes = { "Shirt", "Pants", "TShirt" } },
-	{ id = "faces", label = "Faces", assetTypes = { "Face" } },
+	-- Classic face (asset type "Face") DIHAPUS: Roblox menarik semua classic face dari penjualan,
+	-- jadi SearchCatalogAsync selalu mengembalikan 0 item. Wajah sekarang lewat "face_acc" & "heads".
 	{ id = "shoes", label = "Shoes", bundleTypes = { "Shoes" } },
 	{ id = "bodies", label = "Bodies", bundleTypes = { "BodyParts" } },
 	{ id = "heads", label = "Heads", bundleTypes = { "DynamicHead" } },
