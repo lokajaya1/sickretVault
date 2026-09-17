@@ -15,6 +15,7 @@ return {
 		GetBundle = { capacity = 10, refillPerSec = 2 },
 		GetItemDetail = { capacity = 10, refillPerSec = 2 },
 		GetState = { capacity = 5, refillPerSec = 1 },
+		Wardrobe = { capacity = 8, refillPerSec = 1 }, -- save/rename memanggil filter teks (mahal)
 	},
 	SearchCacheTTL = 600,
 	ItemCacheTTL = 3600,

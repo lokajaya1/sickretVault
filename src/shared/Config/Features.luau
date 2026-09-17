@@ -13,4 +13,6 @@ return {
 	-- true = di Studio pakai ProfileStore.Mock (data asli tidak tersentuh, hilang saat Stop).
 	-- false = Studio memakai DataStore asli (butuh place di-publish + Enable Studio Access to API Services).
 	PlayerDataStudioMock = false,
+	-- Wardrobe (slot outfit tersimpan). Butuh PlayerData = true. false = remote Wardrobe menjawab DISABLED.
+	Wardrobe = true,
 }
