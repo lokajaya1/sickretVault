@@ -7,6 +7,7 @@
 --   })
 --   panel:setOpen(true)   panel:isOpen()   panel:destroy()
 -- Isi: Search + X; tab "All" + dropdown sort; grid kartu (kartu pertama "+" = simpan outfit sekarang);
+-- Tombol "+" membuka dialog nama dulu (boleh dikosongkan -> server memberi nama "Outfit N").
 -- bawah: toggle "Wear last outfit when joining". Tap kartu -> WEAR / VIEW; VIEW -> OutfitDetailSheet.
 -- Folder & "Select Outfits" menyusul di PR berikutnya (lihat claude/Pedoman_Layout_CAC.md).
 -- Kartu dipakai ulang selama id & updatedAt sama supaya model 3D tidak dibuat ulang.
@@ -26,6 +27,9 @@ local SWITCH_W = 52
 local CELL_MIN = 132 -- lebar kartu minimum -> jumlah kolom menyesuaikan lebar panel
 local CELL_RATIO = 1.32 -- tinggi kartu = lebar * rasio
 local SEARCH_DEBOUNCE = 0.25
+local PROMPT_W = 320
+local PROMPT_H = 168
+local MAX_NAME = 32 -- sama dengan Wardrobe.MAX_NAME (server tetap memvalidasi)
 local Z = Tokens.ZIndex.Panel + 4 -- di atas isi katalog, di bawah ItemDetailPanel (+5)
 
 export type Props = {
@@ -49,6 +53,8 @@ export type WardrobePanel = typeof(setmetatable(
 		_grid: ScrollingFrame,
 		_layout: UIGridLayout,
 		_add: TextButton,
+		_prompt: TextButton,
+		_promptBox: TextBox,
 		_status: Frame,
 		_statusTitle: TextLabel,
 		_statusHint: TextLabel,
@@ -119,6 +125,12 @@ local function button(text: string, props: { [string]: any }): TextButton
 		base[k] = v
 	end
 	return make("TextButton", base, { corner(Tokens.Radius.Pill) })
+end
+
+-- Teks kotak nama -> nil bila kosong (server yang memberi nama bawaan).
+local function cleanName(text: string): string?
+	local trimmed = string.match(text, "^%s*(.-)%s*$") or ""
+	return if trimmed == "" then nil else trimmed
 end
 
 function WardrobePanel.new(props: Props): WardrobePanel
@@ -338,12 +350,137 @@ function WardrobePanel.new(props: Props): WardrobePanel
 		make("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder }),
 	})
 
+	-- Dialog nama (muncul saat kartu "+" ditekan)
+	local prompt: TextButton = make("TextButton", {
+		Name = "NamePrompt",
+		Text = "",
+		AutoButtonColor = false,
+		BackgroundColor3 = Tokens.Color.Background,
+		BackgroundTransparency = Tokens.Transparency.Overlay,
+		BorderSizePixel = 0,
+		Visible = false,
+		Position = UDim2.fromOffset(-pad, -pad),
+		Size = UDim2.new(1, pad * 2, 1, pad * 2),
+		ZIndex = Z + 6,
+		Parent = root,
+	}, { corner(Tokens.Radius.Large) })
+	-- TextButton (bukan Frame) supaya klik di dalam kartu tidak menutup dialog.
+	local promptCard: TextButton = make("TextButton", {
+		Name = "Card",
+		Text = "",
+		AutoButtonColor = false,
+		BackgroundColor3 = Tokens.Color.Panel,
+		BorderSizePixel = 0,
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.new(0.9, 0, 0, PROMPT_H),
+		ZIndex = Z + 7,
+		Parent = prompt,
+	}, {
+		corner(Tokens.Radius.Large),
+		make("UISizeConstraint", { MaxSize = Vector2.new(PROMPT_W, PROMPT_H) }),
+		make("UIPadding", {
+			PaddingTop = UDim.new(0, pad),
+			PaddingBottom = UDim.new(0, pad),
+			PaddingLeft = UDim.new(0, pad),
+			PaddingRight = UDim.new(0, pad),
+		}),
+		make("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, gap) }),
+	})
+	label({
+		Name = "PromptTitle",
+		Text = "Save current outfit",
+		FontFace = Tokens.Font.Bold,
+		TextSize = Tokens.TextSize.Title,
+		TextXAlignment = Enum.TextXAlignment.Center,
+		LayoutOrder = 1,
+		Size = UDim2.new(1, 0, 0, 26),
+		ZIndex = Z + 7,
+		Parent = promptCard,
+	})
+	label({
+		Name = "PromptHint",
+		Text = "Kosongkan untuk nama otomatis.",
+		TextSize = Tokens.TextSize.Caption,
+		TextColor3 = Tokens.Color.TextMuted,
+		TextXAlignment = Enum.TextXAlignment.Center,
+		LayoutOrder = 2,
+		Size = UDim2.new(1, 0, 0, 18),
+		ZIndex = Z + 7,
+		Parent = promptCard,
+	})
+	local promptBox: TextBox = make("TextBox", {
+		Name = "PromptName",
+		Text = "",
+		PlaceholderText = "Outfit name",
+		ClearTextOnFocus = false,
+		FontFace = Tokens.Font.Regular,
+		TextSize = Tokens.TextSize.Body,
+		TextColor3 = Tokens.Color.Text,
+		PlaceholderColor3 = Tokens.Color.TextMuted,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		BackgroundColor3 = Tokens.Color.PanelRaised,
+		BackgroundTransparency = Tokens.Transparency.PanelRaised,
+		BorderSizePixel = 0,
+		LayoutOrder = 3,
+		Size = UDim2.new(1, 0, 0, 34),
+		ZIndex = Z + 7,
+		Parent = promptCard,
+	}, {
+		corner(Tokens.Radius.Pill),
+		make("UIPadding", { PaddingLeft = UDim.new(0, Tokens.Space.M), PaddingRight = UDim.new(0, Tokens.Space.M) }),
+	})
+	local promptRow: Frame = make("Frame", {
+		Name = "PromptActions",
+		BackgroundTransparency = 1,
+		LayoutOrder = 4,
+		Size = UDim2.new(1, 0, 0, 34),
+		ZIndex = Z + 7,
+		Parent = promptCard,
+	}, {
+		make("UIListLayout", {
+			FillDirection = Enum.FillDirection.Horizontal,
+			SortOrder = Enum.SortOrder.LayoutOrder,
+			Padding = UDim.new(0, gap),
+		}),
+	})
+	local promptHalf = UDim2.new(0.5, -gap / 2, 1, 0)
+	local promptCancel = button("Cancel", {
+		Name = "Cancel",
+		LayoutOrder = 1,
+		Size = promptHalf,
+		ZIndex = Z + 7,
+		Parent = promptRow,
+	})
+	local promptSave = button("Save", {
+		Name = "Save",
+		LayoutOrder = 2,
+		Size = promptHalf,
+		BackgroundColor3 = Tokens.Color.Accent,
+		BackgroundTransparency = 0,
+		TextColor3 = Tokens.Color.AccentText,
+		ZIndex = Z + 7,
+		Parent = promptRow,
+	})
+
 	local self: WardrobePanel
 	local conns: { RBXScriptConnection } = {}
 
 	local sheet = OutfitDetailSheet.new({
 		parent = root,
 		previews = props.previews,
+		loadItems = function(outfit)
+			return ctl:items(outfit.id)
+		end,
+		cachedItems = function(outfit)
+			return ctl:itemsCached(outfit.id)
+		end,
+		onFavorite = function(outfit)
+			self:_act("favorite", outfit.id, outfit.name, function()
+				return ctl:favorite(outfit.id, not outfit.favorite)
+			end)
+		end,
 		onWear = function(outfit)
 			self:_act("wear", outfit.id, outfit.name, function()
 				return ctl:wear(outfit.id)
@@ -378,6 +515,8 @@ function WardrobePanel.new(props: Props): WardrobePanel
 		_grid = grid,
 		_layout = gridLayout,
 		_add = add,
+		_prompt = prompt,
+		_promptBox = promptBox,
 		_status = status,
 		_statusTitle = statusTitle,
 		_statusHint = statusHint,
@@ -453,13 +592,45 @@ function WardrobePanel.new(props: Props): WardrobePanel
 		conns,
 		add.Activated:Connect(function()
 			self:_dismiss()
-			local snap = self._snap
-			if snap == nil or snap.busy or not snap.loaded then
-				return
+			self:_openPrompt()
+		end)
+	)
+	table.insert(
+		conns,
+		prompt.Activated:Connect(function()
+			self:_closePrompt()
+		end)
+	)
+	table.insert(
+		conns,
+		promptCancel.Activated:Connect(function()
+			self:_closePrompt()
+		end)
+	)
+	table.insert(
+		conns,
+		promptSave.Activated:Connect(function()
+			self:_saveCurrent(cleanName(promptBox.Text))
+		end)
+	)
+	table.insert(
+		conns,
+		promptBox.FocusLost:Connect(function(enterPressed)
+			if enterPressed then
+				self:_saveCurrent(cleanName(promptBox.Text))
 			end
-			self:_act("save", nil, nil, function()
-				return ctl:save(nil)
-			end)
+		end)
+	)
+	table.insert(
+		conns,
+		promptBox:GetPropertyChangedSignal("Text"):Connect(function()
+			local len = utf8.len(promptBox.Text)
+			if len and len > MAX_NAME then
+				local cut = utf8.offset(promptBox.Text, MAX_NAME + 1)
+				if cut then
+					promptBox.Text = string.sub(promptBox.Text, 1, cut - 1)
+				end
+			end
 		end)
 	)
 	table.insert(
@@ -494,6 +665,34 @@ function WardrobePanel.new(props: Props): WardrobePanel
 	self:_render(ctl:getSnapshot())
 	self:_resizeCells()
 	return self
+end
+
+-- Dialog nama untuk kartu "+".
+function WardrobePanel._openPrompt(self: WardrobePanel)
+	local snap = self._snap
+	if snap == nil or not snap.loaded or snap.busy ~= nil or snap.isFull then
+		return
+	end
+	self._promptBox.Text = ""
+	self._prompt.Visible = true
+	self._promptBox:CaptureFocus()
+end
+
+function WardrobePanel._closePrompt(self: WardrobePanel)
+	if not self._prompt.Visible then
+		return
+	end
+	self._promptBox:ReleaseFocus()
+	self._prompt.Visible = false
+end
+
+-- name nil -> server memberi nama bawaan ("Outfit N").
+function WardrobePanel._saveCurrent(self: WardrobePanel, name: string?)
+	local ctl = self._props.controller
+	self:_closePrompt()
+	self:_act("save", nil, name, function()
+		return ctl:save(name)
+	end)
 end
 
 -- Jalankan aksi controller di thread baru; hasil -> onResult (toast).
@@ -694,6 +893,7 @@ function WardrobePanel.setOpen(self: WardrobePanel, open: boolean)
 		self:_resizeCells()
 	else
 		self:_dismiss()
+		self:_closePrompt()
 		self._sortMenu.Visible = false
 		self._sheet:close()
 		self._search:ReleaseFocus()
