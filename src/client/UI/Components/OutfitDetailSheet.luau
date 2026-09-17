@@ -11,6 +11,10 @@
 -- Delete butuh dua tap ("Sure?" selama CONFIRM_SECONDS). Ganti nama: Enter menyimpan, klik di luar batal.
 -- Selalu dua kolom (avatar kiri, detail kanan) supaya cocok di layar pendek/HP; lebar kolom kiri menyesuaikan.
 -- Harga: dari server (op "items"). Item tanpa harga tidak dihitung ke Total Cost.
+-- Preview berputar pelan sendiri; digeser (drag) untuk memutar manual. Avatar TIDAK bisa dianimasikan
+-- (lihat catatan di OutfitPreview: model di client tidak punya Motor6D).
+
+local UserInputService = game:GetService("UserInputService")
 
 local Tokens = require(script.Parent.Parent.Theme.Tokens)
 
@@ -26,6 +30,7 @@ local LEFT_MIN = 120
 local LEFT_MAX = 280
 local MAX_NAME = 32 -- sama dengan Wardrobe.MAX_NAME (server tetap memvalidasi)
 local CONFIRM_SECONDS = 3
+local DRAG_SENSITIVITY = 0.012 -- radian per piksel geseran
 local ROBUX = utf8.char(0xE002)
 local STAR_ON = "★"
 local STAR_OFF = "☆"
@@ -67,6 +72,9 @@ export type OutfitDetailSheet = typeof(setmetatable(
 		_star: TextButton,
 		_viewport: ViewportFrame,
 		_fallback: Frame,
+		_drag: TextButton,
+		_dragging: boolean,
+		_lastX: number,
 		_nameBox: TextBox,
 		_total: TextLabel,
 		_itemsTitle: TextLabel,
@@ -252,6 +260,17 @@ function OutfitDetailSheet.new(props: Props): OutfitDetailSheet
 			SortOrder = Enum.SortOrder.LayoutOrder,
 		}),
 	})
+	-- Lapisan tak terlihat untuk menangkap geseran di atas preview
+	local drag: TextButton = make("TextButton", {
+		Name = "Drag",
+		Text = "",
+		AutoButtonColor = false,
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1, 0, 1, -(WEAR_H + gap)),
+		ZIndex = Z + 1,
+		Parent = left,
+	})
+
 	local wear = button("Wear", {
 		Name = "Wear",
 		AnchorPoint = Vector2.new(0, 1),
@@ -451,6 +470,9 @@ function OutfitDetailSheet.new(props: Props): OutfitDetailSheet
 		_star = star,
 		_viewport = viewport,
 		_fallback = fallback,
+		_drag = drag,
+		_dragging = false,
+		_lastX = 0,
 		_nameBox = nameBox,
 		_total = total,
 		_itemsTitle = itemsTitle,
@@ -509,6 +531,43 @@ function OutfitDetailSheet.new(props: Props): OutfitDetailSheet
 			end
 		end),
 		nameBox.FocusLost:Connect(commitRename),
+		drag.InputBegan:Connect(function(input: InputObject)
+			if
+				input.UserInputType == Enum.UserInputType.MouseButton1
+				or input.UserInputType == Enum.UserInputType.Touch
+			then
+				self._dragging = true
+				self._lastX = input.Position.X
+				self:_setSpin(false)
+			end
+		end),
+		UserInputService.InputChanged:Connect(function(input: InputObject)
+			if not self._dragging then
+				return
+			end
+			if
+				input.UserInputType == Enum.UserInputType.MouseMovement
+				or input.UserInputType == Enum.UserInputType.Touch
+			then
+				local x = input.Position.X
+				local preview = self._preview
+				if preview then
+					preview.addYaw((self._lastX - x) * DRAG_SENSITIVITY)
+				end
+				self._lastX = x
+			end
+		end),
+		UserInputService.InputEnded:Connect(function(input: InputObject)
+			if
+				input.UserInputType == Enum.UserInputType.MouseButton1
+				or input.UserInputType == Enum.UserInputType.Touch
+			then
+				if self._dragging then
+					self._dragging = false
+					self:_setSpin(true)
+				end
+			end
+		end),
 		rename.Activated:Connect(function()
 			nameBox:CaptureFocus()
 		end),
@@ -581,11 +640,21 @@ function OutfitDetailSheet._setConfirm(self: OutfitDetailSheet, confirm: boolean
 	end
 end
 
+-- Putaran otomatis hanya saat lembar terbuka & tidak sedang digeser.
+function OutfitDetailSheet._setSpin(self: OutfitDetailSheet, on: boolean)
+	local preview = self._preview
+	if preview then
+		preview.setSpin(on and self.instance.Visible and not self._dragging)
+	end
+end
+
 function OutfitDetailSheet._clearPreview(self: OutfitDetailSheet)
 	if self._preview then
+		self._preview.setSpin(false)
 		self._preview.cancel()
 		self._preview = nil
 	end
+	self._dragging = false
 	self._fallback.Visible = false
 end
 
@@ -756,6 +825,7 @@ function OutfitDetailSheet.open(self: OutfitDetailSheet, outfit: Outfit)
 	end
 	self.instance.Visible = true
 	self:_layout()
+	self:_setSpin(true)
 end
 
 function OutfitDetailSheet.outfitId(self: OutfitDetailSheet): number?
