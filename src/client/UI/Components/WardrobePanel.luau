@@ -1,52 +1,39 @@
 --!strict
--- Panel wardrobe (outfit tersimpan): MENUTUPI isi panel katalog (anak dari CatalogPanel.instance),
--- setingkat CartPanel (App memastikan hanya satu yang terbuka).
--- Hanya menampilkan snapshot WardrobeController; aksi dijalankan lewat controller (task.spawn),
--- hasilnya dilaporkan ke App lewat onResult (untuk toast).
+-- Panel "Saved Outfits" (pola CAC): MENUTUPI isi panel katalog (anak dari CatalogPanel.instance).
 --   local panel = WardrobePanel.new({
---   	parent = catalogPanel.instance, controller = wardrobeController,
---   	onResult = function(op, ok, code, name) ... end,
+--   	parent = catalogPanel.instance, controller = wardrobeController, previews = outfitPreview,
+--   	onResult = function(op, ok, code, name) ... end,  -- untuk toast
+--   	onBack = function() ... end,                       -- tombol X
 --   })
 --   panel:setOpen(true)   panel:isOpen()   panel:destroy()
--- Isi: Back + judul "Outfits (n/30)"; baris simpan (nama opsional + Save);
--- daftar slot (thumbnail, nama, jumlah item, Wear, ⋯ -> Rename / Update / Delete);
--- bawah: toggle "Wear last outfit when joining".
+-- Isi: Search + X; tab "All" + dropdown sort; grid kartu (kartu pertama "+" = simpan outfit sekarang);
+-- bawah: toggle "Wear last outfit when joining". Tap kartu -> WEAR / VIEW; VIEW -> OutfitDetailSheet.
+-- Folder & "Select Outfits" menyusul di PR berikutnya (lihat claude/Pedoman_Layout_CAC.md).
+-- Kartu dipakai ulang selama id & updatedAt sama supaya model 3D tidak dibuat ulang.
 
+local Shared = game:GetService("ReplicatedStorage"):WaitForChild("Shared")
+local OutfitSort = require(Shared.Domain.OutfitSort)
 local Tokens = require(script.Parent.Parent.Theme.Tokens)
+local OutfitCard = require(script.Parent.OutfitCard)
+local OutfitDetailSheet = require(script.Parent.OutfitDetailSheet)
 
-local HEADER_H = 36
-local SAVE_H = 36
-local FOOTER_H = 36
-local ROW_H = 64
-local ACTIONS_H = 36
-local THUMB = 52
-local WEAR_W = 64
-local MORE_W = 36
-local SAVE_W = 84
+local SEARCH_H = 36
+local TABS_H = 30
+local FOOTER_H = 32
+local CLOSE_W = 36
+local SORT_W = 168
 local SWITCH_W = 52
-local MAX_NAME = 32 -- sama dengan Wardrobe.MAX_NAME (server tetap memvalidasi)
-local CONFIRM_SECONDS = 3
+local CELL_MIN = 132 -- lebar kartu minimum -> jumlah kolom menyesuaikan lebar panel
+local CELL_RATIO = 1.32 -- tinggi kartu = lebar * rasio
+local SEARCH_DEBOUNCE = 0.25
 local Z = Tokens.ZIndex.Panel + 4 -- di atas isi katalog, di bawah ItemDetailPanel (+5)
 
 export type Props = {
 	parent: GuiObject, -- CatalogPanel.instance
 	controller: any, -- WardrobeController
-	onResult: ((op: string, ok: boolean, code: string?, name: string?) -> ())?, -- untuk toast
-	onBack: (() -> ())?, -- default: setOpen(false)
-}
-
-type Row = {
-	id: number,
-	frame: Frame,
-	wear: TextButton,
-	more: TextButton,
-	actions: Frame,
-	rename: TextButton,
-	update: TextButton,
-	delete: TextButton,
-	nameLabel: TextLabel,
-	nameBox: TextBox,
-	conns: { RBXScriptConnection },
+	previews: any, -- OutfitPreview
+	onResult: ((op: string, ok: boolean, code: string?, name: string?) -> ())?,
+	onBack: (() -> ())?, -- tombol X (default: setOpen(false))
 }
 
 local WardrobePanel = {}
@@ -56,23 +43,24 @@ export type WardrobePanel = typeof(setmetatable(
 	{} :: {
 		instance: Frame,
 		_props: Props,
-		_title: TextLabel,
-		_nameInput: TextBox,
-		_save: TextButton,
-		_list: ScrollingFrame,
+		_search: TextBox,
+		_sortButton: TextButton,
+		_sortMenu: Frame,
+		_grid: ScrollingFrame,
+		_layout: UIGridLayout,
+		_add: TextButton,
 		_status: Frame,
 		_statusTitle: TextLabel,
 		_statusHint: TextLabel,
 		_retry: TextButton,
 		_switch: TextButton,
 		_knob: Frame,
-		_rows: { Row },
-		_rowsKey: string,
+		_sheet: OutfitDetailSheet.OutfitDetailSheet,
+		_cards: { [number]: any }, -- id -> OutfitCard
+		_cardKey: { [number]: string }, -- id -> "<updatedAt>"
+		_armedId: number?,
 		_snap: any?,
-		_expandedId: number?,
-		_renamingId: number?,
-		_confirmId: number?,
-		_confirmToken: number,
+		_searchToken: number,
 		_conns: { RBXScriptConnection },
 		_unsubscribe: () -> (),
 	},
@@ -106,8 +94,6 @@ local function label(props: { [string]: any }): TextLabel
 		TextSize = Tokens.TextSize.Body,
 		TextColor3 = Tokens.Color.Text,
 		TextXAlignment = Enum.TextXAlignment.Left,
-		TextYAlignment = Enum.TextYAlignment.Center,
-		TextWrapped = false,
 		TextTruncate = Enum.TextTruncate.AtEnd,
 		ZIndex = Z,
 	}
@@ -135,72 +121,15 @@ local function button(text: string, props: { [string]: any }): TextButton
 	return make("TextButton", base, { corner(Tokens.Radius.Pill) })
 end
 
-local function textBox(props: { [string]: any }): TextBox
-	local base = {
-		Text = "",
-		ClearTextOnFocus = false,
-		FontFace = Tokens.Font.Regular,
-		TextSize = Tokens.TextSize.Body,
-		TextColor3 = Tokens.Color.Text,
-		PlaceholderColor3 = Tokens.Color.TextMuted,
-		TextXAlignment = Enum.TextXAlignment.Left,
-		TextTruncate = Enum.TextTruncate.AtEnd,
-		BackgroundColor3 = Tokens.Color.PanelRaised,
-		BackgroundTransparency = Tokens.Transparency.PanelRaised,
-		BorderSizePixel = 0,
-		ZIndex = Z,
-	}
-	for k, v in props do
-		base[k] = v
-	end
-	return make("TextBox", base, {
-		corner(Tokens.Radius.Pill),
-		make("UIPadding", {
-			PaddingLeft = UDim.new(0, Tokens.Space.M),
-			PaddingRight = UDim.new(0, Tokens.Space.M),
-		}),
-	})
-end
-
--- Potong teks ke MAX_NAME karakter (utf8) selagi diketik.
-local function limitLength(box: TextBox): RBXScriptConnection
-	return box:GetPropertyChangedSignal("Text"):Connect(function()
-		local text = box.Text
-		local len = utf8.len(text)
-		if len and len > MAX_NAME then
-			local cut = utf8.offset(text, MAX_NAME + 1)
-			if cut then
-				box.Text = string.sub(text, 1, cut - 1)
-			end
-		end
-	end)
-end
-
-local function assetThumb(id: number): string
-	return ("rbxthumb://type=Asset&id=%d&w=150&h=150"):format(id)
-end
-
-local function countText(n: number): string
-	return ("%d item%s"):format(n, if n == 1 then "" else "s")
-end
-
--- Tombol aktif/nonaktif (tampilan saja; handler tetap memeriksa status).
-local function setEnabled(b: TextButton, enabled: boolean)
-	b.AutoButtonColor = enabled
-	b.TextTransparency = if enabled then 0 else 0.5
-end
-
 function WardrobePanel.new(props: Props): WardrobePanel
 	local pad = Tokens.Space.M
 	local gap = Tokens.Space.S
 	local ctl = props.controller
 
-	-- Menutupi seluruh panel katalog (termasuk padding induk), latar penuh.
 	local root: Frame = make("Frame", {
 		Name = "WardrobePanel",
 		Active = true,
 		BackgroundColor3 = Tokens.Color.Panel,
-		BackgroundTransparency = 0,
 		BorderSizePixel = 0,
 		Position = UDim2.fromOffset(-pad, -pad),
 		Size = UDim2.new(1, pad * 2, 1, pad * 2),
@@ -216,7 +145,6 @@ function WardrobePanel.new(props: Props): WardrobePanel
 			PaddingRight = UDim.new(0, pad),
 		}),
 	})
-	-- Penahan klik: supaya tap tidak tembus ke kartu katalog di bawahnya.
 	make("TextButton", {
 		Name = "InputBlocker",
 		Text = "",
@@ -227,74 +155,101 @@ function WardrobePanel.new(props: Props): WardrobePanel
 		Parent = root,
 	})
 
-	-- Header: Back + judul
-	local back = button("‹ Back", {
-		Name = "Back",
-		Size = UDim2.fromOffset(84, HEADER_H),
+	-- Baris 1: Search + X
+	local search: TextBox = make("TextBox", {
+		Name = "Search",
+		Text = "",
+		PlaceholderText = "Search…",
+		ClearTextOnFocus = false,
+		FontFace = Tokens.Font.Regular,
+		TextSize = Tokens.TextSize.Body,
+		TextColor3 = Tokens.Color.Text,
+		PlaceholderColor3 = Tokens.Color.TextMuted,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		BackgroundColor3 = Tokens.Color.PanelRaised,
+		BackgroundTransparency = Tokens.Transparency.PanelRaised,
+		BorderSizePixel = 0,
+		Size = UDim2.new(1, -(CLOSE_W + gap), 0, SEARCH_H),
+		ZIndex = Z,
 		Parent = root,
+	}, {
+		corner(Tokens.Radius.Pill),
+		make("UIPadding", { PaddingLeft = UDim.new(0, pad), PaddingRight = UDim.new(0, pad) }),
 	})
-	local title = label({
-		Name = "Title",
-		Text = "Outfits",
-		FontFace = Tokens.Font.Bold,
-		TextSize = Tokens.TextSize.Title,
-		Position = UDim2.fromOffset(84 + pad, 0),
-		Size = UDim2.new(1, -(84 + pad), 0, HEADER_H),
+	local close = button("✕", {
+		Name = "Close",
+		AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.fromScale(1, 0),
+		Size = UDim2.fromOffset(CLOSE_W, SEARCH_H),
 		Parent = root,
 	})
 
-	-- Baris simpan: nama (opsional) + Save
-	local saveTop = HEADER_H + gap
-	local nameInput = textBox({
-		Name = "NameInput",
-		PlaceholderText = "Name (optional)",
-		Position = UDim2.fromOffset(0, saveTop),
-		Size = UDim2.new(1, -(SAVE_W + gap), 0, SAVE_H),
-		Parent = root,
-	})
-	local save = button("Save", {
-		Name = "Save",
-		AnchorPoint = Vector2.new(1, 0),
-		Position = UDim2.new(1, 0, 0, saveTop),
-		Size = UDim2.fromOffset(SAVE_W, SAVE_H),
+	-- Baris 2: tab "All" (folder menyusul) + dropdown sort
+	local tabsTop = SEARCH_H + gap
+	-- Tab folder: sementara hanya "All" (folder menyusul di PR berikutnya)
+	button("All", {
+		Name = "TabAll",
+		Position = UDim2.fromOffset(0, tabsTop),
+		Size = UDim2.fromOffset(64, TABS_H),
 		BackgroundColor3 = Tokens.Color.Accent,
 		BackgroundTransparency = 0,
 		TextColor3 = Tokens.Color.AccentText,
 		Parent = root,
 	})
+	local sortButton = button("Recently Updated ▼", {
+		Name = "Sort",
+		AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.new(1, 0, 0, tabsTop),
+		Size = UDim2.fromOffset(SORT_W, TABS_H),
+		TextSize = Tokens.TextSize.Caption,
+		Parent = root,
+	})
 
-	-- Daftar slot
-	local listTop = saveTop + SAVE_H + gap
-	local list: ScrollingFrame = make("ScrollingFrame", {
+	-- Grid kartu
+	local gridTop = tabsTop + TABS_H + gap
+	local grid: ScrollingFrame = make("ScrollingFrame", {
 		Name = "Outfits",
 		BackgroundTransparency = 1,
 		BorderSizePixel = 0,
-		Position = UDim2.fromOffset(0, listTop),
-		Size = UDim2.new(1, 0, 1, -(listTop + FOOTER_H + gap)),
+		Position = UDim2.fromOffset(0, gridTop),
+		Size = UDim2.new(1, 0, 1, -(gridTop + FOOTER_H + gap)),
 		CanvasSize = UDim2.new(),
 		AutomaticCanvasSize = Enum.AutomaticSize.Y,
 		ScrollingDirection = Enum.ScrollingDirection.Y,
 		ScrollBarThickness = 4,
 		ScrollBarImageColor3 = Tokens.Color.TextMuted,
+		ClipsDescendants = true,
 		ZIndex = Z,
 		Parent = root,
 	}, {
-		make("UIListLayout", {
-			FillDirection = Enum.FillDirection.Vertical,
-			SortOrder = Enum.SortOrder.LayoutOrder,
-			Padding = UDim.new(0, gap),
-		}),
 		make("UIPadding", { PaddingRight = UDim.new(0, gap) }),
 	})
+	local gridLayout: UIGridLayout = make("UIGridLayout", {
+		CellSize = UDim2.fromOffset(CELL_MIN, CELL_MIN * CELL_RATIO),
+		CellPadding = UDim2.fromOffset(gap, gap),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+		Parent = grid,
+	})
 
-	-- Status: kosong / memuat / gagal (+ Retry)
+	-- Kartu "+" (simpan outfit yang sedang dipakai)
+	local add = button("+", {
+		Name = "Add",
+		LayoutOrder = 0,
+		TextSize = 44,
+		Size = UDim2.fromOffset(CELL_MIN, CELL_MIN * CELL_RATIO),
+		Parent = grid,
+	})
+	add:FindFirstChildOfClass("UICorner").CornerRadius = Tokens.Radius.Medium
+
+	-- Status (memuat / gagal / kosong)
 	local status: Frame = make("Frame", {
 		Name = "Status",
 		BackgroundTransparency = 1,
-		Position = UDim2.fromOffset(0, listTop + Tokens.Space.L),
+		Position = UDim2.fromOffset(0, gridTop + Tokens.Space.XL),
 		Size = UDim2.new(1, 0, 0, 96),
 		Visible = false,
-		ZIndex = Z,
+		ZIndex = Z + 1,
 		Parent = root,
 	}, {
 		make("UIListLayout", {
@@ -309,6 +264,7 @@ function WardrobePanel.new(props: Props): WardrobePanel
 		TextXAlignment = Enum.TextXAlignment.Center,
 		LayoutOrder = 1,
 		Size = UDim2.new(1, 0, 0, 20),
+		ZIndex = Z + 1,
 		Parent = status,
 	})
 	local statusHint = label({
@@ -320,16 +276,18 @@ function WardrobePanel.new(props: Props): WardrobePanel
 		TextTruncate = Enum.TextTruncate.None,
 		LayoutOrder = 2,
 		Size = UDim2.new(1, 0, 0, 30),
+		ZIndex = Z + 1,
 		Parent = status,
 	})
 	local retry = button("Try again", {
 		Name = "Retry",
 		LayoutOrder = 3,
 		Size = UDim2.fromOffset(110, 32),
+		ZIndex = Z + 1,
 		Parent = status,
 	})
 
-	-- Bawah: toggle "Wear last outfit when joining"
+	-- Bawah: toggle "pakai outfit terakhir saat join"
 	local footer: Frame = make("Frame", {
 		Name = "Footer",
 		BackgroundTransparency = 1,
@@ -349,7 +307,7 @@ function WardrobePanel.new(props: Props): WardrobePanel
 		Name = "RestoreSwitch",
 		AnchorPoint = Vector2.new(1, 0.5),
 		Position = UDim2.fromScale(1, 0.5),
-		Size = UDim2.fromOffset(SWITCH_W, 28),
+		Size = UDim2.fromOffset(SWITCH_W, 26),
 		Parent = footer,
 	})
 	local knob: Frame = make("Frame", {
@@ -358,40 +316,113 @@ function WardrobePanel.new(props: Props): WardrobePanel
 		BorderSizePixel = 0,
 		AnchorPoint = Vector2.new(0, 0.5),
 		Position = UDim2.new(0, 3, 0.5, 0),
-		Size = UDim2.fromOffset(22, 22),
+		Size = UDim2.fromOffset(20, 20),
 		ZIndex = Z,
 		Parent = switch,
 	}, { corner(Tokens.Radius.Pill) })
 
+	-- Menu sort (di atas grid)
+	local sortMenu: Frame = make("Frame", {
+		Name = "SortMenu",
+		BackgroundColor3 = Tokens.Color.PanelRaised,
+		BorderSizePixel = 0,
+		AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.new(1, 0, 0, tabsTop + TABS_H + 4),
+		Size = UDim2.fromOffset(SORT_W, #OutfitSort.OPTIONS * 28 + gap),
+		Visible = false,
+		ZIndex = Z + 3,
+		Parent = root,
+	}, {
+		corner(Tokens.Radius.Medium),
+		make("UIPadding", { PaddingTop = UDim.new(0, gap / 2), PaddingBottom = UDim.new(0, gap / 2) }),
+		make("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder }),
+	})
+
+	local self: WardrobePanel
 	local conns: { RBXScriptConnection } = {}
-	local self: WardrobePanel = setmetatable({
+
+	local sheet = OutfitDetailSheet.new({
+		parent = root,
+		previews = props.previews,
+		onWear = function(outfit)
+			self:_act("wear", outfit.id, outfit.name, function()
+				return ctl:wear(outfit.id)
+			end)
+		end,
+		onUpdate = function(outfit)
+			self:_act("overwrite", outfit.id, outfit.name, function()
+				return ctl:overwrite(outfit.id)
+			end)
+		end,
+		onRename = function(outfit, name)
+			self:_act("rename", outfit.id, name, function()
+				return ctl:rename(outfit.id, name)
+			end)
+		end,
+		onDelete = function(outfit)
+			self:_act("delete", outfit.id, outfit.name, function()
+				return ctl:delete(outfit.id)
+			end)
+		end,
+		onBack = function()
+			self._sheet:close()
+		end,
+	})
+
+	self = setmetatable({
 		instance = root,
 		_props = props,
-		_title = title,
-		_nameInput = nameInput,
-		_save = save,
-		_list = list,
+		_search = search,
+		_sortButton = sortButton,
+		_sortMenu = sortMenu,
+		_grid = grid,
+		_layout = gridLayout,
+		_add = add,
 		_status = status,
 		_statusTitle = statusTitle,
 		_statusHint = statusHint,
 		_retry = retry,
 		_switch = switch,
 		_knob = knob,
-		_rows = {},
-		_rowsKey = "",
+		_sheet = sheet,
+		_cards = {},
+		_cardKey = {},
+		_armedId = nil,
 		_snap = nil,
-		_expandedId = nil,
-		_renamingId = nil,
-		_confirmId = nil,
-		_confirmToken = 0,
+		_searchToken = 0,
 		_conns = conns,
 		_unsubscribe = function() end,
 	}, WardrobePanel)
 
-	table.insert(conns, limitLength(nameInput))
+	-- Pilihan sort
+	for i, opt in OutfitSort.OPTIONS do
+		local item = make("TextButton", {
+			Name = opt.key,
+			Text = opt.label,
+			FontFace = Tokens.Font.Regular,
+			TextSize = Tokens.TextSize.Body,
+			TextColor3 = Tokens.Color.Text,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			BackgroundTransparency = 1,
+			AutoButtonColor = true,
+			LayoutOrder = i,
+			Size = UDim2.new(1, 0, 0, 28),
+			ZIndex = Z + 3,
+			Parent = sortMenu,
+		}, { make("UIPadding", { PaddingLeft = UDim.new(0, pad), PaddingRight = UDim.new(0, pad) }) })
+		local key = opt.key
+		table.insert(
+			conns,
+			item.Activated:Connect(function()
+				sortMenu.Visible = false
+				ctl:setSort(key)
+			end)
+		)
+	end
+
 	table.insert(
 		conns,
-		back.Activated:Connect(function()
+		close.Activated:Connect(function()
 			if props.onBack then
 				props.onBack()
 			else
@@ -399,28 +430,36 @@ function WardrobePanel.new(props: Props): WardrobePanel
 			end
 		end)
 	)
-	local function doSave()
-		local s = self._snap
-		if s == nil or s.busy or not s.loaded then
-			return
-		end
-		local name = nameInput.Text
-		self:_act("save", function()
-			return ctl:save(name)
-		end, function(ok)
-			if ok then
-				nameInput.Text = ""
-				self._list.CanvasPosition = Vector2.zero -- slot baru ada di atas
-			end
-		end)
-	end
-	table.insert(conns, save.Activated:Connect(doSave))
 	table.insert(
 		conns,
-		nameInput.FocusLost:Connect(function(enterPressed: boolean)
-			if enterPressed then
-				doSave()
+		sortButton.Activated:Connect(function()
+			sortMenu.Visible = not sortMenu.Visible
+		end)
+	)
+	table.insert(
+		conns,
+		search:GetPropertyChangedSignal("Text"):Connect(function()
+			self._searchToken += 1
+			local token = self._searchToken
+			local text = search.Text
+			task.delay(SEARCH_DEBOUNCE, function()
+				if self._searchToken == token then
+					ctl:setQuery(text)
+				end
+			end)
+		end)
+	)
+	table.insert(
+		conns,
+		add.Activated:Connect(function()
+			self:_dismiss()
+			local snap = self._snap
+			if snap == nil or snap.busy or not snap.loaded then
+				return
 			end
+			self:_act("save", nil, nil, function()
+				return ctl:save(nil)
+			end)
 		end)
 	)
 	table.insert(
@@ -432,14 +471,20 @@ function WardrobePanel.new(props: Props): WardrobePanel
 	table.insert(
 		conns,
 		switch.Activated:Connect(function()
-			local s = self._snap
-			if s == nil or s.busy or s.restoreOutfit == nil then
+			local snap = self._snap
+			if snap == nil or snap.busy or snap.restoreOutfit == nil then
 				return
 			end
-			local value = not s.restoreOutfit
-			self:_act("setSetting", function()
+			local value = not snap.restoreOutfit
+			self:_act("setSetting", nil, nil, function()
 				return ctl:setRestoreOutfit(value)
 			end)
+		end)
+	)
+	table.insert(
+		conns,
+		grid:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+			self:_resizeCells()
 		end)
 	)
 
@@ -447,315 +492,160 @@ function WardrobePanel.new(props: Props): WardrobePanel
 		self:_render(snap)
 	end)
 	self:_render(ctl:getSnapshot())
+	self:_resizeCells()
 	return self
 end
 
--- Jalankan aksi controller di thread baru; laporkan hasil ke App.
-function WardrobePanel._act(
-	self: WardrobePanel,
-	op: string,
-	fn: () -> (boolean, string?),
-	after: ((ok: boolean) -> ())?,
-	name: string?
-)
+-- Jalankan aksi controller di thread baru; hasil -> onResult (toast).
+function WardrobePanel._act(self: WardrobePanel, op: string, id: number?, name: string?, fn: () -> (boolean, string?))
 	task.spawn(function()
 		local ok, code = fn()
-		if after then
-			after(ok)
-		end
 		if code ~= "BUSY" and self._props.onResult then
 			self._props.onResult(op, ok, code, name)
+		end
+		if ok and op == "delete" and self._sheet:outfitId() == id then
+			self._sheet:close()
 		end
 	end)
 end
 
-function WardrobePanel._clearRows(self: WardrobePanel)
-	for _, row in self._rows do
-		for _, c in row.conns do
-			c:Disconnect()
-		end
-		row.frame:Destroy()
-	end
-	table.clear(self._rows)
-end
-
-function WardrobePanel._buildRow(self: WardrobePanel, outfit: any, order: number): Row
+-- Jumlah kolom & ukuran kartu menyesuaikan lebar panel.
+function WardrobePanel._resizeCells(self: WardrobePanel)
 	local gap = Tokens.Space.S
-	local ctl = self._props.controller
-	local id = outfit.id
-	local frame: Frame = make("Frame", {
-		Name = "Outfit_" .. tostring(id),
-		BackgroundColor3 = Tokens.Color.PanelRaised,
-		BackgroundTransparency = Tokens.Transparency.PanelRaised,
-		BorderSizePixel = 0,
-		ClipsDescendants = true,
-		LayoutOrder = order,
-		Size = UDim2.new(1, 0, 0, ROW_H),
-		ZIndex = Z,
-		Parent = self._list,
-	}, { corner(Tokens.Radius.Medium) })
-
-	-- Thumbnail 2x2 (maks 4 item pertama)
-	local grid: Frame = make("Frame", {
-		Name = "Thumbs",
-		BackgroundColor3 = Tokens.Color.Background,
-		BorderSizePixel = 0,
-		Position = UDim2.fromOffset(gap, (ROW_H - THUMB) / 2),
-		Size = UDim2.fromOffset(THUMB, THUMB),
-		ZIndex = Z,
-		Parent = frame,
-	}, {
-		corner(Tokens.Radius.Small),
-		make("UIGridLayout", {
-			CellSize = UDim2.fromOffset(THUMB / 2, THUMB / 2),
-			CellPadding = UDim2.new(),
-			SortOrder = Enum.SortOrder.LayoutOrder,
-		}),
-	})
-	for i, assetId in outfit.thumbs do
-		make("ImageLabel", {
-			Name = "Thumb" .. i,
-			BackgroundTransparency = 1,
-			Image = assetThumb(assetId),
-			ScaleType = Enum.ScaleType.Fit,
-			LayoutOrder = i,
-			ZIndex = Z,
-			Parent = grid,
-		})
+	local width = self._grid.AbsoluteSize.X - gap -- padding kanan
+	if width <= 0 then
+		return
 	end
-
-	local textX = gap * 2 + THUMB
-	local textW = -(textX + WEAR_W + MORE_W + gap * 3)
-	local nameLabel = label({
-		Name = "OutfitName",
-		Text = outfit.name,
-		FontFace = Tokens.Font.Bold,
-		Position = UDim2.new(0, textX, 0, gap),
-		Size = UDim2.new(1, textW, 0, 22),
-		Parent = frame,
-	})
-	local nameBox = textBox({
-		Name = "RenameBox",
-		Text = outfit.name,
-		Visible = false,
-		Position = UDim2.new(0, textX, 0, gap - 2),
-		Size = UDim2.new(1, textW, 0, 28),
-		Parent = frame,
-	})
-	label({
-		Name = "Count",
-		Text = countText(outfit.count),
-		TextSize = Tokens.TextSize.Caption,
-		TextColor3 = Tokens.Color.TextMuted,
-		Position = UDim2.new(0, textX, 0, gap + 26),
-		Size = UDim2.new(1, textW, 0, 18),
-		Parent = frame,
-	})
-	local wear = button("Wear", {
-		Name = "Wear",
-		AnchorPoint = Vector2.new(1, 0.5),
-		Position = UDim2.new(1, -(MORE_W + gap * 2), 0, ROW_H / 2),
-		Size = UDim2.fromOffset(WEAR_W, 32),
-		BackgroundColor3 = Tokens.Color.Accent,
-		BackgroundTransparency = 0,
-		TextColor3 = Tokens.Color.AccentText,
-		Parent = frame,
-	})
-	local more = button("⋯", {
-		Name = "More",
-		AnchorPoint = Vector2.new(1, 0.5),
-		Position = UDim2.new(1, -gap, 0, ROW_H / 2),
-		Size = UDim2.fromOffset(MORE_W, 32),
-		TextSize = Tokens.TextSize.Title,
-		Parent = frame,
-	})
-
-	-- Baris aksi (muncul saat ⋯ ditekan): Rename / Update / Delete
-	local actions: Frame = make("Frame", {
-		Name = "Actions",
-		BackgroundTransparency = 1,
-		Position = UDim2.fromOffset(gap, ROW_H),
-		Size = UDim2.new(1, -gap * 2, 0, ACTIONS_H - gap),
-		Visible = false,
-		ZIndex = Z,
-		Parent = frame,
-	}, {
-		make("UIListLayout", {
-			FillDirection = Enum.FillDirection.Horizontal,
-			SortOrder = Enum.SortOrder.LayoutOrder,
-			Padding = UDim.new(0, gap),
-		}),
-	})
-	local third = UDim2.new(1 / 3, -gap * 2 / 3, 1, 0)
-	local rename = button("Rename", { Name = "Rename", LayoutOrder = 1, Size = third, Parent = actions })
-	local update = button("Update", { Name = "Update", LayoutOrder = 2, Size = third, Parent = actions })
-	local delete = button("Delete", {
-		Name = "Delete",
-		LayoutOrder = 3,
-		Size = third,
-		TextColor3 = Tokens.Color.Danger,
-		Parent = actions,
-	})
-
-	local function idle(): boolean
-		local s = self._snap
-		return s ~= nil and s.busy == nil
-	end
-
-	local function commitRename()
-		if self._renamingId ~= id then
-			return
-		end
-		self._renamingId = nil
-		local newName = nameBox.Text
-		local trimmed = string.match(newName, "^%s*(.-)%s*$") or ""
-		if trimmed == "" or trimmed == outfit.name or not idle() then
-			self:_refreshRows()
-			return
-		end
-		nameLabel.Text = trimmed -- tampil sementara; daftar server menggantikan setelah balasan
-		self:_act("rename", function()
-			return ctl:rename(id, trimmed)
-		end, function(ok)
-			if not ok then
-				nameLabel.Text = outfit.name -- gagal: kembalikan nama lama
-			end
-		end, trimmed)
-		self:_refreshRows()
-	end
-
-	local conns = {
-		limitLength(nameBox),
-		wear.Activated:Connect(function()
-			if idle() then
-				self:_act("wear", function()
-					return ctl:wear(id)
-				end, nil, outfit.name)
-			end
-		end),
-		more.Activated:Connect(function()
-			self._expandedId = if self._expandedId == id then nil else id
-			self._confirmId = nil
-			self:_refreshRows()
-		end),
-		rename.Activated:Connect(function()
-			if not idle() then
-				return
-			end
-			self._renamingId = id
-			self._confirmId = nil
-			nameBox.Text = outfit.name
-			self:_refreshRows()
-			nameBox:CaptureFocus()
-		end),
-		nameBox.FocusLost:Connect(function(enterPressed: boolean)
-			if enterPressed then
-				commitRename()
-			elseif self._renamingId == id then
-				self._renamingId = nil -- batal (tap di luar / Esc)
-				self:_refreshRows()
-			end
-		end),
-		update.Activated:Connect(function()
-			if idle() then
-				self:_act("overwrite", function()
-					return ctl:overwrite(id)
-				end, nil, outfit.name)
-			end
-		end),
-		delete.Activated:Connect(function()
-			if not idle() then
-				return
-			end
-			if self._confirmId ~= id then
-				-- tap pertama: minta konfirmasi (kembali normal setelah beberapa detik)
-				self._confirmId = id
-				self._confirmToken += 1
-				local token = self._confirmToken
-				self:_refreshRows()
-				task.delay(CONFIRM_SECONDS, function()
-					if self._confirmToken == token and self._confirmId == id then
-						self._confirmId = nil
-						self:_refreshRows()
-					end
-				end)
-				return
-			end
-			self._confirmId = nil
-			self._expandedId = nil
-			self:_act("delete", function()
-				return ctl:delete(id)
-			end, nil, outfit.name)
-		end),
-	}
-	return {
-		id = id,
-		frame = frame,
-		wear = wear,
-		more = more,
-		actions = actions,
-		rename = rename,
-		update = update,
-		delete = delete,
-		nameLabel = nameLabel,
-		nameBox = nameBox,
-		conns = conns,
-	}
+	local cols = math.clamp(math.floor((width + gap) / (CELL_MIN + gap)), 2, 4)
+	local cellW = math.floor((width - gap * (cols - 1)) / cols)
+	local cellH = math.floor(cellW * CELL_RATIO)
+	self._layout.CellSize = UDim2.fromOffset(cellW, cellH)
+	self._add.Size = UDim2.fromOffset(cellW, cellH)
 end
 
--- Perbarui tampilan baris tanpa membangun ulang (busy, expand, rename, konfirmasi hapus).
-function WardrobePanel._refreshRows(self: WardrobePanel)
-	local s = self._snap
-	local busy = s and s.busy
-	for _, row in self._rows do
-		local expanded = self._expandedId == row.id
-		local renaming = self._renamingId == row.id
-		local mine = s and s.busyId == row.id
-		row.frame.Size = UDim2.new(1, 0, 0, if expanded then ROW_H + ACTIONS_H else ROW_H)
-		row.actions.Visible = expanded
-		row.more.Text = if expanded then "✕" else "⋯"
-		row.nameLabel.Visible = not renaming
-		row.nameBox.Visible = renaming
-		row.wear.Text = if mine and busy == "wear" then "…" else "Wear"
-		row.update.Text = if mine and busy == "overwrite" then "Saving…" else "Update"
-		row.rename.Text = if mine and busy == "rename" then "Saving…" else "Rename"
-		local confirming = self._confirmId == row.id
-		row.delete.Text = if mine and busy == "delete" then "Deleting…" elseif confirming then "Sure?" else "Delete"
-		row.delete.BackgroundColor3 = if confirming then Tokens.Color.Danger else Tokens.Color.PanelRaised
-		row.delete.TextColor3 = if confirming then Tokens.Color.AccentText else Tokens.Color.Danger
-		for _, b in { row.wear, row.update, row.rename, row.delete } do
-			setEnabled(b, busy == nil)
+function WardrobePanel._dismiss(self: WardrobePanel)
+	local armed = self._armedId
+	if armed == nil then
+		return
+	end
+	local card = self._cards[armed]
+	if card then
+		card:setArmed(false)
+	end
+	self._armedId = nil
+end
+
+function WardrobePanel._arm(self: WardrobePanel, id: number)
+	if self._armedId == id then
+		return
+	end
+	self:_dismiss()
+	local card = self._cards[id]
+	if card then
+		card:setArmed(true)
+		self._armedId = id
+	end
+end
+
+function WardrobePanel._buildCard(self: WardrobePanel, outfit: any, order: number): any
+	local ctl = self._props.controller
+	local card = OutfitCard.new({
+		outfit = outfit,
+		previews = self._props.previews,
+		layoutOrder = order,
+		onActivated = function(o)
+			self:_arm(o.id)
+		end,
+		onDismiss = function()
+			self:_dismiss()
+		end,
+		onWear = function(o)
+			self:_dismiss()
+			self:_act("wear", o.id, o.name, function()
+				return ctl:wear(o.id)
+			end)
+		end,
+		onView = function(o)
+			self:_dismiss()
+			self._sheet:open(o)
+		end,
+		onFavorite = function(o)
+			local value = not o.favorite
+			self:_act("favorite", o.id, o.name, function()
+				return ctl:favorite(o.id, value)
+			end)
+		end,
+	})
+	card.instance.Parent = self._grid
+	return card
+end
+
+function WardrobePanel._syncCards(self: WardrobePanel, visible: { any })
+	local seen: { [number]: boolean } = {}
+	for i, outfit in visible do
+		seen[outfit.id] = true
+		local key = tostring(outfit.updatedAt)
+		local card = self._cards[outfit.id]
+		if card and self._cardKey[outfit.id] ~= key then
+			card:destroy() -- isi outfit berubah -> model 3D dibuat ulang
+			card = nil
+		end
+		if card == nil then
+			card = self:_buildCard(outfit, i)
+			self._cards[outfit.id] = card
+			self._cardKey[outfit.id] = key
+			if self._armedId == outfit.id then
+				card:setArmed(true)
+			end
+		else
+			card.instance.LayoutOrder = i
+			card:setName(outfit.name)
+			card:setFavorite(outfit.favorite)
+			card.outfit = outfit
+		end
+	end
+	for id, card in self._cards do
+		if not seen[id] then
+			card:destroy()
+			self._cards[id] = nil
+			self._cardKey[id] = nil
+			if self._armedId == id then
+				self._armedId = nil
+			end
 		end
 	end
 end
 
 function WardrobePanel._render(self: WardrobePanel, snap: any)
 	self._snap = snap
-	local keys = {}
-	for i, o in snap.outfits do
-		keys[i] = ("%d:%s:%d:%s"):format(o.id, o.name, o.count, table.concat(o.thumbs, "."))
-	end
-	local key = table.concat(keys, ",")
-	if key ~= self._rowsKey then
-		self._rowsKey = key
-		self:_clearRows()
-		local exists = false
-		for i, o in snap.outfits do
-			table.insert(self._rows, self:_buildRow(o, i))
-			exists = exists or o.id == self._expandedId
-		end
-		if not exists then
-			self._expandedId = nil
-		end
-		self._renamingId = nil
-		self._confirmId = nil
-	end
-	self:_refreshRows()
+	self:_syncCards(snap.visible)
 
-	local n = #snap.outfits
-	self._title.Text = if snap.loaded then ("Outfits (%d/%d)"):format(n, snap.max) else "Outfits"
+	-- kartu "+" & tombol sibuk
+	local busy = snap.busy
+	self._add.Text = if busy == "save" then "…" else "+"
+	self._add.Visible = not snap.isFull and snap.loaded
+	for id, card in self._cards do
+		card:setBusy(if busy ~= nil and snap.busyId == id then "…" else nil)
+	end
+	self._sheet:setBusy(if busy ~= nil and snap.busyId == self._sheet:outfitId() then "…" else nil)
 
-	-- Status: memuat / gagal / kosong
+	-- lembar detail ikut menyegarkan bila outfitnya berubah
+	local openId = self._sheet:outfitId()
+	if openId then
+		for _, outfit in snap.outfits do
+			if outfit.id == openId then
+				self._sheet:open(outfit)
+			end
+		end
+	end
+
+	self._sortButton.Text = OutfitSort.labelOf(snap.sortKey) .. " ▼"
+	if self._search.Text ~= snap.query and not self._search:IsFocused() then
+		self._search.Text = snap.query
+	end
+
+	-- status
+	local n = #snap.visible
 	local showStatus = false
 	if not snap.loaded then
 		showStatus = true
@@ -773,43 +663,40 @@ function WardrobePanel._render(self: WardrobePanel, snap: any)
 		end
 	elseif n == 0 then
 		showStatus = true
-		self._statusTitle.Text = "No saved outfits yet"
-		self._statusHint.Text = "Save what you're wearing to use it later."
+		if snap.query ~= "" then
+			self._statusTitle.Text = "No outfits match your search"
+			self._statusHint.Text = ""
+		else
+			self._statusTitle.Text = "No saved outfits yet"
+			self._statusHint.Text = "Tap + to save what you're wearing."
+		end
 		self._retry.Visible = false
 	end
 	self._status.Visible = showStatus
 
-	-- Tombol Save
-	local canSave = snap.loaded and snap.busy == nil and not snap.isFull
-	self._save.Text = if snap.busy == "save" then "Saving…" elseif snap.isFull then "Full" else "Save"
-	self._save.BackgroundColor3 = if canSave then Tokens.Color.Accent else Tokens.Color.PanelRaised
-	self._save.TextColor3 = if canSave then Tokens.Color.AccentText else Tokens.Color.TextMuted
-	self._save.AutoButtonColor = canSave
-	self._nameInput.TextEditable = snap.loaded and not snap.isFull
-
-	-- Toggle setting
+	-- toggle setting
 	local on = snap.restoreOutfit == true
 	local known = snap.restoreOutfit ~= nil
 	self._switch.BackgroundColor3 = if on then Tokens.Color.Accent else Tokens.Color.PanelRaised
 	self._switch.BackgroundTransparency = if on then 0 else Tokens.Transparency.PanelRaised
-	self._switch.AutoButtonColor = known and snap.busy == nil
-	self._knob.Position = if on then UDim2.new(1, -25, 0.5, 0) else UDim2.new(0, 3, 0.5, 0)
+	self._switch.AutoButtonColor = known and busy == nil
+	self._knob.Position = if on then UDim2.new(1, -23, 0.5, 0) else UDim2.new(0, 3, 0.5, 0)
 	self._knob.BackgroundTransparency = if known then 0 else 0.6
 end
 
--- Buka: muat ulang daftar (daftar bisa berubah dari perangkat lain / server).
+-- Buka: muat ulang daftar (bisa berubah dari perangkat lain).
 function WardrobePanel.setOpen(self: WardrobePanel, open: boolean)
 	self.instance.Visible = open
 	if open then
-		self._list.CanvasPosition = Vector2.zero
+		self._grid.CanvasPosition = Vector2.zero
 		local ctl = self._props.controller
 		task.spawn(ctl.refresh, ctl)
+		self:_resizeCells()
 	else
-		self._expandedId = nil
-		self._renamingId = nil
-		self._confirmId = nil
-		self._nameInput:ReleaseFocus()
-		self:_refreshRows()
+		self:_dismiss()
+		self._sortMenu.Visible = false
+		self._sheet:close()
+		self._search:ReleaseFocus()
 	end
 end
 
@@ -819,7 +706,11 @@ end
 
 function WardrobePanel.destroy(self: WardrobePanel)
 	self._unsubscribe()
-	self:_clearRows()
+	for id, card in self._cards do
+		card:destroy()
+		self._cards[id] = nil
+	end
+	self._sheet:destroy()
 	for _, c in self._conns do
 		c:Disconnect()
 	end
