@@ -6,7 +6,7 @@
 --   data:getLastOutfit(player)              -- OutfitState? (sudah divalidasi)
 --   data:setLastOutfit(player, state | nil) -- dipanggil setiap state berubah (murah, tanpa yield)
 --   data:setSetting(player, "restoreOutfit", false)  -- toggle "pakai outfit terakhir"
---   data:addOutfit(player, name?, state) / getOutfit / renameOutfit / deleteOutfit / listOutfits -- wardrobe
+--   data:addOutfit(player, name?, state) / getOutfit / renameOutfit / deleteOutfit / favoriteOutfit / listOutfits
 --   data:release(player)                    -- saat PlayerRemoving (ProfileStore menyimpan & melepas lock)
 -- Auto save berkala (AUTO_SAVE_PERIOD, bawaan 300 dtk), simpan saat EndSession & saat server mati
 -- sudah ditangani ProfileStore sendiri.
@@ -235,7 +235,7 @@ function PlayerDataService.overwriteOutfit(
 	if data == nil then
 		return false, "NOT_LOADED"
 	end
-	return Wardrobe.overwrite(data, id, PlayerData.encodeOutfit(state))
+	return Wardrobe.overwrite(data, id, PlayerData.encodeOutfit(state), os.time())
 end
 
 -- Outfit di slot (sudah divalidasi ulang). INVALID = data slot rusak / format lama.
@@ -266,7 +266,21 @@ function PlayerDataService.renameOutfit(
 	if data == nil then
 		return false, "NOT_LOADED"
 	end
-	return Wardrobe.rename(data, id, name)
+	return Wardrobe.rename(data, id, name, os.time())
+end
+
+-- Favorit (tidak mengubah "terakhir diubah").
+function PlayerDataService.favoriteOutfit(
+	self: PlayerDataService,
+	player: any,
+	id: number,
+	value: boolean
+): (boolean, string?)
+	local data = writable(self, player)
+	if data == nil then
+		return false, "NOT_LOADED"
+	end
+	return Wardrobe.setFavorite(data, id, value)
 end
 
 function PlayerDataService.deleteOutfit(self: PlayerDataService, player: any, id: number): (boolean, string?)

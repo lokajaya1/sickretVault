@@ -295,5 +295,29 @@ return function()
 		eq(svc2:listOutfits(p2) ~= nil, true, "tidak aktif: masih bisa dibaca")
 	end
 
+	-- 14. favorit & "terakhir diubah" lewat service
+	do
+		local svc, t = setup()
+		local p = player("O", 21)
+		eq(select(2, svc:favoriteOutfit(p, 1, true)), "NOT_LOADED", "favorit sebelum load")
+		svc:load(p)
+		local a = svc:addOutfit(p, "A", OS.empty())
+		assert(a, "add")
+		eq(svc:favoriteOutfit(p, a.id, true), true, "favorit")
+		eq(svc:listOutfits(p)[1].favorite, true, "summary favorit")
+		eq(select(2, svc:favoriteOutfit(p, 99, true)), "NOT_FOUND", "favorit tidak ada")
+		local entry = t.profile.Data.outfits[1]
+		entry.u = 1 -- paksa lama
+		svc:renameOutfit(p, a.id, "B")
+		eq(entry.u > 1, true, "rename memperbarui u")
+		entry.u = 1
+		svc:overwriteOutfit(p, a.id, OS.empty())
+		eq(entry.u > 1, true, "overwrite memperbarui u")
+		entry.u = 1
+		svc:favoriteOutfit(p, a.id, false)
+		eq(entry.u, 1, "favorit tidak memperbarui u")
+		eq(entry.f, nil, "favorit dihapus")
+	end
+
 	print("PASS PlayerDataService.spec")
 end
