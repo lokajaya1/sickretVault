@@ -4,7 +4,9 @@
 --   wardrobe:onChanged(function(snap) ... end)  -- snap = { loaded, loading, busy, error, outfits, max, restoreOutfit }
 --   wardrobe:refresh()                          -- YIELD (list). Panggil saat panel dibuka
 --   local ok, code = wardrobe:save(name?)       -- YIELD; nil = nama bawaan "Outfit N"
---   wardrobe:wear(id) / overwrite(id) / rename(id, name) / delete(id) / setRestoreOutfit(bool)  -- YIELD
+--   wardrobe:wear(id) / overwrite(id) / rename(id, name) / delete(id) / favorite(id, bool)
+--   wardrobe:setRestoreOutfit(bool)                                                         -- YIELD
+--   wardrobe:setSort("az")   wardrobe:setQuery("pesta")  -- tanpa server; snap.visible = hasil cari + urut
 -- Semua aksi YIELD (InvokeServer) -> panggil dari task.spawn di UI.
 -- Satu aksi pada satu waktu (busy); aksi lain saat busy -> (false, "BUSY") tanpa memanggil server.
 -- Kode gagal: kode server (NOT_LOADED, FULL, FILTERED, ...) atau "NETWORK" (invoke error).
@@ -14,6 +16,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Log = require(Shared.Util.Log)
+local OutfitSort = require(Shared.Domain.OutfitSort)
 
 local log = Log.new("WardrobeController")
 
@@ -21,8 +24,11 @@ export type Summary = {
 	id: number,
 	name: string,
 	createdAt: number,
+	updatedAt: number,
+	favorite: boolean,
 	count: number,
 	thumbs: { number },
+	outfit: any, -- outfit ringkas (PlayerData.decodeOutfit) untuk render kartu
 }
 
 export type Snapshot = {
@@ -31,7 +37,10 @@ export type Snapshot = {
 	busy: string?, -- op yang sedang berjalan ("save", "wear", ...)
 	busyId: number?, -- slot yang sedang diproses
 	error: string?, -- kode gagal refresh terakhir
-	outfits: { Summary }, -- terbaru dulu
+	outfits: { Summary }, -- urutan server (terbaru disimpan dulu)
+	visible: { Summary }, -- hasil cari + urut (yang ditampilkan panel)
+	sortKey: string,
+	query: string,
 	max: number,
 	isFull: boolean,
 	restoreOutfit: boolean?, -- nil = belum diketahui
@@ -53,6 +62,8 @@ export type WardrobeController = typeof(setmetatable(
 		_outfits: { Summary },
 		_max: number,
 		_restore: boolean?,
+		_sortKey: string,
+		_query: string,
 		_listeners: { (Snapshot) -> () },
 	},
 	WardrobeController
@@ -77,6 +88,8 @@ function WardrobeController.new(invoke: Invoke?): WardrobeController
 		_outfits = {},
 		_max = DEFAULT_MAX,
 		_restore = nil,
+		_sortKey = OutfitSort.DEFAULT,
+		_query = "",
 		_listeners = {},
 	}, WardrobeController)
 end
@@ -89,6 +102,9 @@ function WardrobeController.getSnapshot(self: WardrobeController): Snapshot
 		busyId = self._busyId,
 		error = self._error,
 		outfits = table.clone(self._outfits),
+		visible = OutfitSort.apply(self._outfits, self._sortKey, self._query),
+		sortKey = self._sortKey,
+		query = self._query,
 		max = self._max,
 		isFull = #self._outfits >= self._max,
 		restoreOutfit = self._restore,
@@ -212,6 +228,32 @@ end
 
 function WardrobeController.delete(self: WardrobeController, id: number): (boolean, string?)
 	return self:_run({ op = "delete", id = id })
+end
+
+function WardrobeController.favorite(self: WardrobeController, id: number, value: boolean): (boolean, string?)
+	return self:_run({ op = "favorite", id = id, value = value })
+end
+
+-- Pilihan sort (OutfitSort.OPTIONS). Key asing -> bawaan.
+function WardrobeController.setSort(self: WardrobeController, key: string)
+	local valid = false
+	for _, opt in OutfitSort.OPTIONS do
+		valid = valid or opt.key == key
+	end
+	local nextKey = if valid then key else OutfitSort.DEFAULT
+	if nextKey ~= self._sortKey then
+		self._sortKey = nextKey
+		self:_emit()
+	end
+end
+
+-- Kata kunci pencarian nama (dirapikan OutfitSort).
+function WardrobeController.setQuery(self: WardrobeController, query: string)
+	local q = OutfitSort.normalizeQuery(query)
+	if q ~= self._query then
+		self._query = q
+		self:_emit()
+	end
 end
 
 -- Setting "pakai outfit terakhir saat join".
