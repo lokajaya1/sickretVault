@@ -2,7 +2,7 @@
 -- Detail item di dalam satu outfit tersimpan (untuk halaman detail Saved Outfits).
 --   local items = OutfitItemsService.new({ api = api })
 --   local ok, res = items:list(state)   -- YIELD (GetBatchItemDetailsAsync lewat gateway)
---   res = { items = { { id, name, price, assetType, isForSale } }, total = 123, missing = 1 }
+--   res = { items = { { id, name, price, assetType, creator, isForSale } }, total = 123, missing = 1 }
 -- Urutan: aksesori (urut dipakai) -> classic -> body part -> animasi, supaya tampilan stabil.
 -- Harga mengikuti aturan katalog: Price, kalau nil pakai LowestPrice; keduanya nil = tidak dijual.
 -- `total` hanya menjumlahkan item yang ada harganya (item tidak dijual tidak dihitung).
@@ -20,6 +20,7 @@ export type Item = {
 	id: number,
 	name: string,
 	assetType: string?,
+	creator: string?, -- nama pembuat (CreatorName); nil = tidak diketahui
 	price: number?, -- nil = tidak dijual / tidak diketahui
 	isForSale: boolean,
 }
@@ -108,10 +109,12 @@ local function toItem(id: number, raw: any): Item?
 	if type(price) ~= "number" then
 		price = if type(raw.LowestPrice) == "number" then raw.LowestPrice else nil
 	end
+	local creator = if type(raw.CreatorName) == "string" and raw.CreatorName ~= "" then raw.CreatorName else nil
 	return {
 		id = id,
 		name = if type(raw.Name) == "string" and raw.Name ~= "" then raw.Name else "Item " .. tostring(id),
 		assetType = if type(raw.AssetType) == "string" then raw.AssetType else nil,
+		creator = creator,
 		price = price,
 		isForSale = price ~= nil,
 	}
