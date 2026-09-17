@@ -25,6 +25,7 @@ local ItemDetailPanel = require(script.Parent.Components.ItemDetailPanel)
 local CartPanel = require(script.Parent.Components.CartPanel)
 local WardrobePanel = require(script.Parent.Components.WardrobePanel)
 local SideRail = require(script.Parent.Components.SideRail)
+local OutfitPreview = require(script.Parent.Util.OutfitPreview)
 local CatalogController = require(script.Parent.Parent.Controllers.CatalogController)
 local OutfitController = require(script.Parent.Parent.Controllers.OutfitController)
 local DetailController = require(script.Parent.Parent.Controllers.DetailController)
@@ -82,6 +83,7 @@ local function toCartItem(x: any): any
 end
 
 -- Teks toast wardrobe (teks pemain berbahasa Inggris). %s = nama outfit.
+-- favorite & setSetting sengaja tanpa toast (bintang / switch sudah berubah sendiri).
 local WARDROBE_OK_TEXT: { [string]: string } = {
 	save = "Outfit saved",
 	wear = "Wearing %s",
@@ -130,6 +132,7 @@ export type App = typeof(setmetatable(
 		cartPanel: CartPanel.CartPanel,
 		wardrobe: WardrobeController.WardrobeController,
 		wardrobePanel: WardrobePanel.WardrobePanel,
+		previews: OutfitPreview.OutfitPreview,
 		leftRail: SideRail.SideRail,
 		rightRail: SideRail.SideRail,
 		toast: Toast.Toast,
@@ -310,10 +313,12 @@ function App.mount(opts: Options?): App
 		end,
 	})
 
-	-- Panel outfit tersimpan: setingkat panel keranjang (hanya satu yang terbuka).
+	-- Panel outfit tersimpan (kartu render avatar 3D): setingkat panel keranjang.
+	local previews = OutfitPreview.new()
 	local wardrobePanel = WardrobePanel.new({
 		parent = panel.instance,
 		controller = wardrobe,
+		previews = previews,
 		onResult = function(op, ok, code, name)
 			self:_showWardrobeResult(op, ok, code, name)
 		end,
@@ -407,6 +412,7 @@ function App.mount(opts: Options?): App
 		cartPanel = cartPanel,
 		wardrobe = wardrobe,
 		wardrobePanel = wardrobePanel,
+		previews = previews,
 		leftRail = leftRail,
 		rightRail = rightRail,
 		toast = toast,
@@ -651,6 +657,7 @@ function App.destroy(self: App)
 	self.cart:stop()
 	self.cartPanel:destroy()
 	self.wardrobePanel:destroy()
+	self.previews:destroy()
 	self.leftRail:destroy()
 	self.rightRail:destroy()
 	self.detailPanel:destroy()
