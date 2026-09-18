@@ -6,6 +6,7 @@
 --   local rows = Wardrobe.list(data)  -- ringkasan untuk client (urut simpan terbaru dulu; client mengurutkan ulang)
 -- Bentuk di DataStore (key pendek supaya hemat ukuran):
 --   data.outfits = { { id = 3, n = "Nama", t = 1789000000, u = 1789000500, f = true, g = { 1, 2 }, o = <encodeOutfit> }, ... }
+--   (o.mk = makeup di look itu; tidak ada mk = look tanpa makeup)
 --   (urut simpan; t = dibuat, u = terakhir diubah (isi/nama), f = favorit (nil = tidak),
 --    g = id folder (lihat Domain/OutfitFolders; nil = tidak di folder mana pun))
 --   data.nextOutfitId = 4  -- id tidak pernah dipakai ulang (UI yang telat tidak salah sasaran)
@@ -37,7 +38,8 @@ export type Summary = {
 	updatedAt: number,
 	favorite: boolean,
 	folders: { number }, -- id folder tempat outfit ini berada (kosong = "Not In Any Folders")
-	count: number, -- jumlah item non-default (aksesori + baju + part tubuh + animasi)
+	count: number, -- jumlah item non-default (aksesori + baju + part tubuh + animasi + makeup)
+	makeup: number, -- berapa makeup di look ini (0 = tidak ada); UI memberi label sendiri
 	thumbs: { number }, -- assetId untuk thumbnail (maks MAX_THUMBS), cadangan bila render 3D gagal
 	outfit: any, -- outfit ringkas (client: PlayerData.decodeOutfit -> render avatar di kartu)
 }
@@ -206,7 +208,8 @@ local function folderIds(entry: Entry): { number }
 	return out
 end
 
--- Hitung item & pilih thumbnail dari outfit ringkas (aksesori dulu, lalu baju, lalu part tubuh).
+-- Hitung item & pilih thumbnail dari outfit ringkas (aksesori dulu, lalu baju, lalu part tubuh,
+-- makeup paling akhir supaya urutan thumbnail slot lama tidak berubah).
 function Wardrobe.summarize(entry: Entry): Summary
 	local o = entry.o
 	local count = 0
@@ -250,6 +253,17 @@ function Wardrobe.summarize(entry: Entry): Summary
 			end
 		end
 	end
+	-- makeup (look utuh): assetId ikut dihitung & boleh mengisi sisa slot thumbnail
+	local makeupCount = 0
+	if type(o.mk) == "table" then
+		for _, row in ipairs(o.mk :: any) do
+			if type(row) == "table" and isId(row.i) then
+				makeupCount += 1
+				take(row.i)
+			end
+		end
+	end
+
 	return {
 		id = entry.id,
 		name = entry.n,
@@ -258,6 +272,7 @@ function Wardrobe.summarize(entry: Entry): Summary
 		favorite = entry.f == true,
 		folders = folderIds(entry),
 		count = count,
+		makeup = makeupCount,
 		thumbs = thumbs,
 		outfit = o,
 	}

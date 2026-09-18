@@ -93,7 +93,25 @@ return function()
 	eq(#s.thumbs, Wardrobe.MAX_THUMBS, "thumbnail dibatasi")
 	eq(s.thumbs[1], 5, "aksesori pertama")
 	eq(s.thumbs[4], 31, "Pants sebelum Shirt")
+	eq(s.makeup, 0, "tanpa mk -> makeup 0")
 	eq(Wardrobe.summarize(e2).count, 0, "outfit kosong")
+
+	-- 5b. makeup di dalam look: ikut dihitung, thumbnail mengisi sisa slot, urutan lama tidak berubah
+	local look: any = {
+		id = 9,
+		n = "Look",
+		t = 1,
+		o = { ac = { { i = 5 } }, mk = { { i = 700, s = "face" }, { i = 701, s = "lip" } } },
+	}
+	local sm = Wardrobe.summarize(look)
+	eq(sm.count, 3, "1 aksesori + 2 makeup")
+	eq(sm.makeup, 2, "jumlah makeup")
+	eq(sm.thumbs[1], 5, "aksesori tetap paling depan")
+	eq(sm.thumbs[3], 701, "makeup mengisi sisa thumbnail")
+	local rusak: any = { id = 10, n = "x", t = 1, o = { mk = "rusak" } }
+	eq(Wardrobe.summarize(rusak).makeup, 0, "mk rusak aman")
+	local rusak2: any = { id = 11, n = "x", t = 1, o = { mk = { "x", { i = -1 }, { i = 5 } } } }
+	eq(Wardrobe.summarize(rusak2).makeup, 1, "baris mk cacat dibuang")
 	eq(
 		#Wardrobe.summarize({ id = 3, n = "x", t = 1, o = { ac = { "x", { i = -1 } }, cl = 5 } }).thumbs,
 		0,
