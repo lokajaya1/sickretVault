@@ -13,6 +13,10 @@
 -- deskripsi; "Included Items" (part bundle, tap -> onPartActivated).
 -- #17d: nama creator BISA DIKLIK (teks biasa, emas saat disentuh) -> onCreator; sisa stok item
 -- limited; baris "Recommended" geser mendatar di bawah tombol beli -> onRecommended.
+-- #28: bintang favorit di pojok kanan header (props.onFavorite + props.favoriteOf).
+-- Di kartu katalog bintang hanya muncul saat HOVER, dan Roblox mobile tidak punya kursor -> halaman
+-- inilah satu-satunya jalur favorit di HP. Tiga tampilan sama seperti kartu:
+-- ☆ redup = belum diketahui, ☆ terang = bukan favorit, ★ emas = favorit.
 
 local Shared = game:GetService("ReplicatedStorage"):WaitForChild("Shared")
 local ItemDetail = require(Shared.Domain.ItemDetail)
@@ -30,6 +34,8 @@ local REC_W = 96 -- lebar kartu Recommended
 local REC_H = 130 -- tinggi baris Recommended (gambar + nama + harga)
 local REC_TEXT = 34 -- tinggi nama + harga di bawah gambar
 local ROBUX = utf8.char(0xE002) -- ikon Robux bawaan font Roblox
+local STAR_FILLED = utf8.char(0x2605) -- ★ ada di BuilderSans (diuji di Studio 19 Sep 2026)
+local STAR_HOLLOW = utf8.char(0x2606) -- ☆
 local VERIFIED = utf8.char(0xE000) -- lencana verified bawaan font Roblox
 
 local ERROR_TEXT: { [string]: string } = {
@@ -53,6 +59,8 @@ export type Props = {
 	onCreator: ((detail: any) -> ())?, -- nama creator diklik (nil = tidak bisa diklik)
 	onRecommended: ((item: any) -> ())?, -- kartu di baris Recommended diklik
 	onBack: (() -> ())?, -- default: controller:close()
+	onFavorite: ((detail: any) -> ())?, -- bintang di header (nil = bintang disembunyikan)
+	favoriteOf: ((detail: any) -> boolean?)?, -- status yang SUDAH diketahui; nil = belum diketahui
 }
 
 type Tile = { button: ImageButton, stroke: UIStroke, part: any, conn: RBXScriptConnection? }
@@ -66,6 +74,7 @@ export type ItemDetailPanel = typeof(setmetatable(
 		instance: Frame,
 		_props: Props,
 		_title: TextLabel,
+		_star: TextButton,
 		_scroll: ScrollingFrame,
 		_status: TextLabel,
 		_retry: TextButton,
@@ -219,6 +228,20 @@ function ItemDetailPanel.new(props: Props): ItemDetailPanel
 		Size = UDim2.fromOffset(84, HEADER_H),
 		Parent = root,
 	})
+	-- Bintang favorit: pojok KANAN header, seukuran header (target sentuh nyaman di HP).
+	local star = button(STAR_HOLLOW, {
+		Name = "Favorite",
+		TextSize = Tokens.TextSize.Title,
+		TextColor3 = Tokens.Color.TextMuted,
+		TextTransparency = 0.35,
+		AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.new(1, 0, 0, 0),
+		Size = UDim2.fromOffset(HEADER_H, HEADER_H),
+		Visible = false, -- tampil begitu ada detail yang termuat
+		Parent = root,
+	})
+
+	local titleRight = 84 + Tokens.Space.M + HEADER_H + Tokens.Space.S
 	local title = label({
 		Name = "Title",
 		Text = "Item Details",
@@ -229,7 +252,7 @@ function ItemDetailPanel.new(props: Props): ItemDetailPanel
 		TextYAlignment = Enum.TextYAlignment.Center,
 		AutomaticSize = Enum.AutomaticSize.None,
 		Position = UDim2.fromOffset(84 + Tokens.Space.M, 0),
-		Size = UDim2.new(1, -(84 + Tokens.Space.M), 0, HEADER_H),
+		Size = UDim2.new(1, -titleRight, 0, HEADER_H),
 		Parent = root,
 	})
 
@@ -476,6 +499,7 @@ function ItemDetailPanel.new(props: Props): ItemDetailPanel
 		instance = root,
 		_props = props,
 		_title = title,
+		_star = star,
 		_scroll = scroll,
 		_status = status,
 		_retry = retry,
@@ -562,6 +586,16 @@ function ItemDetailPanel.new(props: Props): ItemDetailPanel
 			local d = self._detail
 			if d and d.isForSale and props.onBuy then
 				props.onBuy(d)
+			end
+		end)
+	)
+
+	table.insert(
+		conns,
+		star.Activated:Connect(function()
+			local d = self._detail
+			if d and props.onFavorite then
+				props.onFavorite(d)
 			end
 		end)
 	)
@@ -812,6 +846,7 @@ function ItemDetailPanel._render(self: ItemDetailPanel, state: any)
 		self._type.Text = ""
 		self._price.Text = ""
 		self._favorites.Text = ""
+		self._star.Visible = false
 		self._partsHeader.Visible = false
 		self._parts.Visible = false
 		self:_clearTiles()
@@ -826,6 +861,7 @@ function ItemDetailPanel._render(self: ItemDetailPanel, state: any)
 	self._price.TextColor3 = pColor
 	self._favorites.Text = if d.favoriteCount then "♥ " .. shortNumber(d.favoriteCount) else ""
 	self._stock.Text = stockText(d)
+	self:refreshFavorite()
 	self._desc.Text = if d.description ~= "" then d.description else "No description."
 	-- Buy: tidak dijual -> abu-abu & tidak bereaksi
 	local forSale = d.isForSale == true
@@ -881,6 +917,26 @@ function ItemDetailPanel.refreshWorn(self: ItemDetailPanel)
 		tile.stroke.Transparency = if on then 0.2 else Tokens.Transparency.Stroke
 		tile.stroke.Thickness = if on then 2 else 1
 	end
+end
+
+-- Status favorit berubah / detail baru termuat -> gambar ulang bintang header.
+-- nil = BELUM DIKETAHUI (bintang redup), bukan "bukan favorit": membacanya mahal, jadi hanya
+-- diambil untuk item yang sedang dibuka (lihat DetailController bagian FAVORIT).
+function ItemDetailPanel.refreshFavorite(self: ItemDetailPanel)
+	local d = self._detail
+	local fn = self._props.favoriteOf
+	if d == nil or self._props.onFavorite == nil then
+		self._star.Visible = false
+		return
+	end
+	local value = if fn ~= nil then fn(d) else nil
+	self._star.Visible = true
+	self._star.Text = if value == true then STAR_FILLED else STAR_HOLLOW
+	self._star.TextColor3 = if value == true
+		then Tokens.Color.Accent
+		elseif value == false then Tokens.Color.Text
+		else Tokens.Color.TextMuted
+	self._star.TextTransparency = if value == nil then 0.35 else 0
 end
 
 -- Bisa masuk keranjang: dijual dengan harga normal (resale/limited tanpa harga -> tidak).

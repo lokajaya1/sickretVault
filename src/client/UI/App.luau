@@ -21,9 +21,18 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
 
-local WornItems = require(ReplicatedStorage:WaitForChild("Shared").Domain.WornItems)
+local SharedDomain = ReplicatedStorage:WaitForChild("Shared").Domain
+local Log = require(ReplicatedStorage:WaitForChild("Shared").Util.Log)
+local WornItems = require(SharedDomain.WornItems)
+local OutfitState = require(SharedDomain.OutfitState)
+local PlayerData = require(SharedDomain.PlayerData)
+local AssetTypeMap = require(SharedDomain.AssetTypeMap)
 local Tokens = require(script.Parent.Theme.Tokens)
 local CatalogPanel = require(script.Parent.Components.CatalogPanel)
+
+local log = Log.new("App")
+
+local ANIM_CLIP_MAX = 4 -- gerakan per animation pack yang diperagakan bergantian di kartu
 local Toast = require(script.Parent.Components.Toast)
 local ActionBar = require(script.Parent.Components.ActionBar)
 local WornStrip = require(script.Parent.Components.WornStrip)
@@ -441,6 +450,17 @@ function App.mount(opts: Options?): App
 		end,
 	})
 
+	-- Layanan preview dipakai closure kartu katalog di bawah, padahal ia baru dibuat belakangan
+	-- (bersama panel wardrobe) -> dideklarasikan DI SINI dan diisi nanti; closure tidak bisa
+	-- menangkap local yang dideklarasikan sesudahnya.
+	local previews: OutfitPreview.OutfitPreview
+
+	-- Outfit pemain berubah -> nomor revisi naik -> preview kartu memakai kunci cache baru.
+	local previewRev = 0
+	outfit:onChanged(function()
+		previewRev += 1
+	end)
+
 	-- Item katalog yang pernah tampil -> nama/harga untuk strip Wearing.
 	local known: { [number]: any } = {}
 	local function remember(state: any)
@@ -455,7 +475,17 @@ function App.mount(opts: Options?): App
 		controller = catalog,
 		parent = gui,
 		-- Tap kartu -> overlay di kartu (CatalogPanel); aksinya di bawah.
-		onItemActivated = o.onItemActivated,
+		onItemActivated = function(item)
+			-- Overlay dibuka: ambil status favoritnya kalau izin inventory SUDAH ada (quiet =
+			-- tidak pernah memunculkan prompt di sini). Kalau belum ada izin, bintang tetap redup
+			-- sampai pemain menyentuhnya.
+			task.spawn(function()
+				detail:loadFavorite(item.id, item.itemType, true)
+			end)
+			if o.onItemActivated then
+				o.onItemActivated(item)
+			end
+		end,
 		onTry = function(item)
 			outfit:toggle(item)
 		end,
@@ -470,6 +500,227 @@ function App.mount(opts: Options?): App
 		end,
 		isInCart = function(item)
 			return cart:has(item.id, item.itemType)
+		end,
+		-- Bintang di-tap: baca statusnya (izin diminta DI SINI kalau belum ada), lalu balik.
+		onFavorite = function(item)
+			task.spawn(function()
+				local current = detail:loadFavorite(item.id, item.itemType)
+				if current == nil then
+					-- Izin membaca ditolak / gagal. MENULIS tidak butuh izin itu, jadi bintangnya
+					-- tetap bisa dipakai; yang tidak kita tahu cuma keadaan awalnya.
+					current = false
+				end
+				if detail:setFavorite(item.id, item.itemType, not current) == nil then
+					toast:show("Favorite wasn't changed", "warning")
+				end
+			end)
+		end,
+		favoriteOf = function(item)
+			return detail:favoriteOf(item.id, item.itemType)
+		end,
+		-- Kursor diam di kartu -> avatar pemain MEMAKAI item itu, dibidik ke bagian tubuhnya.
+		-- Modelnya dibangun OutfitPreview (antrean + cache 40 model yang sudah ada), jadi item yang
+		-- pernah dilihat muncul seketika. Spike 19 Sep 2026: satu model baru 425 ms, engine sendiri
+		-- TIDAK punya cache -> cache layanan inilah yang membuat bolak-balik terasa murah.
+		-- Makeup TIDAK ikut: controller hanya menyimpan daftar id-nya, bukan slotnya, dan preview
+		-- kartu sekecil ini tidak sepadan dengan risikonya (decal makeup = temuan #18/#21).
+		onPreview = function(item, viewport)
+			local state = outfit:getState()
+			if state == nil then
+				return nil
+			end
+			-- Kunci cache ikut berubah tiap outfit pemain berubah, kalau tidak preview lama
+			-- (masih memakai topi yang sudah dilepas) akan dipakai ulang.
+			local key = ("wear:%d:%s:%d"):format(previewRev, tostring(item.itemType), item.id)
+
+			if item.itemType == "Bundle" then
+				-- Bundle (kategori Body): daftar part-nya TIDAK ada di hasil pencarian, jadi harus
+				-- diambil dari remote detail dulu. Remote-nya di-yield di thread sendiri supaya
+				-- kartu tidak menunggu: thumbnail tetap tampil sampai avatarnya benar-benar jadi.
+				local cancelled = false
+				local stopInner: (() -> ())? = nil
+				task.spawn(function()
+					local d = detail:fetchDetail(item.id, "Bundle")
+					local parts = if type(d) == "table" then d.parts else nil
+					if cancelled or type(parts) ~= "table" or #parts == 0 then
+						-- Diukur, bukan ditebak: kalau preview bundle tidak muncul, baris ini
+						-- menyebutkan persis di mana ia berhenti.
+						log.warn(
+							"preview bundle berhenti",
+							item.id,
+							"detail=" .. tostring(d ~= nil),
+							"parts=" .. tostring(if type(parts) == "table" then #parts else -1),
+							"batal=" .. tostring(cancelled)
+						)
+						return
+					end
+					-- Bagian tubuh menentukan JENIS bundle, bukan nama atau BundleType (yang
+					-- dibuang toDto, #26 no. 3).
+					local hasBody = false
+					for _, p in parts do
+						if p.kind == "bodyPart" then
+							hasBody = true
+							break
+						end
+					end
+
+					-- Animation Pack adalah BUNDLE berisi part animasi (Config/Categories:
+					-- bundleTypes = Animations). Dibangun sebagai model deskripsi ia hanya berdiri
+					-- diam -- model itu tidak punya sendi (spike #28). Jadi bundle yang isinya
+					-- animasi diperagakan lewat jalur klip: klipnya diputar di clone karakter.
+					-- TAPI bundle KARAKTER tidak pernah lewat jalur animasi walau membawa part
+					-- animasi: bundle Woman (239) membawa satu, dan log 19 Sep 2026
+					-- ("preview animation pack 239 gerakan=1") membuktikan kartunya lari ke sini
+					-- lalu menampilkan avatar pemain sendiri yang menari, bukan Woman.
+					-- Yang diambil BUKAN satu animasi wakil melainkan beberapa gerakan sekaligus
+					-- (idle -> jalan -> lari -> lompat, bergantian): memutar idle saja membuat
+					-- semua pack kelihatan sama (dinilai di Studio 19 Sep 2026). Tiap klip satu
+					-- panggilan remote, tapi hasilnya di-cache gateway + DetailController, jadi
+					-- hover berikutnya tidak memanggil apa pun; ANIM_CLIP_MAX menjaga hover
+					-- pertama tidak menembak lima remote sekaligus.
+					local picked = {}
+					if not hasBody then
+						local order = { "Idle", "Walk", "Run", "Jump" }
+						for _, want in order do
+							for _, p in parts do
+								local at = if type(p.assetType) == "string" then p.assetType else ""
+								if p.kind == "animation" and at:find(want) ~= nil then
+									table.insert(picked, p.assetId)
+									break
+								end
+							end
+						end
+						if #picked == 0 then
+							for _, p in parts do
+								if p.kind == "animation" then
+									table.insert(picked, p.assetId)
+								end
+							end
+						end
+					end
+					if #picked > 0 then
+						local clips = {}
+						for i, assetId in picked do
+							if i > ANIM_CLIP_MAX or cancelled then
+								break
+							end
+							local clipId = detail:fetchAnimationClip(assetId)
+							if clipId ~= nil then
+								table.insert(clips, clipId)
+							end
+						end
+						log.info("preview animation pack", item.id, "gerakan=" .. tostring(#clips))
+						if cancelled or #clips == 0 then
+							return
+						end
+						local stopClip = previews:mountAnimated(viewport, clips)
+						if cancelled and stopClip then
+							stopClip()
+						else
+							stopInner = stopClip
+						end
+						return
+					end
+
+					-- ATURAN, dinilai di Studio 19 Sep 2026: SEMUA bundle ditumpuk ke outfit
+					-- pemain -- yang ingin dilihat memang "aku memakai ini", jadi baju & aksesori
+					-- yang sedang dipakai harus tetap ada. Bagian tubuh bundle otomatis menimpa
+					-- bagian tubuh lama (satu slot satu isi), jadi badan Woman benar-benar tampil.
+					-- Bundle KARAKTER yang sedang dipakai dilepas dulu: dua bundle badan sekaligus
+					-- membuat rambut/kepala bundle lama tertinggal di preview.
+					-- Sebelumnya dicoba dipreview dari keadaan kosong, dan itu SALAH: yang tampil
+					-- badan telanjang tanpa satu pun item pemain.
+					-- Jenis bundle TIDAK bisa dibaca dari kartu: CatalogService.toDto hanya menyalin
+					-- BundleType bila berupa string, sedangkan API mengirim ANGKA (#26 no. 3), jadi
+					-- yang dipakai adalah isi part-nya sendiri.
+					local bundleType = if type(d) == "table" and type(d.bundleType) == "string"
+						then d.bundleType
+						else "?"
+					-- info, bukan debug: jalur yang diambil harus kelihatan di Output tanpa
+					-- setLevel("debug") -- level itu tidak bisa diubah saat kursor sedang menempel.
+					log.info(
+						"preview bundle",
+						item.id,
+						bundleType,
+						"part=" .. tostring(#parts),
+						if hasBody then "karakter" else "aksesori"
+					)
+					local base = state
+					if hasBody then
+						local wornBundles = {}
+						for bundleId in OutfitState.activeBundles(state) do
+							table.insert(wornBundles, bundleId)
+						end
+						for _, bundleId in wornBundles do
+							base = OutfitState.removeBundle(base, bundleId)
+						end
+					end
+					local wornBundle, wearErrors = OutfitState.wearBundle(base, item.id, parts)
+					if #wearErrors > 0 then
+						log.debug("preview bundle: part ditolak", item.id, #wearErrors)
+					end
+					local handle = previews:mount(viewport, key, PlayerData.encodeOutfit(wornBundle), function()
+						-- Model gagal dibangun (OutfitPreview sudah menulis alasannya): kembalikan
+						-- kartu ke thumbnail, jangan tinggalkan viewport kosong.
+						log.warn("preview bundle tidak jadi", item.id)
+					end, {
+						focus = "full", -- bundle menyentuh banyak bagian sekaligus
+					})
+					if cancelled then
+						handle.cancel()
+					else
+						stopInner = handle.cancel
+					end
+				end)
+				return function()
+					cancelled = true
+					if stopInner then
+						stopInner()
+					end
+				end
+			end
+
+			if type(item.assetType) ~= "string" then
+				return nil
+			end
+
+			-- Animasi/emote: tidak menempel di avatar, jadi tidak bisa lewat jalur "pakai item".
+			-- Yang ditampilkan: clone avatar pemain yang MEMPERAGAKAN animasinya (lihat
+			-- OutfitPreview.mountAnimated). Id klipnya diambil dari server lebih dulu.
+			if (AssetTypeMap.classify(item.assetType)) == "animation" then
+				local cancelled = false
+				local stopAnim: (() -> ())? = nil
+				task.spawn(function()
+					local clipId = detail:fetchAnimationClip(item.id)
+					if cancelled or clipId == nil then
+						return
+					end
+					local stop = previews:mountAnimated(viewport, { clipId })
+					if cancelled and stop then
+						stop()
+					else
+						stopAnim = stop
+					end
+				end)
+				return function()
+					cancelled = true
+					if stopAnim then
+						stopAnim()
+					end
+				end
+			end
+			local worn, err = OutfitState.wear(state, item.id, item.assetType)
+			if err ~= nil then
+				-- Animasi, makeup, dan latar memang tidak menempel di avatar -> tidak ada preview.
+				log.debug("preview dilewati", item.assetType, err)
+				return nil
+			end
+			local handle = previews:mount(viewport, key, PlayerData.encodeOutfit(worn), function()
+				log.warn("preview item tidak jadi", item.id, item.assetType)
+			end, {
+				focus = AssetTypeMap.focusRegion(item.assetType),
+			})
+			return handle.cancel
 		end,
 		onOpenCart = function()
 			self:openCart()
@@ -490,6 +741,12 @@ function App.mount(opts: Options?): App
 		end,
 	})
 
+	-- Status favorit sebuah item diketahui / berubah -> bintang di kartu ikut berubah.
+	-- (Panel detail disambungkan belakangan: ia dibuat sesudah blok ini.)
+	detail:onFavoriteChanged(function()
+		panel:refreshFavorites()
+	end)
+
 	-- Panel keranjang: menutupi isi katalog (di bawah panel detail). Tap baris -> detail di atasnya.
 	local cartPanel = CartPanel.new({
 		parent = panel.instance,
@@ -503,7 +760,8 @@ function App.mount(opts: Options?): App
 	})
 
 	-- Panel outfit tersimpan (kartu render avatar 3D): setingkat panel keranjang.
-	local previews = OutfitPreview.new()
+	-- (Variabelnya sudah dideklarasikan di atas: kartu katalog memakainya untuk preview hover.)
+	previews = OutfitPreview.new()
 
 	-- Kartu avatar SEKARANG (kolom kiri gaya CAC). Kartunya menutupi PERSIS area tempat karakter
 	-- dunia berdiri (anchor kamera try-on), jadi tidak pernah ada dua avatar terlihat sekaligus --
@@ -657,6 +915,21 @@ function App.mount(opts: Options?): App
 			detail:close()
 			panel:openCreator(name, d.creatorType)
 		end,
+		-- Bintang header: jalur favorit untuk HP (kartu katalog cuma punya hover).
+		onFavorite = function(d)
+			task.spawn(function()
+				local current = detail:loadFavorite(d.id, d.itemType)
+				if current == nil then
+					current = false -- izin baca ditolak; menulis tetap boleh
+				end
+				if detail:setFavorite(d.id, d.itemType, not current) == nil then
+					toast:show("Favorite wasn't changed", "warning")
+				end
+			end)
+		end,
+		favoriteOf = function(d)
+			return detail:favoriteOf(d.id, d.itemType)
+		end,
 		-- Kartu di baris Recommended: buka detailnya (panel yang sama, item lain).
 		onRecommended = function(item)
 			self:openDetail(item.id, item.itemType)
@@ -670,6 +943,21 @@ function App.mount(opts: Options?): App
 			end
 		end,
 	})
+
+	-- Halaman detail ikut memperbarui bintangnya (dibuat sesudah listener kartu di atas).
+	detail:onFavoriteChanged(function()
+		detailPanel:refreshFavorite()
+	end)
+
+	-- Buka halaman detail: ambil status favoritnya kalau izin inventory SUDAH ada (quiet).
+	detail:onChanged(function(state)
+		if state.detail ~= nil then
+			local d = state.detail
+			task.spawn(function()
+				detail:loadFavorite(d.id, d.itemType, true)
+			end)
+		end
+	end)
 
 	-- Kamera try-on: karakter di tengah area layar yang tidak tertutup panel.
 	local camera = TryOnCamera.new({

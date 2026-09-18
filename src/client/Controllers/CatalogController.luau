@@ -130,6 +130,17 @@ function CatalogController.new(invoke: Invoke?): CatalogController
 	}, CatalogController)
 end
 
+-- Satu pencarian sekali jalan yang TIDAK menyentuh state panel (tidak mengganti daftar kartu,
+-- tidak memicu listener). Dipakai halaman menu kategori untuk mengambil satu item wakil per grup.
+-- YIELD -> panggil dari task.spawn. Kembalian: daftar item, atau nil kalau gagal.
+function CatalogController.peek(self: CatalogController, request: { [string]: any }): { any }?
+	local ok, res = pcall(self._invoke, request)
+	if not ok or type(res) ~= "table" or not res.ok or type(res.items) ~= "table" then
+		return nil
+	end
+	return res.items
+end
+
 function CatalogController.getState(self: CatalogController): State
 	return self._state
 end

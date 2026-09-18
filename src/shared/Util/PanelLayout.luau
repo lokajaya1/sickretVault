@@ -4,7 +4,9 @@
 --   L.mode      -- "side" (panel di kanan) | "sheet" (ponsel tegak: panel dari bawah)
 --   L.compact   -- layar pendek (ponsel mendatar): header ringkas, panel setinggi layar, kartu lebih kecil
 --   L.x, L.y, L.w, L.h           -- kotak panel
---   L.columns, L.cellW, L.cellH  -- ukuran kartu grid
+--   L.columns, L.cellW, L.cellH  -- ukuran kartu grid (zoom 1 = ukuran bawaan)
+--   PanelLayout.grid(innerW, compact, zoom) -- zoom > 1 = kartu lebih besar (kolom lebih sedikit)
+--   PanelLayout.ZOOM_STEPS / PanelLayout.zoomAt(i) -- tingkat zoom tombol bulat + / -
 --   PanelLayout.mosaicNarrow(innerW)              -- true = mozaik memakai susunan 2 kolom
 --   PanelLayout.mosaic(innerW, innerH, cols, rows) -- ukuran satu unit kartu mozaik (menu kategori)
 --   L.anchorX, L.anchorY         -- titik tengah area kosong (piksel) untuk kamera try-on
@@ -52,8 +54,13 @@ PanelLayout.PADDING = 12 -- padding dalam panel (kiri+kanan masing-masing)
 PanelLayout.SCROLLBAR = 10 -- ruang scrollbar + padding kanan grid
 PanelLayout.GAP = 8
 PanelLayout.CARD_MIN = 104 -- lebar kartu minimum
-PanelLayout.CARD_MIN_COMPACT = 76
+-- 19 Sep 2026 (uji iPhone 13 di Studio): 76 memberi LIMA kolom di panel ponsel mendatar — kartunya
+-- terlalu kecil untuk dilihat maupun ditekan. 96 memberi empat kolom yang jauh lebih lega.
+PanelLayout.CARD_MIN_COMPACT = 96
 PanelLayout.MIN_COLUMNS = 3
+-- Tingkat zoom kartu (tombol bulat + / - di kanan bawah panel). Indeks 2 = ukuran bawaan.
+PanelLayout.ZOOM_STEPS = { 0.78, 1, 1.28, 1.6 }
+PanelLayout.ZOOM_DEFAULT = 2
 PanelLayout.MAX_COLUMNS = 6
 PanelLayout.MOSAIC_GAP = 8 -- jarak antar kartu mozaik (halaman menu kategori)
 PanelLayout.MOSAIC_COLUMNS = 4 -- susunan mozaik normal (Config/CatalogMenu)
@@ -72,9 +79,19 @@ local function clamp(v: number, lo: number, hi: number): number
 	return math.max(lo, math.min(hi, v))
 end
 
-function PanelLayout.grid(innerWidth: number, compact: boolean?): (number, number, number)
+-- Tingkat zoom ke-i, dijepit ke daftar yang ada (indeks di luar rentang = ujung terdekat).
+function PanelLayout.zoomAt(index: number): number
 	local P = PanelLayout
-	local cardMin = if compact then P.CARD_MIN_COMPACT else P.CARD_MIN
+	local i = clamp(math.floor(index), 1, #P.ZOOM_STEPS)
+	return P.ZOOM_STEPS[i]
+end
+
+-- `zoom` > 1 = kartu lebih besar, jadi kolomnya lebih sedikit. Batas MIN/MAX kolom tetap berlaku,
+-- jadi di panel sempit zoom besar tidak bisa membuat kartu menyusut jadi satu kolom raksasa.
+function PanelLayout.grid(innerWidth: number, compact: boolean?, zoom: number?): (number, number, number)
+	local P = PanelLayout
+	local scale = if type(zoom) == "number" and zoom > 0 then zoom else 1
+	local cardMin = (if compact then P.CARD_MIN_COMPACT else P.CARD_MIN) * scale
 	local textArea = if compact then P.TEXT_AREA_COMPACT else P.TEXT_AREA
 	local usable = math.max(0, innerWidth - P.SCROLLBAR)
 	local cols = math.floor((usable + P.GAP) / (cardMin + P.GAP))

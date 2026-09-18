@@ -38,5 +38,28 @@ return function()
 	eq(bgSlot, nil, "TANPA slot -> OutfitState.wear menolaknya, tidak pernah masuk description")
 	eq(AssetTypeMap.Background.AvatarBackground, true, "daftar Background berisi AvatarBackground")
 
+	-- 3b. emote (PR #28): kind animation, TANPA slot -> tidak pernah masuk description
+	local emoteKind, emoteSlot = AssetTypeMap.classify("EmoteAnimation")
+	eq(emoteKind, "animation", "emote punya kind animation")
+	eq(emoteSlot, nil, "emote TANPA slot -> OutfitState.wear menolaknya")
+	eq(AssetTypeMap.Emote.EmoteAnimation, true, "daftar Emote berisi EmoteAnimation")
+	eq(AssetTypeMap.focusRegion("EmoteAnimation"), "full", "emote: seluruh badan")
+	eq((AssetTypeMap.classify("IdleAnimation")), "animation", "animasi biasa tetap animation")
+
+	-- 4. focusRegion: bagian tubuh yang dibidik kamera preview kartu (PR #28)
+	for _, name in { "Hat", "HairAccessory", "FaceAccessory", "EyelashAccessory", "LipMakeup", "DynamicHead" } do
+		eq(AssetTypeMap.focusRegion(name), "head", name .. ": bidik kepala")
+	end
+	for _, name in { "ShirtAccessory", "JacketAccessory", "BackAccessory", "Shirt", "Torso" } do
+		eq(AssetTypeMap.focusRegion(name), "torso", name .. ": bidik badan")
+	end
+	for _, name in { "PantsAccessory", "LeftShoeAccessory", "DressSkirtAccessory", "Pants" } do
+		eq(AssetTypeMap.focusRegion(name), "legs", name .. ": bidik kaki")
+	end
+	eq(AssetTypeMap.focusRegion(nil), "full", "bundle tanpa assetType: seluruh badan")
+	eq(AssetTypeMap.focusRegion("IdleAnimation"), "full", "animasi: seluruh badan")
+	eq(AssetTypeMap.focusRegion("AvatarBackground"), "full", "latar: seluruh badan")
+	eq(AssetTypeMap.focusRegion("TipeNgawur"), "full", "tipe tak dikenal: seluruh badan")
+
 	print("PASS AssetTypeMap.spec")
 end

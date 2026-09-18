@@ -107,5 +107,30 @@ return function()
 	local tw, th, tt = P.mosaic(0, 0, 0, 0)
 	assert(tw > 0 and th > 0 and tt > 0, "mozaik ukuran 0 aman")
 
+	-- 11. zoom kartu (PR #28): zoom besar = kartu lebih lebar & kolom tidak bertambah
+	local baseCols, baseW = P.grid(700)
+	local bigCols, bigW = P.grid(700, false, 1.6)
+	assert(bigW > baseW, "zoom 1.6: kartu lebih lebar dari bawaan")
+	assert(bigCols <= baseCols, "zoom 1.6: kolom tidak bertambah")
+	-- Zoom mengecil diuji di panel SEMPIT: di 700 px kolomnya sudah mentok MAX_COLUMNS,
+	-- jadi mengecilkan kartu di sana tidak bisa menambah kolom lagi (batasnya, bukan bugnya).
+	local narrowCols, narrowW = P.grid(400)
+	local smallCols, smallW = P.grid(400, false, 0.78)
+	assert(smallW < narrowW, "zoom 0.78: kartu lebih sempit")
+	assert(smallCols > narrowCols, "zoom 0.78: kolom bertambah")
+	eq(select(1, P.grid(700, false, 1)), baseCols, "zoom 1 = tanpa zoom")
+	eq(select(1, P.grid(700, false, 0)), baseCols, "zoom 0 diabaikan (dianggap 1)")
+
+	-- 12. batas kolom tetap dihormati walau zoom ekstrem
+	local hugeCols = P.grid(700, false, 99)
+	eq(hugeCols, P.MIN_COLUMNS, "zoom ekstrem: berhenti di MIN_COLUMNS")
+	local tinyCols = P.grid(700, false, 0.05)
+	eq(tinyCols, P.MAX_COLUMNS, "zoom mini: berhenti di MAX_COLUMNS")
+
+	-- 13. tingkat zoom tombol bulat
+	eq(P.zoomAt(P.ZOOM_DEFAULT), 1, "tingkat bawaan = 1")
+	eq(P.zoomAt(0), P.ZOOM_STEPS[1], "indeks di bawah rentang -> ujung bawah")
+	eq(P.zoomAt(99), P.ZOOM_STEPS[#P.ZOOM_STEPS], "indeks di atas rentang -> ujung atas")
+
 	print("PASS PanelLayout.spec")
 end

@@ -14,6 +14,7 @@ return {
 	Functions = {
 		CatalogSearch = "CatalogSearch",
 		Checkout = "Checkout", -- client -> server: { { id, itemType } } -> { ok, code? }
+		GetAnimationClip = "GetAnimationClip", -- { assetId } -> { ok, animationId } (preview animasi)
 		GetBundle = "GetBundle",
 		GetItemDetail = "GetItemDetail",
 		GetRecommended = "GetRecommended", -- { id, itemType, assetType? } -> { ok, items }

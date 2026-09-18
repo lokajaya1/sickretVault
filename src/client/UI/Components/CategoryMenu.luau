@@ -4,8 +4,10 @@
 --   local menu = CategoryMenu.new({ parent = panelFrame, onGroup = function(group) ... end })
 --   menu:setArea(x, y, w, h)  -- kotak isi panel (piksel, relatif panel); dipanggil ulang saat layar berubah
 --   menu:setVisible(true)     menu:destroy()
--- Kartu: label HURUF BESAR di kiri atas + watermark label samar di kanan bawah (ikon gambar menyusul
--- di PR #17c). Warna dari Tokens (PanelRaised -> Accent sesuai group.tone), BUKAN pelangi CAC.
+-- Kartu: label HURUF BESAR di kiri atas + watermark label samar di kanan bawah + gambar item wakil
+-- (#28: menu:setThumb(groupId, url)). Warna dari Tokens (PanelRaised -> Accent sesuai group.tone),
+-- BUKAN pelangi CAC. Gambarnya SAMAR dan di lapisan paling bawah supaya label tetap terbaca; grup
+-- yang belum sempat/gagal diambil tetap tampil seperti sebelumnya (tanpa gambar).
 
 local Shared = game:GetService("ReplicatedStorage"):WaitForChild("Shared")
 local CatalogMenu = require(Shared.Config.CatalogMenu)
@@ -30,6 +32,7 @@ export type CategoryMenu = typeof(setmetatable(
 		instance: ScrollingFrame,
 		_props: Props,
 		_cards: { [string]: TextButton },
+		_thumbs: { [string]: ImageLabel },
 		_labels: { [string]: TextLabel },
 		_marks: { [string]: TextLabel },
 		_conns: { RBXScriptConnection },
@@ -52,6 +55,9 @@ local function make(className: string, props: { [string]: any }, children: { Ins
 	end
 	return inst
 end
+
+local THUMB_TRANSPARENCY = 0.35 -- gambar item di kartu mozaik: cukup terlihat, tidak menelan label
+local THUMB_SCALE = 0.56 -- sisi gambar mozaik = pecahan TINGGI kartu (lebarnya ikut, persegi)
 
 -- Ukuran teks label mengikuti besar kartu (kartu kecil di HP tidak boleh kepotong).
 local function labelSize(unitH: number): number
@@ -78,6 +84,7 @@ function CategoryMenu.new(props: Props): CategoryMenu
 
 	local self: CategoryMenu
 	local cards: { [string]: TextButton } = {}
+	local thumbs: { [string]: ImageLabel } = {}
 	local labels: { [string]: TextLabel } = {}
 	local marks: { [string]: TextLabel } = {}
 	local conns: { RBXScriptConnection } = {}
@@ -100,6 +107,28 @@ function CategoryMenu.new(props: Props): CategoryMenu
 				ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
 				Color = Tokens.Color.Stroke,
 				Transparency = Tokens.Transparency.Stroke,
+			}),
+		})
+
+		-- Gambar item wakil grup: kotak PERSEGI di pojok kanan bawah, samar, di lapisan paling
+		-- bawah. Ukurannya diikat ke TINGGI kartu lewat UIAspectRatioConstraint -- dengan lebar
+		-- berskala, kartu yang lebar (FEATURED, ACCESSORIES) membuat gambarnya membengkak sampai
+		-- menabrak label (dinilai di Studio 19 Sep 2026).
+		thumbs[group.id] = make("ImageLabel", {
+			Name = "Thumb",
+			Image = "",
+			ImageTransparency = THUMB_TRANSPARENCY,
+			ScaleType = Enum.ScaleType.Fit,
+			BackgroundTransparency = 1,
+			AnchorPoint = Vector2.new(1, 1),
+			Position = UDim2.new(1, -LABEL_PAD, 1, -LABEL_PAD),
+			Size = UDim2.new(0, 0, THUMB_SCALE, 0),
+			ZIndex = Tokens.ZIndex.Panel - 1,
+			Parent = card,
+		}, {
+			make("UIAspectRatioConstraint", {
+				AspectRatio = 1,
+				DominantAxis = Enum.DominantAxis.Height,
 			}),
 		})
 
@@ -158,6 +187,7 @@ function CategoryMenu.new(props: Props): CategoryMenu
 		instance = root,
 		_props = props,
 		_cards = cards,
+		_thumbs = thumbs,
 		_labels = labels,
 		_marks = marks,
 		_conns = conns,
@@ -186,6 +216,20 @@ function CategoryMenu.setArea(self: CategoryMenu, x: number, y: number, w: numbe
 		self._marks[group.id].TextSize = size * 2
 	end
 	root.CanvasSize = UDim2.fromOffset(0, totalH)
+end
+
+-- Pasang gambar item wakil sebuah grup. url kosong / grup tak dikenal = diabaikan.
+function CategoryMenu.setThumb(self: CategoryMenu, groupId: string, url: string)
+	local image = self._thumbs[groupId]
+	if image ~= nil and url ~= "" then
+		image.Image = url
+		-- Watermark teks dan gambar menempati pojok yang SAMA. Begitu gambarnya ada, teksnya
+		-- mundur: dua-duanya sekaligus membuat kartu terbaca berantakan.
+		local mark = self._marks[groupId]
+		if mark ~= nil then
+			mark.Visible = false
+		end
+	end
 end
 
 -- Kartu grup yang belum ada isinya: label berkedip "SOON" sebentar (pola tombol Stores).

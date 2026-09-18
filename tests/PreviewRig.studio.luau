@@ -1285,4 +1285,814 @@ function M.controls()
 	say("controls: scroll = zoom, Shift+drag = geser avatar. Hapus: S.controlsOff()")
 end
 
+-- ===== SPIKE FAVORIT ITEM (PR #28 kartu item, 19 Sep 2026) =====
+-- Bintang favorit di kartu item boleh memakai favorit ASLI Roblox, atau harus disimpan sendiri
+-- di PlayerData? Empat pertanyaan, dijawab dengan MENULIS bukan cuma membaca (pelajaran #26 no. 2):
+--   1. Method favorit apa yang ADA di AvatarEditorService (dan Enum.AvatarItemType isinya apa)?
+--   2. Membaca status favorit dari CLIENT jalan, atau ditolak sampai pemain memberi izin inventory?
+--   3. PromptSetFavorite: promptnya MUNCUL di Studio, dan hasilnya apa?
+--   4. Sesudah ditulis, bacaan no. 2 IKUT BERUBAH? Kalau tidak, bintangnya tidak bisa jujur
+--      (kartu tak bisa tahu item ini sudah difavoritkan atau belum) -> jatuh ke PlayerData v6.
+-- CARA PAKAI (tab CLIENT, karena favorit milik pemain — bukan server):
+--   local S = require(game.ReplicatedStorage.Tests["PreviewRig.studio"]) S.favorite()
+--   S.favorite(123316458229208)        -- id lain
+--   S.favorite(123316458229208, false) -- BATALKAN favorit (kembalikan keadaan semula)
+local FAV_METHODS = {
+	"PromptSetFavorite",
+	"GetFavorite",
+	"PromptAllowInventoryReadAccess",
+	"GetItemDetails",
+	"SearchCatalog",
+}
+local FAV_TIMEOUT = 25 -- detik menunggu pemain menjawab prompt
+
+local function favHasMethod(service: any, name: string): boolean
+	local ok, value = pcall(function()
+		return service[name]
+	end)
+	return ok and typeof(value) == "function"
+end
+
+-- Baca status favorit dari client. Kembalian: (berhasil, nilai | pesan error)
+local function favRead(service: any, assetId: number): (boolean, any)
+	return pcall(function()
+		return service:GetFavorite(assetId, Enum.AvatarItemType.Asset)
+	end)
+end
+
+-- Picu sebuah prompt lalu tunggu eventnya. Kembalian: ("ok" | "timeout" | "error", nilai).
+-- Prompt yang TIDAK muncul di Studio akan terlihat sebagai "timeout", bukan menggantung.
+local function favWait(signal: any, fire: () -> ()): (string, any)
+	local got: any = nil
+	local done = false
+	local conn: RBXScriptConnection? = nil
+	if signal ~= nil then
+		conn = signal:Connect(function(value: any)
+			got = value
+			done = true
+		end)
+	end
+	local okFire, err = pcall(fire)
+	if not okFire then
+		if conn then
+			conn:Disconnect()
+		end
+		return "error", err
+	end
+	local started = os.clock()
+	while not done and os.clock() - started < FAV_TIMEOUT do
+		task.wait(0.2)
+	end
+	if conn then
+		conn:Disconnect()
+	end
+	return (if done then "ok" else "timeout"), got
+end
+
+function M.favorite(assetId: number?, on: boolean?)
+	if not RunService:IsClient() then
+		say("favorit: jalankan dari tab CLIENT — favorit milik pemain, bukan server")
+		return
+	end
+	local id = assetId or DEFAULT_MAKEUP
+	local want = on ~= false
+	local aes = game:GetService("AvatarEditorService")
+
+	-- 1. method yang ada
+	local found = {}
+	for _, name in FAV_METHODS do
+		table.insert(found, ("%s=%s"):format(name, if favHasMethod(aes, name) then "ADA" else "TIDAK"))
+	end
+	say("favorit 1 method: %s", table.concat(found, " "))
+
+	local typeNames = {}
+	local okEnum, enumItems = pcall(function()
+		return Enum.AvatarItemType:GetEnumItems()
+	end)
+	if okEnum then
+		for _, item in enumItems do
+			table.insert(typeNames, item.Name)
+		end
+	end
+	say("favorit 1b AvatarItemType: %s", if okEnum then table.concat(typeNames, ", ") else "TIDAK ADA")
+
+	-- 2. baca status sekarang
+	local okBefore, before = favRead(aes, id)
+	say("favorit 2 baca (id %d) -> %s %s", id, if okBefore then "OK" else "GAGAL", tostring(before))
+
+	-- 2b. ditolak -> minta izin inventory, lalu baca ulang
+	if not okBefore then
+		local askStatus, granted = favWait((aes :: any).PromptAllowInventoryReadAccessCompleted, function()
+			aes:PromptAllowInventoryReadAccess()
+		end)
+		say("favorit 2b izin inventory -> %s %s", askStatus, tostring(granted))
+		local okRetry, retry = favRead(aes, id)
+		say("favorit 2c baca ulang -> %s %s", if okRetry then "OK" else "GAGAL", tostring(retry))
+		okBefore = okRetry
+		before = retry
+	end
+
+	-- 3. TULIS favorit
+	local setStatus, result = favWait((aes :: any).PromptSetFavoriteCompleted, function()
+		aes:PromptSetFavorite(id, Enum.AvatarItemType.Asset, want)
+	end)
+	say("favorit 3 PromptSetFavorite(%s) -> %s %s", tostring(want), setStatus, tostring(result))
+
+	-- 4. bacaan ikut berubah?
+	local okAfter, after = favRead(aes, id)
+	say("favorit 4 baca sesudah -> %s %s", if okAfter then "OK" else "GAGAL", tostring(after))
+	if okBefore and okAfter then
+		say(
+			"favorit 4b bacaan berubah? %s (sebelum=%s sesudah=%s)",
+			tostring(before ~= after),
+			tostring(before),
+			tostring(after)
+		)
+	else
+		say("favorit 4b tidak bisa dibandingkan: bacaan favorit tidak tersedia dari client")
+	end
+	say("favorit: batalkan dengan S.favorite(%d, false)", id)
+end
+
+-- ===== SPIKE FAVORIT putaran 2: BIAYA SATU GRID (PR #28, 19 Sep 2026) =====
+-- Putaran 1 membuktikan GetFavorite jalan dari client sesudah izin inventory. Yang BELUM diukur:
+-- satu grid = 30 kartu = 30 bacaan. Itu murah, atau jalan cepat ke HTTP 429 seperti #17b?
+-- Diukur, bukan ditebak (pelajaran #25). Dua cara dibandingkan di ID YANG SAMA:
+--   A. beruntun  (satu per satu)  -> aman tapi mungkin lambat
+--   B. serentak  (30 thread)      -> cepat tapi mungkin kena throttle
+-- CARA PAKAI (tab CLIENT):
+--   local S = require(game.ReplicatedStorage.Tests["PreviewRig.studio"]) S.favoriteBatch()
+--   S.favoriteBatch(10)
+local FAV_BATCH_TIMEOUT = 30
+
+-- Id nyata dari pencarian katalog (client boleh memanggil SearchCatalog — putaran 1 no. 1).
+local function favSampleIds(service: any, count: number): { number }
+	local ok, page = pcall(function()
+		local params = CatalogSearchParams.new()
+		params.SearchKeyword = "hat"
+		return service:SearchCatalog(params)
+	end)
+	if not ok then
+		say("favoritBatch: SearchCatalog GAGAL %s", tostring(page))
+		return {}
+	end
+	local okPage, items = pcall(function()
+		return page:GetCurrentPage()
+	end)
+	if not okPage then
+		say("favoritBatch: GetCurrentPage GAGAL %s", tostring(items))
+		return {}
+	end
+	local ids = {}
+	for _, item in items do
+		local id = (item :: any).Id
+		if typeof(id) == "number" and #ids < count then
+			table.insert(ids, id)
+		end
+	end
+	return ids
+end
+
+function M.favoriteBatch(count: number?)
+	if not RunService:IsClient() then
+		say("favoritBatch: jalankan dari tab CLIENT")
+		return
+	end
+	local aes = game:GetService("AvatarEditorService")
+	local ids = favSampleIds(aes, count or 30)
+	say("favoritBatch: %d id dari pencarian katalog", #ids)
+	if #ids == 0 then
+		return
+	end
+
+	-- Izin inventory dulu (per sesi — putaran 1 membuktikan izin sesi lama tidak terbawa).
+	local okFirst = favRead(aes, ids[1])
+	if not okFirst then
+		local askStatus, granted = favWait((aes :: any).PromptAllowInventoryReadAccessCompleted, function()
+			aes:PromptAllowInventoryReadAccess()
+		end)
+		say("favoritBatch izin inventory -> %s %s", askStatus, tostring(granted))
+	end
+
+	-- A. beruntun
+	local startA = os.clock()
+	local okA, failA, trueA = 0, 0, 0
+	local errA: string? = nil
+	for _, id in ids do
+		local ok, value = favRead(aes, id)
+		if ok then
+			okA += 1
+			if value == true then
+				trueA += 1
+			end
+		else
+			failA += 1
+			errA = errA or tostring(value)
+		end
+	end
+	local spentA = os.clock() - startA
+	say(
+		"favoritBatch A beruntun %d id -> %.2f detik (%.0f ms/item) ok=%d gagal=%d favorit=%d %s",
+		#ids,
+		spentA,
+		spentA / #ids * 1000,
+		okA,
+		failA,
+		trueA,
+		if errA then "| error pertama: " .. errA else ""
+	)
+
+	-- B. serentak (id yang SAMA, jadi selisihnya murni soal cara memanggil)
+	local startB = os.clock()
+	local doneB, okB, failB = 0, 0, 0
+	local errB: string? = nil
+	for _, id in ids do
+		task.spawn(function()
+			local ok, value = favRead(aes, id)
+			if ok then
+				okB += 1
+			else
+				failB += 1
+				errB = errB or tostring(value)
+			end
+			doneB += 1
+		end)
+	end
+	while doneB < #ids and os.clock() - startB < FAV_BATCH_TIMEOUT do
+		task.wait(0.1)
+	end
+	local spentB = os.clock() - startB
+	say(
+		"favoritBatch B serentak %d id -> %.2f detik selesai=%d ok=%d gagal=%d %s",
+		#ids,
+		spentB,
+		doneB,
+		okB,
+		failB,
+		if errB then "| error pertama: " .. errB else ""
+	)
+	say("favoritBatch: gagal=0 di keduanya berarti aman; pesan 429 / 'too many' berarti harus dijeda")
+end
+
+-- ===== SPIKE PREVIEW HOVER: BERAPA MAHAL "avatar memakai item ini"? (PR #28, 19 Sep 2026) =====
+-- Rencana: kursor lewat kartu -> thumbnail kartu berubah jadi avatar pemain YANG MEMAKAI item itu.
+-- Sebelum satu baris kodenya ditulis, tiga hal harus diukur (pelajaran #25: jangan menebak):
+--   1. Berapa lama satu model "outfit sekarang + item" jadi? (#22 mencatat 0,44 detik untuk model
+--      polos; belum pernah diukur untuk deskripsi pemain yang sudah penuh 22 item.)
+--   2. Apakah panggilan itu MEMBEKUKAN layar? Diukur dari delta frame TERBESAR selama pembuatan.
+--      Hover yang bikin grid patah-patah lebih buruk daripada tidak ada preview sama sekali.
+--   3. Item yang SAMA dibangun dua kali: lebih cepat (ada cache di engine) atau sama saja?
+--      Kalau sama saja, kita WAJIB menyimpan modelnya sendiri.
+-- Hasilnya menentukan bentuk: hover langsung, hover + jeda, atau tidak pakai hover sama sekali.
+-- CARA PAKAI (tab CLIENT):
+--   local S = require(game.ReplicatedStorage.Tests["PreviewRig.studio"]) S.hoverCost()
+--   S.hoverCost(4)     -- lebih sedikit item
+--   S.hoverClear()     -- hapus kartu contoh
+local HOVER_GUI = "SPIKE_HoverCost"
+local HOVER_CARD = 150 -- kartu contoh di layar, sekadar bukti mata bahwa itemnya benar terpakai
+local HOVER_DIST = 3.4 -- stud dari wajah; kartu ~100 px tidak sanggup menampilkan seluruh badan
+
+-- Kamera kartu preview: DEPAN avatar dan DEKAT ke bagian tempat item menempel.
+-- Front avatar = sisi -Z (temuan #22 no. 5) -> kamera di head.CFrame * (0, y, -jarak). Memakai
+-- CFrame kepala, bukan koordinat dunia, supaya ikut arah hadap walau avatarnya diputar.
+-- Spike ini semuanya topi -> bidikannya kepala. Di produksi nanti bagian tubuh dipilih dari
+-- assetType item (AssetTypeMap): kepala / badan / kaki.
+local function hoverFocus(model: Model, camera: Camera)
+	local head = model:FindFirstChild("Head") :: BasePart?
+	if head then
+		local target = head.CFrame * Vector3.new(0, 0.35, 0)
+		camera.CFrame = CFrame.lookAt(head.CFrame * Vector3.new(0, 0.35, -HOVER_DIST), target)
+		return
+	end
+	local root = model:FindFirstChild("HumanoidRootPart") :: BasePart?
+	local base = if root then root.CFrame else CFrame.new()
+	camera.CFrame = CFrame.lookAt(base * Vector3.new(0, 1.5, -9), base * Vector3.new(0, 1.5, 0))
+end
+
+-- Deskripsi avatar pemain sekarang + satu topi tambahan.
+local function hoverDescWith(assetId: number): HumanoidDescription?
+	local player = Players.LocalPlayer
+	local character = player and player.Character
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	if humanoid == nil then
+		return nil
+	end
+	local ok, desc = pcall(function()
+		return (humanoid :: Humanoid):GetAppliedDescription()
+	end)
+	if not ok or desc == nil then
+		return nil
+	end
+	local copy = desc:Clone()
+	local hats = copy.HatAccessory
+	copy.HatAccessory = if hats == "" then tostring(assetId) else hats .. "," .. tostring(assetId)
+	return copy
+end
+
+function M.hoverClear()
+	local player = Players.LocalPlayer
+	local gui = player and player:FindFirstChild("PlayerGui")
+	local old = gui and gui:FindFirstChild(HOVER_GUI)
+	if old then
+		old:Destroy()
+		say("hoverCost: kartu contoh dihapus")
+	end
+end
+
+function M.hoverCost(count: number?)
+	if not RunService:IsClient() then
+		say("hoverCost: jalankan dari tab CLIENT")
+		return
+	end
+	M.hoverClear()
+	local aes = game:GetService("AvatarEditorService")
+	local ids = favSampleIds(aes, count or 8)
+	if #ids == 0 then
+		say("hoverCost: tidak dapat id dari pencarian")
+		return
+	end
+	if hoverDescWith(ids[1]) == nil then
+		say("hoverCost: karakter pemain belum ada")
+		return
+	end
+
+	-- Pengukur kebekuan layar: delta frame TERBESAR selama pembuatan model.
+	local worst = 0
+	local frameConn = RunService.RenderStepped:Connect(function(dt: number)
+		if dt > worst then
+			worst = dt
+		end
+	end)
+
+	local screen = Instance.new("ScreenGui")
+	screen.Name = HOVER_GUI
+	screen.IgnoreGuiInset = true
+	screen.Parent = Players.LocalPlayer:WaitForChild("PlayerGui")
+
+	local times: { number } = {}
+	local failed = 0
+	local shown = 0
+	for index, id in ids do
+		local desc = hoverDescWith(id)
+		local started = os.clock()
+		local ok, model = pcall(function()
+			return Players:CreateHumanoidModelFromDescriptionAsync(desc, Enum.HumanoidRigType.R15)
+		end)
+		local spent = os.clock() - started
+		if ok and model then
+			table.insert(times, spent)
+			if shown < 3 then
+				-- Bukti mata: tiga model pertama ditaruh di ViewportFrame + WorldModel (#22 no. 3).
+				local holder = Instance.new("ViewportFrame")
+				holder.Size = UDim2.fromOffset(HOVER_CARD, HOVER_CARD)
+				holder.Position = UDim2.fromOffset(20 + shown * (HOVER_CARD + 8), 120)
+				holder.BackgroundColor3 = Color3.new(0, 0, 0)
+				holder.Parent = screen
+				local world = Instance.new("WorldModel")
+				world.Parent = holder
+				model.Parent = world
+				local cam = Instance.new("Camera")
+				cam.Parent = holder
+				holder.CurrentCamera = cam
+				hoverFocus(model, cam)
+				shown += 1
+			else
+				model:Destroy()
+			end
+		else
+			failed += 1
+			say("hoverCost: item %d (%d) GAGAL %s", index, id, tostring(model))
+		end
+		task.wait(0.05)
+	end
+
+	-- Item PERTAMA dibangun sekali lagi: ada cache di engine atau tidak?
+	local again = 0
+	local descAgain = hoverDescWith(ids[1])
+	local startedAgain = os.clock()
+	local okAgain, modelAgain = pcall(function()
+		return Players:CreateHumanoidModelFromDescriptionAsync(descAgain, Enum.HumanoidRigType.R15)
+	end)
+	if okAgain then
+		again = os.clock() - startedAgain
+		if modelAgain then
+			modelAgain:Destroy()
+		end
+	end
+	frameConn:Disconnect()
+
+	local total, slowest = 0, 0
+	for _, t in times do
+		total += t
+		if t > slowest then
+			slowest = t
+		end
+	end
+	local avg = if #times > 0 then total / #times else 0
+	say(
+		"hoverCost 1 %d model -> rata-rata %.0f ms, terlama %.0f ms, gagal=%d",
+		#times,
+		avg * 1000,
+		slowest * 1000,
+		failed
+	)
+	say("hoverCost 2 frame TERLAMA selama pembuatan: %.0f ms (16 ms = 60 FPS; >100 ms = terasa patah)", worst * 1000)
+	say("hoverCost 3 item pertama dibangun ULANG -> %.0f ms (jauh lebih cepat = engine menyimpan cache)", again * 1000)
+	say("hoverCost: 3 kartu contoh di layar — WAJAH menghadap kamera & topi terlihat? Hapus: S.hoverClear()")
+end
+
+-- ===== SPIKE PREVIEW ANIMASI (PR #28, 19 Sep 2026) =====
+-- Kartu animasi belum punya preview. #24 no. 3 menyimpulkan "rig di ViewportFrame TIDAK BISA
+-- dianimasikan" — TAPI rig yang diuji waktu itu dibuat CreateHumanoidModelFromDescriptionAsync,
+-- dan #24 no. 3 juga mencatat rig itu tidak punya satu pun Motor6D. Jadi yang terbukti mungkin
+-- "rig tanpa sendi tidak bisa bergerak", bukan "ViewportFrame melarang animasi".
+-- CLONE karakter asli PUNYA Motor6D (itulah yang membuat cermin pose #24 no. 4 berhasil).
+-- Yang diukur di sini, dengan ANGKA bukan mata (pelajaran #24):
+--   1. Track-nya benar termuat? (Length > 0 = aset animasi terbaca)
+--   2. Sendi CLONE benar-benar bergerak di dalam ViewportFrame? Diukur dari jarak tempuh tangan
+--      relatif HumanoidRootPart selama 3 detik. Patokan #24: 4,071 stud = bergerak, 0,352 = diam.
+--   3. Berapa Motor6D yang ada di clone (0 = jalan buntu, sama seperti rig deskripsi).
+-- Kalau no. 2 besar -> preview animasi tinggal disambungkan seperti preview item biasa.
+-- Kalau no. 2 nol -> jalan satu-satunya adalah menggerakkan sendi sendiri dari KeyframeSequence
+-- (butuh InsertService di SERVER, karena client ditolak — temuan #18 no. 4).
+-- CARA PAKAI (tab CLIENT):
+--   local S = require(game.ReplicatedStorage.Tests["PreviewRig.studio"]) S.animCard()
+--   S.animCard(3576823880)   -- id animasi lain (default: Point2, dari katalog FEATURED)
+--   S.animClear()
+local ACARD_GUI = "SPIKE_AnimCard"
+local ACARD_SIZE = 260
+local ACARD_DEFAULT = 3576823880 -- "Point2", item animasi di katalog FEATURED
+local ACARD_SAMPLE = 3 -- detik pengukuran
+
+function M.animClear()
+	local player = Players.LocalPlayer
+	local gui = player and player:FindFirstChild("PlayerGui")
+	local old = gui and gui:FindFirstChild(ACARD_GUI)
+	if old then
+		old:Destroy()
+		say("animCard: kartu dihapus")
+	end
+end
+
+function M.animCard(assetId: number?)
+	if not RunService:IsClient() then
+		say("animCard: jalankan dari tab CLIENT")
+		return
+	end
+	M.animClear()
+	local id = assetId or ACARD_DEFAULT
+	local player = Players.LocalPlayer
+	local character = player and player.Character
+	if character == nil then
+		say("animCard: karakter belum ada")
+		return
+	end
+
+	-- Clone karakter asli (punya Motor6D). Archivable dinyalakan sebentar — temuan #24 no. 2.
+	local wasArchivable = character.Archivable
+	character.Archivable = true
+	local clone = character:Clone()
+	character.Archivable = wasArchivable
+	if clone == nil then
+		say("animCard: clone gagal")
+		return
+	end
+
+	-- Putaran 2 membuktikan rig ini memakai AnimationConstraint, BUKAN Motor6D (place ber-rig
+	-- sendi generasi baru) -> dua-duanya dihitung, supaya angkanya tidak menyesatkan lagi.
+	local motors, constraints = 0, 0
+	for _, d in clone:GetDescendants() do
+		if d:IsA("Motor6D") then
+			motors += 1
+		elseif d:IsA("AnimationConstraint") then
+			constraints += 1
+		end
+	end
+	say("animCard 3 sendi di clone: Motor6D=%d AnimationConstraint=%d", motors, constraints)
+
+	local screen = Instance.new("ScreenGui")
+	screen.Name = ACARD_GUI
+	screen.IgnoreGuiInset = true
+	screen.Parent = player:WaitForChild("PlayerGui")
+	local holder = Instance.new("ViewportFrame")
+	holder.Size = UDim2.fromOffset(ACARD_SIZE, ACARD_SIZE)
+	holder.Position = UDim2.fromOffset(20, 120)
+	holder.BackgroundColor3 = Color3.new(0, 0, 0)
+	holder.Parent = screen
+	local world = Instance.new("WorldModel")
+	world.Parent = holder
+
+	-- Part TIDAK di-anchor supaya sendi bisa menggerakkannya, KECUALI HumanoidRootPart: tanpa
+	-- penahan itu seluruh boneka melorot kena gravitasi, dan putaran 1 salah membaca jatuhnya
+	-- part sebagai "animasi jalan" (3,742 stud padahal track-nya Length=0).
+	local ACARD_ROOT_ANCHOR = "HumanoidRootPart"
+	for _, d in clone:GetDescendants() do
+		if d:IsA("BasePart") then
+			d.Anchored = d.Name == ACARD_ROOT_ANCHOR
+		end
+	end
+	clone.Parent = world
+
+	local root = clone:FindFirstChild("HumanoidRootPart") :: BasePart?
+	local hand = (clone:FindFirstChild("RightHand") or clone:FindFirstChild("Right Arm")) :: BasePart?
+	local head = clone:FindFirstChild("Head") :: BasePart?
+	local cam = Instance.new("Camera")
+	cam.Parent = holder
+	holder.CurrentCamera = cam
+	if head then
+		cam.CFrame = CFrame.lookAt(head.CFrame * Vector3.new(0, -1.5, -9), head.CFrame * Vector3.new(0, -1.5, 0))
+	end
+
+	local humanoid = clone:FindFirstChildOfClass("Humanoid")
+	local animator = if humanoid then humanoid:FindFirstChildOfClass("Animator") else nil
+	if humanoid and animator == nil then
+		animator = Instance.new("Animator")
+		animator.Parent = humanoid
+	end
+	if animator == nil then
+		say("animCard: clone tidak punya Humanoid/Animator")
+		return
+	end
+
+	local anim = Instance.new("Animation")
+	anim.AnimationId = "rbxassetid://" .. tostring(id)
+	local okTrack, track = pcall(function()
+		return (animator :: Animator):LoadAnimation(anim)
+	end)
+	if not okTrack or track == nil then
+		say("animCard 1 LoadAnimation GAGAL: %s", tostring(track))
+		return
+	end
+	track.Looped = true
+	track:Play()
+	task.wait(0.3)
+	say("animCard 1 track: Length=%.2f detik IsPlaying=%s", track.Length, tostring(track.IsPlaying))
+
+	-- 2. Jarak tempuh tangan RELATIF root selama ACARD_SAMPLE detik (patokan #24: 4,07 vs 0,35).
+	local travelled = 0
+	local last: Vector3? = nil
+	local started = os.clock()
+	while os.clock() - started < ACARD_SAMPLE do
+		if root and hand then
+			local now = root.CFrame:PointToObjectSpace(hand.Position)
+			if last then
+				travelled += (now - last).Magnitude
+			end
+			last = now
+		end
+		task.wait()
+	end
+	say(
+		"animCard 2 tangan menempuh %.3f stud dalam %d detik (#24: 4,07 = bergerak, 0,35 = diam)",
+		travelled,
+		ACARD_SAMPLE
+	)
+	say("animCard: gerak SAH hanya kalau Length>0 DAN IsPlaying=true. Hapus: S.animClear()")
+end
+
+-- ===== SPIKE ANIMASI putaran 2: SENDI & ID KLIP (PR #28, 19 Sep 2026) =====
+-- Putaran 1 menghasilkan DUA kejutan, dan pengukurannya sendiri tercemar:
+--   * "tangan menempuh 3,742 stud" TIDAK berarti animasi jalan — track-nya `Length=0 IsPlaying=false`
+--     dan Studio menolak asetnya ("AnimationClip loaded is not valid"). Yang bergerak itu part yang
+--     JATUH karena spike meng-unanchor semuanya sementara tidak ada sendi sama sekali.
+--     (Pelajaran lama terulang: pastikan yang diukur benar-benar hal yang dimaksud.)
+--   * `Motor6D di clone: 0`. R15 biasa punya belasan. Dugaan: place ini memakai rig sendi generasi
+--     baru (AnimationConstraint/Bone). Kalau benar, temuan #24 no. 3 selama ini salah baca.
+-- Dua hal yang diukur sekarang, BUKAN ditebak:
+--   1. [CLIENT] Kelas apa saja yang menghubungkan part karakter: Motor6D, AnimationConstraint,
+--      Bone, Weld, WeldConstraint, Attachment? Berapa banyak masing-masing, di karakter ASLI
+--      maupun di CLONE-nya (kalau clone kehilangan sendi, itu masalah tersendiri).
+--   2. [SERVER] Aset animasi katalog (mis. 3576823880 "Point2") isinya apa? Yang dicari: objek
+--      `Animation` di dalamnya dan nilai `AnimationId` SESUNGGUHNYA — id katalog tidak bisa
+--      dipakai langsung, itu sebabnya track putaran 1 kosong.
+-- CARA PAKAI:
+--   tab CLIENT: local S = require(game.ReplicatedStorage.Tests["PreviewRig.studio"]) S.animJoints()
+--   tab SERVER: local S = require(game.ReplicatedStorage.Tests["PreviewRig.studio"]) S.animAsset()
+--               S.animAsset(3576968026)   -- "Shrug"
+local AJOINT_CLASSES = { "Motor6D", "AnimationConstraint", "Bone", "Weld", "WeldConstraint", "Attachment" }
+
+local function ajointCount(root: Instance): string
+	local counts: { [string]: number } = {}
+	for _, d in root:GetDescendants() do
+		for _, class in AJOINT_CLASSES do
+			if d:IsA(class) then
+				counts[class] = (counts[class] or 0) + 1
+			end
+		end
+	end
+	local out = {}
+	for _, class in AJOINT_CLASSES do
+		table.insert(out, ("%s=%d"):format(class, counts[class] or 0))
+	end
+	return table.concat(out, " ")
+end
+
+function M.animJoints()
+	if not RunService:IsClient() then
+		say("animJoints: jalankan dari tab CLIENT")
+		return
+	end
+	local player = Players.LocalPlayer
+	local character = player and player.Character
+	if character == nil then
+		say("animJoints: karakter belum ada")
+		return
+	end
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	say("animJoints 1 karakter ASLI: %s", ajointCount(character))
+	say(
+		"animJoints 1b RigType=%s bagian=%d",
+		if humanoid then tostring(humanoid.RigType) else "tanpa Humanoid",
+		#character:GetChildren()
+	)
+
+	local wasArchivable = character.Archivable
+	character.Archivable = true
+	local clone = character:Clone()
+	character.Archivable = wasArchivable
+	if clone == nil then
+		say("animJoints 2 clone GAGAL (nil)")
+		return
+	end
+	say("animJoints 2 CLONE: %s", ajointCount(clone))
+	clone:Destroy()
+	say("animJoints: sendi di baris 1 yang jumlahnya besar = kelas yang dipakai rig ini")
+end
+
+function M.animAsset(assetId: number?)
+	if not RunService:IsServer() then
+		say("animAsset: jalankan dari tab SERVER (InsertService ditolak client — temuan #18 no. 4)")
+		return
+	end
+	local id = assetId or ACARD_DEFAULT
+	local ok, model = pcall(function()
+		return game:GetService("InsertService"):LoadAsset(id)
+	end)
+	if not ok or model == nil then
+		say("animAsset: LoadAsset(%d) GAGAL %s", id, tostring(model))
+		return
+	end
+	local lines = {}
+	local clipId: string? = nil
+	for _, d in model:GetDescendants() do
+		table.insert(lines, ("%s '%s'"):format(d.ClassName, d.Name))
+		if d:IsA("Animation") then
+			clipId = d.AnimationId
+		end
+	end
+	say("animAsset %d isi: %s", id, table.concat(lines, " | "))
+	if clipId then
+		say("animAsset %d AnimationId SESUNGGUHNYA = %s  <- pakai ini, bukan id katalog", id, clipId)
+		say("animAsset: uji di tab CLIENT -> S.animCard(%s)", (clipId:gsub("%D", "")))
+	else
+		say("animAsset %d TIDAK berisi objek Animation -> jalur lain (KeyframeSequence?)", id)
+	end
+	model:Destroy()
+end
+
+-- ===== SPIKE ANIMASI putaran 3: KONTROL vs VIEWPORT (PR #28, 19 Sep 2026) =====
+-- Putaran 2 memakai id klip yang BENAR (10714395441) dan tetap `Length=0 IsPlaying=false`, kali ini
+-- tanpa error apa pun dari Studio. Dua tersangka, dan putaran ini memisahkannya alih-alih menebak:
+--   A. KONTROL: animasi yang sama dimuat ke Animator karakter ASLI di workspace. Kalau di sini
+--      Length > 0, asetnya sehat dan tersangkanya viewport. Kalau nol juga, asetnya/izinnya.
+--   B. VIEWPORT: clone di WorldModel dalam ViewportFrame, Length ditunggu sampai 5 detik (bukan
+--      0,3 detik seperti putaran 2 — Length baru terisi setelah aset selesai diunduh).
+-- Sekalian: GARIS DASAR gerakan. Jarak tempuh tangan diukur 3 detik TANPA memutar apa pun, lalu
+-- 3 detik dengan track diputar. Putaran 1 & 2 sama-sama melaporkan ~3,7 stud padahal track diam,
+-- jadi angka itu jelas bukan animasi; garis dasar membuat perbandingannya jujur.
+-- Kontrol TIDAK mengganggu avatar pemain: track-nya dimuat lalu dihentikan, tidak pernah diputar.
+-- CARA PAKAI (tab CLIENT):
+--   local S = require(game.ReplicatedStorage.Tests["PreviewRig.studio"]) S.animAB(10714395441)
+local AAB_WAIT = 5 -- detik menunggu Length terisi
+local AAB_SAMPLE = 3
+
+-- Tunggu sampai track punya Length (aset selesai diunduh). Kembalian: Length terakhir.
+local function aabWaitLength(track: AnimationTrack): number
+	local started = os.clock()
+	while track.Length <= 0 and os.clock() - started < AAB_WAIT do
+		task.wait(0.1)
+	end
+	return track.Length
+end
+
+-- Jarak tempuh tangan RELATIF root selama `secs` detik.
+local function aabTravel(model: Model, secs: number): number
+	local root = model:FindFirstChild("HumanoidRootPart") :: BasePart?
+	local hand = (model:FindFirstChild("RightHand") or model:FindFirstChild("Right Arm")) :: BasePart?
+	if root == nil or hand == nil then
+		return -1
+	end
+	local travelled = 0
+	local last: Vector3? = nil
+	local started = os.clock()
+	while os.clock() - started < secs do
+		local now = root.CFrame:PointToObjectSpace(hand.Position)
+		if last then
+			travelled += (now - last).Magnitude
+		end
+		last = now
+		task.wait()
+	end
+	return travelled
+end
+
+function M.animAB(assetId: number?)
+	if not RunService:IsClient() then
+		say("animAB: jalankan dari tab CLIENT")
+		return
+	end
+	local id = assetId or ACARD_DEFAULT
+	local player = Players.LocalPlayer
+	local character = player and player.Character
+	local liveHumanoid = if character then character:FindFirstChildOfClass("Humanoid") else nil
+	if character == nil or liveHumanoid == nil then
+		say("animAB: karakter belum ada")
+		return
+	end
+	local anim = Instance.new("Animation")
+	anim.AnimationId = "rbxassetid://" .. tostring(id)
+
+	-- A. KONTROL di workspace (hanya DIMUAT, tidak diputar -> avatar pemain tidak terganggu)
+	local liveAnimator = liveHumanoid:FindFirstChildOfClass("Animator")
+	if liveAnimator == nil then
+		say("animAB A: karakter asli tidak punya Animator")
+	else
+		local okA, trackA = pcall(function()
+			return (liveAnimator :: Animator):LoadAnimation(anim)
+		end)
+		if okA and trackA then
+			local lenA = aabWaitLength(trackA)
+			say("animAB A KONTROL (karakter asli di workspace): Length=%.2f detik", lenA)
+			trackA:Destroy()
+		else
+			say("animAB A KONTROL GAGAL: %s", tostring(trackA))
+		end
+	end
+
+	-- B. VIEWPORT
+	M.animClear()
+	local wasArchivable = character.Archivable
+	character.Archivable = true
+	local clone = character:Clone()
+	character.Archivable = wasArchivable
+	if clone == nil then
+		say("animAB B: clone gagal")
+		return
+	end
+	for _, d in clone:GetDescendants() do
+		if d:IsA("BasePart") then
+			d.Anchored = d.Name == "HumanoidRootPart"
+		end
+	end
+	local screen = Instance.new("ScreenGui")
+	screen.Name = ACARD_GUI
+	screen.IgnoreGuiInset = true
+	screen.Parent = player:WaitForChild("PlayerGui")
+	local holder = Instance.new("ViewportFrame")
+	holder.Size = UDim2.fromOffset(ACARD_SIZE, ACARD_SIZE)
+	holder.Position = UDim2.fromOffset(20, 120)
+	holder.BackgroundColor3 = Color3.new(0, 0, 0)
+	holder.Parent = screen
+	local world = Instance.new("WorldModel")
+	world.Parent = holder
+	clone.Parent = world
+	local head = clone:FindFirstChild("Head") :: BasePart?
+	local cam = Instance.new("Camera")
+	cam.Parent = holder
+	holder.CurrentCamera = cam
+	if head then
+		cam.CFrame = CFrame.lookAt(head.CFrame * Vector3.new(0, -1.5, -9), head.CFrame * Vector3.new(0, -1.5, 0))
+	end
+
+	-- GARIS DASAR: tanpa memutar apa pun
+	local baseline = aabTravel(clone, AAB_SAMPLE)
+	say("animAB B1 GARIS DASAR (tanpa animasi): tangan menempuh %.3f stud dalam %d detik", baseline, AAB_SAMPLE)
+
+	local humanoid = clone:FindFirstChildOfClass("Humanoid")
+	local animator = if humanoid then humanoid:FindFirstChildOfClass("Animator") else nil
+	if humanoid and animator == nil then
+		animator = Instance.new("Animator")
+		animator.Parent = humanoid
+	end
+	if animator == nil then
+		say("animAB B: clone tidak punya Humanoid/Animator")
+		return
+	end
+	local okB, trackB = pcall(function()
+		return (animator :: Animator):LoadAnimation(anim)
+	end)
+	if not okB or trackB == nil then
+		say("animAB B LoadAnimation GAGAL: %s", tostring(trackB))
+		return
+	end
+	local lenB = aabWaitLength(trackB)
+	trackB.Looped = true
+	trackB:Play()
+	task.wait(0.2)
+	say("animAB B2 VIEWPORT: Length=%.2f detik IsPlaying=%s", lenB, tostring(trackB.IsPlaying))
+	local moving = aabTravel(clone, AAB_SAMPLE)
+	say("animAB B3 dengan animasi: tangan menempuh %.3f stud (garis dasar %.3f)", moving, baseline)
+	say("animAB: gerak NYATA hanya kalau B3 jauh di atas B1. Hapus: S.animClear()")
+end
+
 return M

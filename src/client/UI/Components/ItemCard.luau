@@ -7,15 +7,46 @@
 --   offSale true     -> "Off Sale" (harganya datang sebagai 0 — spike 19 Sep 2026 putaran 5b)
 --   price 0          -> "Free"; price nil -> "Not for sale" (mis. bekas 999999999)
 --   priceStatus "No Resellers" tanpa resale -> "No Sellers" (tidak bisa dibeli sekarang)
+-- card:setDisplay({ name = false, price = false }) -- sakelar dari popover gear (#28). Nama &
+-- harga yang dimatikan MENGEMBALIKAN ruangnya ke gambar: kartu jadi gambar penuh (mode padat CAC),
+-- bukan gambar lama dengan area kosong di bawahnya.
 -- Tap kartu -> onActivated (CatalogPanel lalu memanggil setArmed(true)).
 -- Kartu "armed" menampilkan overlay di atas gambar: TRY/REMOVE, BUY, tombol ⓘ (detail),
--- dan tombol keranjang 🛒 di kiri atas (bila props.onCart ada & item dijual).
+-- bintang favorit (bila props.onFavorite ada), dan tombol keranjang 🛒 (bila props.onCart ada
+-- & item dijual). Ketiga tombol bulat itu dihitung dalam PIKSEL dari lebar kartu: kartu compact
+-- cuma ~76 px dan ukuran tetap tidak muat bertiga (UIAspectRatioConstraint TIDAK dipakai — di dalam
+-- layout ia membuat lebar nol, temuan #25 no. 2).
+-- Bintang punya TIGA tampilan, karena status favorit MAHAL dibaca (416 ms/item, kuota habis di ~26
+-- bacaan -> HTTP 429; spike #28). Kartu tidak pernah menebak:
+--   ☆ redup  = belum diketahui (belum pernah dibaca)
+--   ☆ terang = bukan favorit
+--   ★ emas   = favorit
+-- Bintang menempel di KARTU (bukan di overlay) dan HANYA tampil saat kursor lewat: begitu overlay
+-- dibuka ia disembunyikan supaya tidak menimpa tombol 🛒 / ⓘ (dinilai di Studio 19 Sep 2026).
+-- Roblox mobile tidak punya kursor -> MouseEnter TIDAK PERNAH menyala di sana, jadi di HP bintang
+-- kartu tidak bisa disentuh sama sekali; jalur favorit untuk HP adalah bintang di HALAMAN DETAIL
+-- (tombol ⓘ / tahan kartu).
+-- props.onHover(item, masuk) dipanggil saat kursor masuk/keluar kartu.
+-- props.onPreview(item, viewport) -> fungsi pembatal: kursor DIAM di kartu selama HOVER_DELAY ->
+-- thumbnail diganti avatar pemain yang memakai item itu. Jedanya WAJIB: spike 19 Sep 2026 mengukur
+-- satu model butuh 425 ms (terlama 700 ms) dan engine TIDAK menyimpan cache, jadi kursor yang
+-- menyapu 8 kartu tanpa jeda = 8 pembuatan model beruntun. Kursor pergi sebelum jeda habis ->
+-- tidak ada yang dibangun sama sekali.
+-- Thumbnail TETAP terlihat sampai avatarnya benar-benar muncul di viewport (ditunggu lewat
+-- DescendantAdded). Dua alasan, dua-duanya kelihatan di Studio 19 Sep 2026: (a) item yang tidak
+-- bisa dipreview (animasi, bundle Body) membuat onPreview mengembalikan nil -> kartu jadi HITAM
+-- kalau thumbnail sudah kadung disembunyikan; (b) model butuh ~0,5 detik, dan selama itu kartunya
+-- kosong. Item yang sekali gagal dipreview ditandai supaya hover berikutnya tidak mencoba lagi.
 -- Tap bagian kosong overlay -> onDismiss. Klik kanan (PC) / tahan (HP) di kartu -> onInfo (detail).
 --   local card = ItemCard.new({ item = item, onActivated = fn, onTry = fn, onBuy = fn, onInfo = fn, onDismiss = fn })
 --   card.instance.Parent = grid
 --   card:setItem(itemLain)   card:setSelected(true)   card:setArmed(true)   card:setInCart(true)   card:destroy()
 
-local AssetTypeMap = require(game:GetService("ReplicatedStorage"):WaitForChild("Shared").Domain.AssetTypeMap)
+local SharedRoot = game:GetService("ReplicatedStorage"):WaitForChild("Shared")
+local AssetTypeMap = require(SharedRoot.Domain.AssetTypeMap)
+local Log = require(SharedRoot.Util.Log)
+
+local log = Log.new("ItemCard")
 local Tokens = require(script.Parent.Parent.Theme.Tokens)
 local SecondaryAction = require(script.Parent.Parent.Util.SecondaryAction)
 local CartIcon = require(script.Parent.Parent.Util.CartIcon)
@@ -37,6 +68,9 @@ export type Item = {
 
 type Callback = ((Item) -> ())?
 
+-- Sakelar tampilan kartu; field yang tidak diisi dianggap TRUE (tampil).
+export type Display = { name: boolean?, price: boolean?, limited: boolean? }
+
 export type Props = {
 	item: Item,
 	layoutOrder: number?,
@@ -45,12 +79,25 @@ export type Props = {
 	onBuy: Callback,
 	onInfo: Callback,
 	onCart: Callback, -- tombol 🛒 (tambah / buang dari keranjang); nil = tombol disembunyikan
+	onFavorite: Callback, -- bintang favorit; nil = bintang disembunyikan
+	onHover: ((Item, boolean) -> ())?, -- kursor masuk (true) / keluar (false) kartu; PC saja
+	-- Pasang preview avatar memakai item ini ke viewport kartu; kembalikan fungsi pembatalnya.
+	onPreview: ((Item, ViewportFrame) -> (() -> ())?)?,
 	onDismiss: Callback, -- tap bagian kosong overlay
 }
 
 local TEXT_AREA = 34 -- nama + harga di bawah gambar
-local INFO_SIZE = 26
+local INFO_SIZE = 26 -- ruang yang disisakan di atas stack TRY/BUY untuk baris tombol bulat
 local CART_W = 36
+local BTN_MIN = 14 -- kartu compact: tiga tombol bulat harus tetap muat
+local BTN_MAX = 22 -- 19 Sep 2026: 26 px terlihat kegedean di kartu (dinilai di Studio)
+local BTN_RATIO = 0.19 -- ukuran tombol = lebar kartu x ini, dijepit BTN_MIN..BTN_MAX
+local LEAVE_GRACE = 0.2 -- detik: kursor yang keluar sebentar (melintas celah antar kartu) TIDAK
+-- langsung membatalkan preview. Tanpa ini, log 19 Sep 2026 penuh "batal=true" padahal datanya
+-- sudah lengkap: satu getaran kursor membuang model yang sedang dibangun.
+local HOVER_DELAY = 0.3 -- detik kursor harus DIAM di kartu sebelum model preview dibangun
+local STAR_FILLED = utf8.char(0x2605) -- ★ ada di BuilderSans (diuji di Studio 19 Sep 2026)
+local STAR_HOLLOW = utf8.char(0x2606) -- ☆
 
 local ItemCard = {}
 ItemCard.__index = ItemCard
@@ -71,6 +118,20 @@ export type ItemCard = typeof(setmetatable(
 		_buy: TextButton,
 		_cart: TextButton,
 		_hasCart: boolean,
+		_info: TextButton,
+		_star: TextButton,
+		_hasFav: boolean,
+		_favorite: boolean?, -- nil = belum diketahui (BUKAN "bukan favorit")
+		_hover: boolean, -- kursor sedang di atas kartu (PC)
+		_display: Display,
+		_preview: ViewportFrame,
+		_onPreview: ((Item, ViewportFrame) -> (() -> ())?)?,
+		_previewStop: (() -> ())?, -- pembatal dari layanan preview; nil = tidak ada yang terpasang
+		_previewPending: boolean, -- jeda hover sedang berjalan
+		_previewToken: number, -- membatalkan jeda yang sudah tidak relevan
+		_previewNone: boolean, -- item ini tidak bisa dipreview (animasi / bundle) -> jangan coba lagi
+		_leaveToken: number, -- membatalkan jeda maaf saat kursor kembali
+		_previewConn: RBXScriptConnection?, -- menunggu avatar muncul di viewport
 		_selected: boolean,
 		_conns: { RBXScriptConnection },
 	},
@@ -85,7 +146,8 @@ end
 
 local ROBUX = utf8.char(0xE002) -- ikon Robux bawaan font Roblox
 
--- Teks harga, warnanya, dan apakah tombol BUY aktif.
+-- Teks harga, warnanya, dan apakah tombol BUY aktif. Dibuka (ItemCard.priceOf) supaya kartu hero
+-- di CatalogPanel memakai aturan yang SAMA — dua salinan aturan harga pasti akan berbeda suatu hari.
 local function priceOf(item: Item): (string, Color3, boolean)
 	if item.resalePrice then
 		return ROBUX .. " " .. tostring(item.resalePrice), Tokens.Color.Accent, true -- harga pasar
@@ -133,7 +195,7 @@ local function overlayButton(name: string, text: string, color: Color3, order: n
 	b.BorderSizePixel = 0
 	b.AutoButtonColor = true
 	b.LayoutOrder = order
-	b.Size = UDim2.new(1, 0, 0.36, 0)
+	b.Size = UDim2.new(1, 0, 0.28, 0) -- 0.36 membuat TRY/BUY memenuhi kartu (dinilai di Studio)
 	b.ZIndex = Tokens.ZIndex.Panel + 3
 
 	local corner = Instance.new("UICorner")
@@ -141,8 +203,8 @@ local function overlayButton(name: string, text: string, color: Color3, order: n
 	corner.Parent = b
 
 	local limit = Instance.new("UITextSizeConstraint")
-	limit.MinTextSize = 10
-	limit.MaxTextSize = Tokens.TextSize.Button
+	limit.MinTextSize = 9
+	limit.MaxTextSize = Tokens.TextSize.Body
 	limit.Parent = b
 
 	local pad = Instance.new("UIPadding")
@@ -282,7 +344,7 @@ function ItemCard.new(props: Props): ItemCard
 	list.VerticalAlignment = Enum.VerticalAlignment.Bottom
 	list.HorizontalAlignment = Enum.HorizontalAlignment.Center
 	list.SortOrder = Enum.SortOrder.LayoutOrder
-	list.Padding = UDim.new(0.06, 0)
+	list.Padding = UDim.new(0.05, 0)
 	list.Parent = stack
 
 	local try = overlayButton("Try", "TRY", Tokens.Color.Accent, 1, stack)
@@ -340,6 +402,67 @@ function ItemCard.new(props: Props): ItemCard
 	cartStroke.Transparency = 0.5
 	cartStroke.Parent = cart
 
+	-- Preview avatar memakai item: menempati kotak yang SAMA dengan thumbnail, dan thumbnail
+	-- disembunyikan selama ia tampil (dua gambar bertumpuk tidak terbaca di kartu sekecil ini).
+	local preview = Instance.new("ViewportFrame")
+	preview.Name = "Preview"
+	-- Dua sumber garis putih, dimatikan dua-duanya:
+	--   1. LAMPU BERARAH -> LightColor dinolkan, tinggal Ambient rata (dinaikkan supaya avatarnya
+	--      tetap terbaca). Diukur 19 Sep 2026: menolkan LightColor lewat Command Bar membuat
+	--      garisnya hilang seketika.
+	--   2. LATAR TEMBUS -> piksel tepi model dicampur ke latar transparan dan menyisakan
+	--      pinggiran terang. Latarnya dipekatkan, tapi SEWARNA PERMUKAAN KARTU: kartu memakai
+	--      PanelRaised pada transparansi 0,02, jadi selisihnya di bawah 1/255 -- tidak ada kotak
+	--      hitam seperti percobaan sebelumnya yang memakai Color.Background (10,10,12).
+	preview.BackgroundColor3 = Tokens.Color.PanelRaised
+	preview.BackgroundTransparency = 0
+	preview.Ambient = Color3.fromRGB(190, 190, 195)
+	preview.LightColor = Color3.fromRGB(0, 0, 0)
+	preview.AnchorPoint = image.AnchorPoint
+	preview.Position = image.Position
+	preview.Size = image.Size
+	preview.ZIndex = Tokens.ZIndex.Panel + 1
+	preview.Visible = false
+	-- Preview mengisi KOTAK GAMBAR, bukan latar kartu: apa pun yang melimpah dipotong.
+	preview.ClipsDescendants = true
+	preview.Parent = button
+
+	local previewCorner = Instance.new("UICorner")
+	previewCorner.CornerRadius = Tokens.Radius.Medium
+	previewCorner.Parent = preview
+
+	-- Bintang favorit (pojok KIRI ATAS overlay, pola CAC). Posisi & ukurannya diatur _layoutButtons.
+	local star = Instance.new("TextButton")
+	star.Name = "Favorite"
+	star.Text = STAR_HOLLOW
+	star.FontFace = Tokens.Font.Bold
+	star.TextScaled = true
+	star.TextColor3 = Tokens.Color.TextMuted
+	star.TextTransparency = 0.35
+	star.BackgroundColor3 = Tokens.Color.PanelRaised
+	star.BorderSizePixel = 0
+	star.AutoButtonColor = true
+	star.Position = UDim2.fromOffset(4, 4)
+	star.Size = UDim2.fromOffset(BTN_MAX, BTN_MAX)
+	star.ZIndex = Tokens.ZIndex.Panel + 4
+	star.Visible = false -- muncul saat hover (PC) atau overlay terbuka (HP)
+	star.Parent = button
+
+	local starPad = Instance.new("UIPadding")
+	starPad.PaddingTop = UDim.new(0, 2)
+	starPad.PaddingBottom = UDim.new(0, 2)
+	starPad.Parent = star
+
+	local starCorner = Instance.new("UICorner")
+	starCorner.CornerRadius = Tokens.Radius.Pill
+	starCorner.Parent = star
+
+	local starStroke = Instance.new("UIStroke")
+	starStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	starStroke.Color = Tokens.Color.Stroke
+	starStroke.Transparency = 0.5
+	starStroke.Parent = star
+
 	local self = setmetatable({
 		instance = button,
 		item = props.item,
@@ -355,6 +478,20 @@ function ItemCard.new(props: Props): ItemCard
 		_buy = buy,
 		_cart = cart,
 		_hasCart = props.onCart ~= nil,
+		_info = info,
+		_star = star,
+		_hasFav = props.onFavorite ~= nil,
+		_favorite = nil,
+		_hover = false,
+		_display = { name = true, price = true, limited = true },
+		_preview = preview,
+		_onPreview = props.onPreview,
+		_previewStop = nil,
+		_previewPending = false,
+		_previewToken = 0,
+		_previewNone = false,
+		_leaveToken = 0,
+		_previewConn = nil,
 		_selected = false,
 		_conns = {},
 	}, ItemCard)
@@ -404,9 +541,195 @@ function ItemCard.new(props: Props): ItemCard
 	hook(cart, props.onCart, function()
 		return self.item.price ~= nil and not self.item.offSale
 	end)
+	hook(star, props.onFavorite)
+
+	-- Kursor masuk/keluar kartu (PC). Di HP tidak pernah menyala -> bintang di sana ikut overlay.
+	table.insert(
+		self._conns,
+		button.MouseEnter:Connect(function()
+			self:_setHover(true)
+			if props.onHover then
+				props.onHover(self.item, true)
+			end
+		end)
+	)
+	table.insert(
+		self._conns,
+		button.MouseLeave:Connect(function()
+			self:_setHover(false)
+			if props.onHover then
+				props.onHover(self.item, false)
+			end
+		end)
+	)
+
+	-- Lebar kartu berubah (grid dihitung ulang / zoom) -> ukuran tombol bulat ikut dihitung ulang.
+	table.insert(
+		self._conns,
+		button:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+			self:_layoutButtons()
+		end)
+	)
 
 	self:setItem(props.item)
+	self:_layoutButtons()
 	return self
+end
+
+-- Tiga tombol bulat overlay diukur dari LEBAR KARTU, dalam piksel: bintang di kiri, keranjang di
+-- sebelahnya (kalau tampil), ⓘ menempel kanan. Kartu compact ~76 px masih memuat ketiganya.
+function ItemCard._layoutButtons(self: ItemCard)
+	local width = self.instance.AbsoluteSize.X
+	if width <= 0 then
+		return -- kartu belum punya ukuran (belum masuk grid)
+	end
+	local size = math.clamp(math.floor(width * BTN_RATIO), BTN_MIN, BTN_MAX)
+	local x = 4
+	self._star.Size = UDim2.fromOffset(size, size)
+	self._star.Position = UDim2.fromOffset(x, 4)
+	if self._star.Visible then
+		x += size + 4
+	end
+	self._cart.Size = UDim2.fromOffset(size + 6, size)
+	self._cart.Position = UDim2.fromOffset(x, 4)
+	self._info.Size = UDim2.fromOffset(size, size)
+end
+
+-- Nama/harga/pita dimatikan -> area teks di bawah gambar DIKEMBALIKAN ke gambar, jadi tidak ada
+-- pita kosong. Gambar, viewport preview, overlay, dan pita LIMITED semuanya ikut dihitung ulang.
+function ItemCard.setDisplay(self: ItemCard, display: Display)
+	self._display = display
+	self._name.Visible = display.name ~= false
+	self._price.Visible = display.price ~= false
+	self._limited.Visible = display.limited ~= false and self.item.limited == true
+	local pad = Tokens.Space.S
+	local area = if self._name.Visible or self._price.Visible then TEXT_AREA else 0
+	self._image.Size = UDim2.new(1, -pad * 2, 1, -pad * 2 - area)
+	self._preview.Size = self._image.Size
+	self._overlay.Size = UDim2.new(1, 0, 1, -area)
+	self._limited.Position = UDim2.new(0, pad, 1, -pad - area)
+	self:_layoutButtons()
+end
+
+function ItemCard._setHover(self: ItemCard, hover: boolean)
+	self._hover = hover
+	self._leaveToken += 1 -- kursor bergerak: jeda maaf yang sedang berjalan tidak berlaku lagi
+	self:_syncStar()
+	if hover then
+		self:_syncPreview()
+		return
+	end
+	-- Kursor keluar: beri jeda maaf. Kalau ia kembali ke kartu ini sebelum jedanya habis, preview
+	-- yang sedang dibangun TIDAK jadi dibuang -- inilah yang membuat kartu bundle & animasi tadi
+	-- selalu "batal" (kursor cuma melintas celah 8 px antar kartu).
+	local token = self._leaveToken
+	task.delay(LEAVE_GRACE, function()
+		if token == self._leaveToken and not self._hover then
+			self:_syncPreview()
+		end
+	end)
+end
+
+-- Lepas preview yang sedang tampil / batalkan jeda yang sedang berjalan.
+-- `reason` dicatat karena log 19 Sep 2026 menunjukkan preview dibatalkan (batal=true) padahal
+-- kursor masih menempel di kartu -- alasannya harus kelihatan, bukan ditebak.
+function ItemCard._stopPreview(self: ItemCard, reason: string?)
+	if self._previewPending or self._previewStop ~= nil then
+		log.debug("preview dibatalkan", self.item.id, reason or "?")
+	end
+	self._previewToken += 1
+	self._previewPending = false
+	local conn = self._previewConn
+	self._previewConn = nil
+	if conn then
+		conn:Disconnect()
+	end
+	local stop = self._previewStop
+	self._previewStop = nil
+	if stop then
+		stop() -- layanan preview membereskan isi viewport-nya sendiri
+	end
+	self._preview.Visible = false
+	self._image.Visible = true
+	self.instance.AutoButtonColor = true
+	self:setSelected(self._selected) -- kembalikan warna & transparansi tepi kartu
+end
+
+-- Preview tampil kalau kursor diam di kartu dan overlay tertutup (aturan yang sama dengan bintang).
+function ItemCard._syncPreview(self: ItemCard)
+	if self._onPreview == nil then
+		return
+	end
+	local want = self._hover and not self._overlay.Visible
+	if not want then
+		self:_stopPreview(if self._overlay.Visible then "overlay-dibuka" else "hover-lepas")
+		return
+	end
+	if self._previewPending or self._previewStop ~= nil or self._previewNone then
+		return -- sudah tampil, sedang ditunggu, atau item ini memang tidak bisa dipreview
+	end
+	self._previewToken += 1
+	self._previewPending = true
+	local token = self._previewToken
+	task.delay(HOVER_DELAY, function()
+		if token ~= self._previewToken then
+			return -- kursor keburu pergi / kartu dipakai ulang
+		end
+		self._previewPending = false
+		local fn = self._onPreview
+		if fn == nil or not self._hover or self._overlay.Visible then
+			return
+		end
+		-- Viewport dinyalakan TANPA menyembunyikan thumbnail: ia masih kosong sampai modelnya jadi.
+		self._preview.Visible = true
+		-- Sinyalnya dipasang SEBELUM model ditempel: model yang sudah ada di cache tempel
+		-- SEKETIKA, jadi DescendantAdded yang dipasang belakangan tidak pernah berbunyi dan
+		-- thumbnail tetap tampil di balik avatar (dinilai di Studio 19 Sep 2026).
+		self._previewConn = self._preview.DescendantAdded:Connect(function(child: Instance)
+			if child:IsA("BasePart") and self._previewStop ~= nil then
+				self._image.Visible = false
+			end
+		end)
+		local stop = fn(self.item, self._preview)
+		if stop == nil then
+			-- Item ini tidak bisa dipreview (animasi, bundle, tipe yang tidak menempel di avatar).
+			self._preview.Visible = false
+			self._previewNone = true
+			local c = self._previewConn
+			self._previewConn = nil
+			if c then
+				c:Disconnect()
+			end
+			return
+		end
+		self._previewStop = stop
+		-- Kilau bawaan ImageButton mencerahkan seluruh kartu saat kursor menempel; di atas
+		-- viewport itu terbaca sebagai kabut. Tepi kartu TIDAK ikut disembunyikan (dugaan lama
+		-- bahwa tepi kartu itu sumber garis putihnya meleset -- sumbernya lampu berarah).
+		self.instance.AutoButtonColor = false
+		-- Model dari cache sudah menempel sebelum baris ini: diperiksa sekali supaya thumbnail
+		-- tetap disembunyikan walau sinyalnya tidak berbunyi.
+		if self._preview:FindFirstChildWhichIsA("BasePart", true) ~= nil then
+			self._image.Visible = false
+		end
+	end)
+end
+
+-- Bintang tampil HANYA saat kursor di atas kartu dan overlay tertutup.
+function ItemCard._syncStar(self: ItemCard)
+	self._star.Visible = self._hasFav and self._hover and not self._overlay.Visible
+end
+
+-- nil = BELUM DIKETAHUI, dan itu SENGAJA dibedakan dari "bukan favorit": status favorit hanya
+-- diambil untuk item yang benar-benar dibuka pemain (lihat DetailController bagian FAVORIT).
+function ItemCard.setFavorite(self: ItemCard, value: boolean?)
+	self._favorite = value
+	self._star.Text = if value == true then STAR_FILLED else STAR_HOLLOW
+	self._star.TextColor3 = if value == true
+		then Tokens.Color.Accent
+		elseif value == false then Tokens.Color.Text
+		else Tokens.Color.TextMuted
+	self._star.TextTransparency = if value == nil then 0.35 else 0
 end
 
 function ItemCard.setItem(self: ItemCard, item: Item)
@@ -427,6 +750,13 @@ function ItemCard.setItem(self: ItemCard, item: Item)
 	self._isBackground = AssetTypeMap.Background[item.assetType] == true
 	self._badge.Text = if self._isBackground then "IN USE" else "Worn"
 	self._cart.Visible = self._hasCart and forSale
+	self._hover = false -- kartu dipakai ulang saat digulir: kursor dianggap keluar
+	self:_stopPreview("kartu-dipakai-ulang") -- preview item LAMA tidak boleh terbawa ke item baru
+	self._previewNone = false -- item baru: boleh dicoba lagi
+	self:_syncStar()
+	self:setFavorite(nil) -- kartu dipakai ulang untuk item lain: statusnya belum diketahui lagi
+	self:_layoutButtons() -- keranjang bisa muncul/hilang -> posisi bintang & keranjang berubah
+	self:setDisplay(self._display) -- item baru, sakelar tampilan yang sama
 	self:setInCart(false) -- pemanggil (CatalogPanel) mengatur ulang sesudah setItem
 	self:setArmed(false) -- kartu dipakai ulang untuk item lain
 end
@@ -451,6 +781,8 @@ end
 
 function ItemCard.setArmed(self: ItemCard, armed: boolean)
 	self._overlay.Visible = armed
+	self:_syncStar()
+	self:_syncPreview()
 end
 
 function ItemCard.isArmed(self: ItemCard): boolean
@@ -458,11 +790,14 @@ function ItemCard.isArmed(self: ItemCard): boolean
 end
 
 function ItemCard.destroy(self: ItemCard)
+	self:_stopPreview("kartu-dibuang")
 	for _, c in self._conns do
 		c:Disconnect()
 	end
 	table.clear(self._conns)
 	self.instance:Destroy()
 end
+
+ItemCard.priceOf = priceOf
 
 return ItemCard
