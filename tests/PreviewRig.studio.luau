@@ -511,4 +511,150 @@ function M.clear()
 	say("clear: boneka & panel spike dihapus")
 end
 
+-- ===== PR kolom kiri: preview AVATAR SEKARANG (18 Sep 2026) =====
+-- Kolom kiri akan jadi kartu ViewportFrame supaya latar AvatarBackground punya tempat.
+-- Yang belum pasti: isi kartunya dibuat bagaimana?
+--   CLONE = clone karakter ASLI pemain (makeup Decal & layered clothing sudah menempel di situ)
+--   BUILD = bangun rig baru dari GetAppliedDescription (jalur OutfitPreview sekarang, ~0,44 dtk
+--           dan makeup harus ditempel ulang dari template)
+-- Diukur: waktu, makeup ikut atau tidak, rakitan/pose benar atau berantakan, dan apakah latar
+-- (ImageLabel SAUDARA di belakang viewport, seperti produksi) tetap tergambar di belakang avatar.
+-- Cara pakai (tab CLIENT):
+--   local S = require(game.ReplicatedStorage.Tests["PreviewRig.studio"]) S.current()
+--   S.currentOff()
+local CURRENT_GUI = "SPIKE_Current"
+local CURRENT_IMAGE = 139431817156818 -- Prism Skies
+
+local function frameFullBody(viewport: ViewportFrame, rig: Model)
+	local cf, size = rig:GetBoundingBox()
+	local half = math.rad(15)
+	local dist = (math.min(size.Y, 12) / 2) / math.tan(half) * 1.15 + size.Z / 2
+	local cam = Instance.new("Camera")
+	cam.FieldOfView = 30
+	cam.CFrame = CFrame.lookAt(cf.Position + cf.LookVector * dist, cf.Position)
+	cam.Parent = viewport
+	viewport.CurrentCamera = cam
+end
+
+-- Siapkan model untuk dipajang (sama seperti OutfitPreview.prepare di produksi).
+local function tidyForPreview(rig: Model)
+	for _, x in rig:GetDescendants() do
+		if x:IsA("BaseScript") then
+			x:Destroy()
+		elseif x:IsA("BasePart") then
+			local part = x :: BasePart
+			part.Massless = true
+			part.CanCollide = false
+			part.CanQuery = false
+		end
+	end
+	local root = rig.PrimaryPart or rig:FindFirstChild("HumanoidRootPart")
+	if root and root:IsA("BasePart") then
+		root.Anchored = true
+	end
+	local humanoid = rig:FindFirstChildOfClass("Humanoid")
+	if humanoid then
+		(humanoid :: Humanoid).DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
+	end
+end
+
+local function countDecals(rig: Model): number
+	local head = rig:FindFirstChild("Head")
+	if head == nil then
+		return 0
+	end
+	local n = 0
+	for _, child in (head :: Instance):GetChildren() do
+		if child:IsA("Decal") then
+			n += 1
+		end
+	end
+	return n
+end
+
+function M.currentOff()
+	local player = Players.LocalPlayer
+	local gui = if player then player:FindFirstChild("PlayerGui") else nil
+	local old = if gui then gui:FindFirstChild(CURRENT_GUI) else nil
+	if old then
+		old:Destroy()
+		say("currentOff: panel dihapus")
+	end
+end
+
+function M.current()
+	if not RunService:IsClient() then
+		say("S.current() HARUS dari tab CLIENT")
+		return
+	end
+	local char = firstCharacter()
+	local desc = appliedDescription()
+	if char == nil or desc == nil then
+		return
+	end
+	M.currentOff()
+
+	local screen = Instance.new("ScreenGui")
+	screen.Name = CURRENT_GUI
+	screen.ResetOnSpawn = false
+	screen.Parent = Players.LocalPlayer:WaitForChild("PlayerGui")
+
+	for index, mode in { "CLONE", "BUILD" } do
+		local viewport = makeViewport(screen, index, mode)
+		viewport.BackgroundTransparency = 1
+		-- latar: ImageLabel SAUDARA di belakang viewport (persis cara produksi)
+		local backdrop = Instance.new("ImageLabel")
+		backdrop.Name = "Backdrop"
+		backdrop.Image = "rbxassetid://" .. tostring(CURRENT_IMAGE)
+		backdrop.ScaleType = Enum.ScaleType.Crop
+		backdrop.BackgroundTransparency = 1
+		backdrop.BorderSizePixel = 0
+		backdrop.Position = viewport.Position
+		backdrop.Size = viewport.Size
+		backdrop.ZIndex = viewport.ZIndex - 1
+		backdrop.Parent = viewport.Parent
+
+		local world = Instance.new("WorldModel")
+		world.Name = "Preview"
+		world.Parent = viewport
+
+		local t0 = os.clock()
+		local rig: Model? = nil
+		if mode == "CLONE" then
+			-- TEMUAN: `Player.Character` datang dengan Archivable = false -> Clone() mengembalikan nil.
+			-- Dinyalakan sebentar, lalu dikembalikan seperti semula.
+			local target = char :: Model
+			local wasArchivable = target.Archivable
+			target.Archivable = true
+			local okClone, copy = pcall(function()
+				return target:Clone()
+			end)
+			target.Archivable = wasArchivable
+			rig = if okClone and typeof(copy) == "Instance" then copy :: Model else nil
+			if rig == nil then
+				say("CLONE tetap gagal: %s", tostring(copy))
+			end
+		else
+			rig = buildRig(desc)
+		end
+		if rig ~= nil then
+			tidyForPreview(rig)
+			rig:PivotTo(CFrame.new())
+			rig.Parent = world
+			frameFullBody(viewport, rig)
+			say("%s siap dalam %.3f detik, decal di Head = %d", mode, os.clock() - t0, countDecals(rig))
+		end
+	end
+	-- Latar hitam bisa berarti gambar BELUM TERMUAT, bukan tidak tergambar -> laporkan statusnya.
+	task.delay(1.5, function()
+		for _, holder in screen:GetChildren() do
+			local img = holder:FindFirstChild("Backdrop")
+			if img and img:IsA("ImageLabel") then
+				say("latar %s IsLoaded=%s ZIndex=%d", holder.Name, tostring(img.IsLoaded), img.ZIndex)
+			end
+		end
+	end)
+	say("current: CLONE vs BUILD berdampingan (kiri bawah). Hapus: S.currentOff()")
+end
+
 return M
