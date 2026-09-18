@@ -188,5 +188,37 @@ return function()
 	eq(#PlayerData.TEMPLATE.folders, 0, "template folders")
 	eq(PlayerData.TEMPLATE.nextFolderId, 1, "template nextFolderId")
 
+	-- ===== v4: makeup (assetId + slot saja; texture di-resolve ulang saat join) =====
+	local Makeup = require(Shared.Domain.Makeup)
+	eq(PlayerData.VERSION, 4, "skema v4")
+	eq(PlayerData.encodeMakeup(Makeup.empty()), nil, "tanpa makeup -> nil (tidak menambah data)")
+
+	local mk = Makeup.set(Makeup.empty(), {
+		assetId = 133520807586498,
+		slot = "face",
+		textureId = "rbxassetid://98880692903650",
+	})
+	mk = Makeup.set(mk, { assetId = 106390919006817, slot = "lip", textureId = "rbxassetid://77903406032400" })
+	local encM = PlayerData.encodeMakeup(mk)
+	eq(#encM, 2, "dua baris")
+	eq(encM[1].i, 133520807586498, "urut face dulu")
+	eq(encM[1].s, "face", "slot ikut")
+	eq(encM[1].t, nil, "texture TIDAK disimpan")
+
+	local dec = PlayerData.decodeMakeup(encM)
+	eq(#dec, 2, "decode dua baris")
+	eq(dec[1].assetId, 133520807586498, "assetId kembali")
+	eq(dec[2].slot, "lip", "slot kembali")
+
+	eq(#PlayerData.decodeMakeup(nil), 0, "nil aman")
+	eq(#PlayerData.decodeMakeup("x"), 0, "string aman")
+	eq(#PlayerData.decodeMakeup({ { i = 0, s = "face" } }), 0, "id cacat dibuang")
+	eq(#PlayerData.decodeMakeup({ { i = 5, s = "hidung" } }), 0, "slot ngawur dibuang")
+	eq(#PlayerData.decodeMakeup({ { i = 5, s = "face" }, { i = 6, s = "face" } }), 1, "slot ganda -> yang pertama")
+
+	local v4 = PlayerData.migrate({ v = 3, settings = {} })
+	eq(v4.v, 4, "v3 -> v4")
+	eq(v4.lastMakeup, nil, "data lama tanpa makeup tetap aman")
+
 	print("PASS PlayerData.spec")
 end

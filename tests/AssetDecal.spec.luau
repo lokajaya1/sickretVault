@@ -104,7 +104,7 @@ return function()
 
 	-- 3. id cacat ditolak sebelum menyentuh InsertService
 	for _, bad in { 0, -5, 1.5, "133" } :: { any } do
-		local okBad, err = api:getMakeupTexture(bad :: any)
+		local okBad, err = api:getMakeup(bad :: any)
 		eq(okBad, false, "id cacat ditolak: " .. tostring(bad))
 		eq(err.code, "BAD_ARG", "kode BAD_ARG untuk " .. tostring(bad))
 	end
@@ -112,12 +112,12 @@ return function()
 
 	-- 4. gagal permanen: tidak diulang, dan diingat supaya tidak dicoba lagi
 	api = newApi()
-	local okMiss, errMiss = api:getMakeupTexture(ID_MISSING)
+	local okMiss, errMiss = api:getMakeup(ID_MISSING)
 	eq(okMiss, false, "aset hilang gagal")
 	eq(errMiss.code, "NOT_FOUND", "kode NOT_FOUND")
 	eq(errMiss.assetId, ID_MISSING, "error menyebut id")
 	eq(calls.load, 1, "gagal permanen tidak diulang")
-	local okMiss2, errMiss2 = api:getMakeupTexture(ID_MISSING)
+	local okMiss2, errMiss2 = api:getMakeup(ID_MISSING)
 	eq(okMiss2, false, "tetap gagal dari cache")
 	eq(errMiss2.code, "NOT_FOUND", "kode dari cache")
 	eq(calls.load, 1, "tidak memanggil LoadAsset lagi")
@@ -133,22 +133,22 @@ return function()
 	-- 6. gagal sementara sampai habis: TIDAK di-cache, boleh dicoba lagi nanti
 	api = newApi()
 	flakyLeft = 99
-	local okOut, errOut = api:getMakeupTexture(ID_FLAKY)
+	local okOut, errOut = api:getMakeup(ID_FLAKY)
 	eq(okOut, false, "habis percobaan")
 	eq(errOut.code, "FAILED", "kode FAILED")
 	eq(calls.load, 3, "berhenti di 3 percobaan")
 	flakyLeft = 0
-	local okAgain = api:getMakeupTexture(ID_FLAKY)
+	local okAgain = api:getMakeup(ID_FLAKY)
 	eq(okAgain, true, "boleh dicoba lagi karena tidak di-cache")
 	eq(calls.load, 4, "percobaan baru terjadi")
 
 	-- 7. aset tanpa Decal (mis. AvatarBackground) ditolak jelas dan diingat
 	api = newApi()
-	local okNo, errNo = api:getMakeupTexture(ID_NO_DECAL)
+	local okNo, errNo = api:getMakeup(ID_NO_DECAL)
 	eq(okNo, false, "aset tanpa Decal gagal")
 	eq(errNo.code, "NO_DECAL", "kode NO_DECAL")
 	eq(destroyed.n, 1, "model tetap dibuang")
-	local okNo2 = api:getMakeupTexture(ID_NO_DECAL)
+	local okNo2 = api:getMakeup(ID_NO_DECAL)
 	eq(okNo2, false, "tetap gagal")
 	eq(calls.load, 1, "hasil NO_DECAL diingat")
 
@@ -170,9 +170,9 @@ return function()
 
 	-- 9. clear membuang cache
 	api = newApi()
-	api:getMakeupTexture(ID_OK)
+	api:getMakeup(ID_OK)
 	api:clear()
-	api:getMakeupTexture(ID_OK)
+	api:getMakeup(ID_OK)
 	eq(calls.load, 2, "setelah clear, LoadAsset dipanggil lagi")
 
 	-- 10. penanda error permanen
