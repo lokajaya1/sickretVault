@@ -620,6 +620,10 @@ function App._refreshButtons(self: App)
 	else
 		card.Visible = showCard
 	end
+	-- Isi ViewportFrame TIDAK BISA dianimasikan (spike 18 Sep: rig beku 0,000 stud dalam 3 detik,
+	-- `Animator:StepAnimation` sudah tidak ada di API). Kesan hidupnya dari kamera yang berputar
+	-- pelan -- dan hanya selama kartu terlihat, supaya tidak ada loop yang jalan sia-sia.
+	self._live.setSpin(showCard)
 	local bar = self.actions.instance
 	bar.Visible = open
 	bar.AnchorPoint = Vector2.zero
