@@ -4,6 +4,7 @@
 --   local AssetDecal = require(ServerScriptService.Server.Gateways.AssetDecal)
 --   local decals = AssetDecal.new()
 --   local ok, info = decals:getMakeup(133520807586498)   -- info = { textureId, template }
+--   local ok, bg = decals:getBackground(121199209890990) -- bg   = { imageId, image, color }
 --
 -- Kenapa gateway sendiri (spike 18 Sep 2026, tests/MakeupDecal*.studio):
 --   1. Makeup TIDAK bisa dipakai lewat HumanoidDescription; jalurnya Decal yang ditempel ke Head.
@@ -30,8 +31,11 @@ local Makeup = require(Shared.Domain.Makeup)
 
 local log = Log.new("AssetDecal")
 
-export type ErrorCode = "BAD_ARG" | "NOT_FOUND" | "NO_DECAL" | "FAILED"
+export type ErrorCode = "BAD_ARG" | "NOT_FOUND" | "NO_DECAL" | "NO_BACKGROUND" | "FAILED"
 export type DecalError = { code: ErrorCode, message: string, assetId: number }
+
+-- Latar area preview (AvatarBackground). Nilai polos: tidak ada Instance yang perlu di-Clone.
+export type Background = { imageId: number, image: string, color: Color3? }
 
 export type Deps = {
 	insertService: any?,
@@ -64,6 +68,8 @@ export type AssetDecal = typeof(setmetatable(
 		_sleep: (number) -> (),
 		_textures: Cache.Cache, -- assetId -> { textureId, template } | { code, message }
 		_inflight: { [number]: boolean },
+		_backgrounds: Cache.Cache, -- assetId -> Background | { code, message }
+		_bgInflight: { [number]: boolean },
 	},
 	AssetDecal
 ))
@@ -106,6 +112,12 @@ function AssetDecal.new(deps: Deps?): AssetDecal
 			clock = d.clock or os.clock,
 		}),
 		_inflight = {},
+		_backgrounds = Cache.new({
+			ttl = Limits.ItemCacheTTL,
+			maxSize = 200,
+			clock = d.clock or os.clock,
+		}),
+		_bgInflight = {},
 	}, AssetDecal)
 end
 
@@ -125,14 +137,30 @@ local function readDecal(model: any): any
 	return nil
 end
 
+-- AvatarBackground TIDAK berisi Decal: isinya Folder 'AvatarBackground' dengan IntValue `ImageId`
+-- + Color3Value `Color` (spike #18 no. 9; Prism Skies 121199209890990 -> ImageId 139431817156818,
+-- Color 0.663/0.835/0.836). Model hasil LoadAsset selalu dibuang -- yang disimpan cuma dua nilai.
+local function readBackground(model: any): Background?
+	local folder = model:FindFirstChild("AvatarBackground", true)
+	local imageValue = if folder then folder:FindFirstChild("ImageId") else nil
+	local colorValue = if folder then folder:FindFirstChild("Color") else nil
+	local imageId = if imageValue then imageValue.Value else nil
+	local color = if colorValue then colorValue.Value else nil
+	model:Destroy()
+	if not isId(imageId) then
+		return nil
+	end
+	return { imageId = imageId, image = "rbxassetid://" .. tostring(imageId), color = color }
+end
+
 -- Menunggu permintaan id yang sama yang sedang berjalan. Return hasil cache-nya (bisa nil).
-function AssetDecal._waitInflight(self: AssetDecal, assetId: number): any
+function AssetDecal._waitInflight(self: AssetDecal, assetId: number, inflight: any, cache: Cache.Cache): any
 	local waited = 0
-	while self._inflight[assetId] and waited < WAIT_MAX do
+	while inflight[assetId] and waited < WAIT_MAX do
 		self._sleep(WAIT_STEP)
 		waited += WAIT_STEP
 	end
-	return self._textures:get(assetId)
+	return cache:get(assetId)
 end
 
 -- Template Decal + texture id untuk satu item makeup.
@@ -146,7 +174,7 @@ function AssetDecal.getMakeup(self: AssetDecal, assetId: number): (boolean, any)
 
 	local hit = self._textures:get(assetId)
 	if hit == nil and self._inflight[assetId] then
-		hit = self:_waitInflight(assetId)
+		hit = self:_waitInflight(assetId, self._inflight, self._textures)
 	end
 	if hit ~= nil then
 		if hit.template then
@@ -184,9 +212,63 @@ function AssetDecal.getMakeup(self: AssetDecal, assetId: number): (boolean, any)
 	return true, entry
 end
 
+-- Latar area preview untuk satu item AvatarBackground.
+-- (true, Background) atau (false, DecalError). Jalannya sama persis dengan getMakeup
+-- (retry, cache, permintaan berbarengan menunggu yang sedang berjalan) tapi cache-nya TERPISAH
+-- karena isinya beda bentuk: nilai polos, bukan Instance yang harus di-Clone.
+function AssetDecal.getBackground(self: AssetDecal, assetId: number): (boolean, any)
+	if not isId(assetId) then
+		return false, makeError(0, "BAD_ARG", "assetId harus angka bulat positif")
+	end
+
+	local hit = self._backgrounds:get(assetId)
+	if hit == nil and self._bgInflight[assetId] then
+		hit = self:_waitInflight(assetId, self._bgInflight, self._backgrounds)
+	end
+	if hit ~= nil then
+		if hit.imageId then
+			return true, hit
+		end
+		return false, makeError(assetId, hit.code or "FAILED", hit.message or "gagal sebelumnya")
+	end
+
+	self._bgInflight[assetId] = true
+	local ok, result = Retry.run(function()
+		return self._insert:LoadAsset(assetId)
+	end, self._retry)
+
+	if not ok then
+		local message = tostring(result)
+		local code: ErrorCode = if AssetDecal.isPermanentError(result) then "NOT_FOUND" else "FAILED"
+		if code == "NOT_FOUND" then
+			self._backgrounds:set(assetId, { imageId = nil, code = code, message = message })
+		end
+		self._bgInflight[assetId] = nil
+		log.warn("LoadAsset latar gagal", assetId, code, message)
+		return false, makeError(assetId, code, message)
+	end
+
+	local entry = readBackground(result)
+	if entry == nil then
+		self._backgrounds:set(
+			assetId,
+			{ imageId = nil, code = "NO_BACKGROUND", message = "aset bukan AvatarBackground" }
+		)
+		self._bgInflight[assetId] = nil
+		log.warn("aset tanpa AvatarBackground", assetId)
+		return false, makeError(assetId, "NO_BACKGROUND", "aset bukan AvatarBackground")
+	end
+
+	self._backgrounds:set(assetId, entry)
+	self._bgInflight[assetId] = nil
+	return true, entry
+end
+
 function AssetDecal.clear(self: AssetDecal)
 	self._textures:clear()
 	self._inflight = {}
+	self._backgrounds:clear()
+	self._bgInflight = {}
 end
 
 return AssetDecal
