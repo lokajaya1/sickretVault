@@ -6,6 +6,9 @@
 --   cam:destroy()
 -- Memakai karakter ASLI (bukan salinan), jadi yang terlihat sama dengan yang dilihat pemain lain.
 -- Geser/scroll di atas UI diabaikan (processed), jadi tidak bentrok dengan scroll grid katalog.
+-- Kartu preview mode TEMBUS memanggil kamera ini langsung (drag di atas kartu tersedot UI, jadi
+-- tidak sampai ke pendengar di bawah): cam:turn(dYaw, dPitch) / cam:zoom(langkah) /
+-- cam:pan(dxPiksel, dyPiksel) / cam:reset().
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -16,6 +19,11 @@ local Workspace = game:GetService("Workspace")
 local OrbitMath = require(ReplicatedStorage:WaitForChild("Shared").Util.OrbitMath)
 
 local BIND_NAME = "TryOnCamera"
+
+-- Geser titik bidik (pan). Dihitung dari jarak kamera supaya satu jari menempuh bagian layar yang
+-- sama baik saat dekat maupun jauh; dibatasi supaya avatar tidak bisa didorong keluar layar.
+local PAN_RATE = 0.0016 -- stud per piksel per stud jarak
+local MAX_PAN = 5 -- stud dari titik bidik semula
 
 export type Options = {
 	-- posisi karakter di layar (0..1); dipanggil tiap frame agar ikut ukuran panel
@@ -34,6 +42,7 @@ export type TryOnCamera = typeof(setmetatable(
 		_yaw: number,
 		_pitch: number,
 		_distance: number,
+		_offset: Vector3, -- geseran titik bidik (pan) dari badan karakter
 		_pinchStart: number?,
 		_dragInput: InputObject?,
 		_dragMouse: boolean,
@@ -72,6 +81,7 @@ function TryOnCamera.new(opts: Options?): TryOnCamera
 		_yaw = 0,
 		_pitch = cfg.pitch,
 		_distance = cfg.distance,
+		_offset = Vector3.zero,
 		_pinchStart = nil,
 		_dragInput = nil,
 		_dragMouse = false,
@@ -150,7 +160,7 @@ function TryOnCamera._step(self: TryOnCamera, dt: number)
 	local side = OrbitMath.lateralOffset(ax, self._distance, cam.FieldOfView, aspect)
 	local up = OrbitMath.verticalOffset(ay, self._distance, cam.FieldOfView)
 
-	local focus = root.Position + Vector3.new(0, cfg.height, 0)
+	local focus = root.Position + Vector3.new(0, cfg.height, 0) + self._offset
 	local goal = CFrame.new(focus)
 		* CFrame.Angles(0, self._yaw, 0)
 		* CFrame.Angles(self._pitch, 0, 0)
@@ -245,6 +255,49 @@ function TryOnCamera._connectInput(self: TryOnCamera)
 			end
 		)
 	)
+end
+
+-- ===== Dipanggil kartu preview (mode tembus) =====
+-- Arah & kepekaannya sengaja SAMA dengan drag bebas di layar, supaya memutar lewat kartu dan
+-- memutar di luar kartu terasa satu hal yang sama.
+function TryOnCamera.turn(self: TryOnCamera, dYaw: number, dPitch: number)
+	local cfg = self._cfg
+	self._yaw += dYaw
+	self._pitch = OrbitMath.clamp(self._pitch + dPitch, cfg.minPitch, cfg.maxPitch)
+end
+
+-- langkah > 0 = mendekat.
+function TryOnCamera.zoom(self: TryOnCamera, steps: number)
+	self._distance = OrbitMath.zoom(self._distance, steps, self._cfg)
+end
+
+-- Piksel geser layar -> stud, pada bidang layar kamera saat ini.
+function TryOnCamera.pan(self: TryOnCamera, dx: number, dy: number)
+	local camera = Workspace.CurrentCamera
+	if camera == nil then
+		return
+	end
+	local rate = self._distance * PAN_RATE
+	local cf = camera.CFrame
+	local shift = cf.RightVector * (-dx * rate) + cf.UpVector * (dy * rate)
+	local moved = self._offset + shift
+	if moved.Magnitude > MAX_PAN then
+		moved = moved.Unit * MAX_PAN
+	end
+	self._offset = moved
+end
+
+-- Kembali seperti saat katalog baru dibuka: menghadap depan, jarak & sudut bawaan, tanpa geseran.
+function TryOnCamera.reset(self: TryOnCamera)
+	local cfg = self._cfg
+	local root = getRoot()
+	if root then
+		local look = root.CFrame.LookVector
+		self._yaw = OrbitMath.facingYaw(look.X, look.Z)
+	end
+	self._pitch = cfg.pitch
+	self._distance = cfg.distance
+	self._offset = Vector3.zero
 end
 
 return TryOnCamera

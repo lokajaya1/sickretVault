@@ -38,9 +38,17 @@ local log = Log.new("OutfitPreview")
 
 local CACHE_SIZE = 40
 local FOV = 30
-local MARGIN = 1.12 -- ruang kosong di atas/bawah avatar
+local MARGIN = 1.04 -- ruang kosong di atas/bawah avatar (uji 19 Sep: 1.12 terlalu longgar)
 local MAX_EXTENT = 12 -- stud; batas ukuran avatar yang dianggap wajar (R15 ~5.5)
 local SPIN_SPEED = 0.35 -- radian per detik (putaran otomatis)
+-- Batas kontrol kartu (PR bar aksi). Spike 18 Sep: Camera.NearPlaneZ = 0,5 stud dengan jarak awal
+-- 17,75 stud -> faktor aman >= 0,08, jadi MIN_ZOOM 0,5 masih jauh dari kepala terpotong.
+local MIN_ZOOM = 0.5 -- makin kecil = makin dekat (jarak kamera dikalikan faktor ini)
+local MAX_ZOOM = 1.6
+local ZOOM_STEP = 0.85 -- satu ketuk tombol zoom
+local MAX_PITCH = math.rad(35)
+local MAX_PAN = 2.5 -- stud; cukup untuk membawa kepala atau kaki ke tengah kartu
+local PAN_RATE = 0.0007 -- stud per piksel per stud jarak (geser terasa sama di semua zoom)
 
 -- ===== Makeup di preview (spike PR preview-rig, 18 Sep 2026) =====
 -- Server mereplikasi TEMPLATE Decal ke ReplicatedStorage/MakeupTemplates (MakeupService), lengkap
@@ -214,19 +222,59 @@ export type Handle = {
 	cancel: () -> (),
 	setSpin: (boolean) -> (), -- putar otomatis (halaman detail)
 	addYaw: (number) -> (), -- putar manual (drag); menghentikan sementara efek putaran otomatis
+	addPitch: (number) -> (), -- dongak/tunduk (drag tegak), dibatasi MAX_PITCH
+	addZoom: (number) -> (), -- +1 = satu ketuk mendekat, -1 = menjauh
+	addPan: (number, number) -> (), -- geser avatar di dalam kartu (piksel geser layar)
+	resetView: () -> (), -- kembali ke sudut & jarak bawaan
 	refresh: (() -> ())?, -- hanya ada di mountCurrent: ambil ulang rupa karakter
 	setLive: ((boolean) -> ())?, -- hanya ada di mountCurrent: cermin pose hidup/mati
 }
 
 -- Satu viewport yang sedang dipajang (kamera mengelilingi model).
+-- PENTING: `center`/`dir`/`dist` dihitung ULANG dari model tiap kali kartu di-refit (ganti item,
+-- kartu berubah ukuran), sedangkan `yaw`/`pitch`/`zoom`/`pan` adalah PILIHAN PEMAIN dan tidak
+-- pernah disentuh refit -- itulah sebabnya keduanya dipisah. Kalau zoom ikut dihitung dari model,
+-- setiap ganti topi kamera akan melompat balik ke jarak bawaan.
 type View = {
 	center: Vector3,
 	dir: Vector3, -- arah kamera saat sudut 0
-	dist: number,
+	dist: number, -- jarak bawaan hasil OutfitPreview.frame
 	yaw: number,
+	pitch: number,
+	zoom: number, -- pengali `dist`
+	panX: number, -- geser kamera ke samping/atas (stud), avatar ikut bergeser di dalam kartu
+	panY: number,
 	ready: boolean,
 	apply: () -> (),
 }
+
+local function newView(camera: Camera): View
+	local view: View = {
+		center = Vector3.zero,
+		dir = Vector3.new(0, 0, 1),
+		dist = 12,
+		yaw = 0,
+		pitch = 0,
+		zoom = 1,
+		panX = 0,
+		panY = 0,
+		ready = false,
+		apply = function() end,
+	}
+	view.apply = function()
+		if not view.ready then
+			return
+		end
+		local rot = CFrame.Angles(0, view.yaw, 0) * CFrame.Angles(view.pitch, 0, 0)
+		local eye = view.center + (rot * view.dir) * (view.dist * view.zoom)
+		-- Geser dilakukan pada MATA dan TITIK BIDIK sekaligus supaya avatar bergeser di dalam
+		-- bingkai tanpa ikut berputar (kalau hanya mata yang digeser, kartu jadi miring).
+		local aim = CFrame.lookAt(eye, view.center)
+		local shift = aim.RightVector * view.panX + aim.UpVector * view.panY
+		camera.CFrame = CFrame.lookAt(eye + shift, view.center + shift)
+	end
+	return view
+end
 
 export type Deps = {
 	-- (outfit ringkas) -> Model | error. Default: decode -> HumanoidDescription -> CreateHumanoidModelFromDescriptionAsync
@@ -296,6 +344,10 @@ end
 
 -- Kamera dari depan, seluruh badan masuk bingkai (lebar juga diperhitungkan).
 -- Return posisi tengah, arah kamera pada sudut 0, dan jaraknya (dipakai untuk memutar kamera).
+-- UJI STUDIO 19 Sep 2026: avatar tampak KECIL di kartu karena kamera mundur DUA KALI untuk hal
+-- yang sama -- lebar diukur dari `max(size.X, size.Z)` padahal kedalaman sudah dihitung terpisah
+-- lewat `+ size.Z / 2`. Rambut jambul & tas punggung membuat Z besar, jadi avatar ikut menyusut
+-- padahal lebarnya biasa saja. Lebar sekarang diukur dari `size.X` saja.
 function OutfitPreview.frame(model: Model, camera: Camera, aspect: number): (Vector3, Vector3, number)
 	local cf, raw = model:GetBoundingBox()
 	-- pengaman: kalau ada part nyasar, jangan biarkan kamera mundur jauh
@@ -303,7 +355,7 @@ function OutfitPreview.frame(model: Model, camera: Camera, aspect: number): (Vec
 	local halfV = math.rad(FOV / 2)
 	local halfH = math.atan(math.tan(halfV) * math.max(aspect, 0.1))
 	local distV = (size.Y / 2) / math.tan(halfV)
-	local distH = (math.max(size.X, size.Z) / 2) / math.tan(halfH)
+	local distH = (size.X / 2) / math.tan(halfH)
 	local dist = math.max(distV, distH) * MARGIN + size.Z / 2
 	camera.FieldOfView = FOV
 	camera.CFrame = CFrame.lookAt(cf.Position + cf.LookVector * dist, cf.Position)
@@ -468,22 +520,8 @@ function OutfitPreview.mount(
 	camera.Parent = viewport
 	viewport.CurrentCamera = camera
 
-	local view: View = {
-		center = Vector3.zero,
-		dir = Vector3.new(0, 0, 1),
-		dist = 12,
-		yaw = 0,
-		ready = false,
-		apply = function() end,
-	}
-	local function applyCamera()
-		if not view.ready then
-			return
-		end
-		local offset = (CFrame.Angles(0, view.yaw, 0) * view.dir) * view.dist
-		camera.CFrame = CFrame.lookAt(view.center + offset, view.center)
-	end
-	view.apply = applyCamera
+	local view = newView(camera)
+	local applyCamera = view.apply
 
 	local alive = true
 	local conn: RBXScriptConnection? = nil
@@ -566,6 +604,42 @@ function OutfitPreview.mount(
 			view.yaw += delta
 			applyCamera()
 		end,
+		addPitch = function(delta: number)
+			if not alive then
+				return
+			end
+			view.pitch = math.clamp(view.pitch + delta, -MAX_PITCH, MAX_PITCH)
+			applyCamera()
+		end,
+		addZoom = function(steps: number)
+			if not alive then
+				return
+			end
+			view.zoom = math.clamp(view.zoom * ZOOM_STEP ^ steps, MIN_ZOOM, MAX_ZOOM)
+			applyCamera()
+		end,
+		addPan = function(dx: number, dy: number)
+			if not alive then
+				return
+			end
+			-- Piksel geser layar -> stud, diskalakan dengan jarak kamera supaya satu jari menempuh
+			-- bagian layar yang sama baik saat kartu di-zoom dekat maupun jauh.
+			local rate = view.dist * view.zoom * PAN_RATE
+			view.panX = math.clamp(view.panX - dx * rate, -MAX_PAN, MAX_PAN)
+			view.panY = math.clamp(view.panY + dy * rate, -MAX_PAN, MAX_PAN)
+			applyCamera()
+		end,
+		resetView = function()
+			if not alive then
+				return
+			end
+			view.yaw = 0
+			view.pitch = 0
+			view.zoom = 1
+			view.panX = 0
+			view.panY = 0
+			applyCamera()
+		end,
 	}
 end
 
@@ -625,8 +699,27 @@ local function keyOf(part: Instance, root: Instance): string
 	return table.concat(names, "/")
 end
 
+-- Posisi part RELATIF HumanoidRootPart. Dipakai untuk memilih pasangan yang benar; tahan
+-- terhadap `PivotTo` karena kedua model diukur dengan patokannya masing-masing.
+local function relativeTo(part: BasePart, root: BasePart?): Vector3
+	if root == nil then
+		return part.Position
+	end
+	return root.CFrame:PointToObjectSpace(part.Position)
+end
+
+-- UJI STUDIO 18 Sep 2026 (KOREKSI temuan #24 no. 5): memasangkan jalur nama yang KEMBAR lewat
+-- urutan anak TIDAK aman -- urutan `GetDescendants` model asli dan clone-nya berbeda, sehingga
+-- tas bisa dipasangkan ke `Handle` milik topi dan melompat ke kepala begitu topi dipakai.
+-- (Bukan part tanpa pasangan: `dropUnpaired` melaporkan 0 saat bug ini muncul.)
+-- Yang dipakai sekarang: clone BARU SAJA dibuat, jadi tiap part clone masih persis di posisi
+-- aslinya relatif HumanoidRootPart -> untuk jalur kembar, pasangan dipilih dari JARAK TERDEKAT.
+-- Urutan anak tidak lagi ikut menentukan apa pun.
 local function pairParts(src: Instance, dst: Instance): { Pose }
+	local srcRoot = src:FindFirstChild("HumanoidRootPart") :: BasePart?
+	local dstRoot = dst:FindFirstChild("HumanoidRootPart") :: BasePart?
 	local bySrcKey: { [string]: { BasePart } } = {}
+	local twins = 0
 	for _, x in src:GetDescendants() do
 		if x:IsA("BasePart") then
 			local key = keyOf(x, src)
@@ -634,27 +727,59 @@ local function pairParts(src: Instance, dst: Instance): { Pose }
 			if list == nil then
 				list = {}
 				bySrcKey[key] = list
+			else
+				twins += 1
 			end
 			table.insert(list, x :: BasePart)
 		end
 	end
-	local used: { [string]: number } = {}
 	local out: { Pose } = {}
 	for _, y in dst:GetDescendants() do
 		if y:IsA("BasePart") then
-			local key = keyOf(y, dst)
-			local list = bySrcKey[key]
-			if list ~= nil then
-				local i = (used[key] or 0) + 1
-				used[key] = i
-				local mate = list[i]
-				if mate ~= nil then
-					table.insert(out, { s = mate, d = y :: BasePart })
+			local list = bySrcKey[keyOf(y, dst)]
+			if list ~= nil and #list > 0 then
+				local want = relativeTo(y :: BasePart, dstRoot)
+				local best, bestDist = 0, math.huge
+				for i, cand in list do
+					local gap = (relativeTo(cand, srcRoot) - want).Magnitude
+					if gap < bestDist then
+						best, bestDist = i, gap
+					end
 				end
+				-- Diambil dari daftar supaya satu part asli tidak dipakai dua kali.
+				table.insert(out, { s = table.remove(list, best) :: BasePart, d = y :: BasePart })
 			end
 		end
 	end
+	if twins > 0 then
+		log.info("kartu preview: jalur kembar", twins, "dipasangkan lewat posisi terdekat")
+	end
 	return out
+end
+
+-- UJI STUDIO 18 Sep 2026: sesudah ganti item kadang muncul SATU benda (tas/topi) yang tampak
+-- raksasa menempel di dada atau kepala. Sebabnya bukan pemasangan yang salah, melainkan part clone
+-- yang TIDAK punya pasangan sama sekali di karakter asli: cermin pose tidak pernah menyentuhnya,
+-- jadi ia membeku di CFrame saat di-clone -- dan karena model baru saja di-`PivotTo(CFrame.new())`,
+-- tempat beku itu persis di badan avatar. Terjadi kalau sebuah item DILEPAS tepat sesudah clone
+-- diambil (urutan lepas-lalu-pakai saat mencoba item). Part seperti itu dibuang; `DescendantRemoving`
+-- pada karakter asli sudah menjadwalkan clone ulang, jadi tidak ada yang hilang permanen.
+local function dropUnpaired(model: Model, poses: { Pose }, keep: BasePart?): number
+	local paired: { [BasePart]: boolean } = {}
+	for _, pose in poses do
+		paired[pose.d] = true
+	end
+	-- Dikumpulkan dulu, baru dibuang: menghapus sambil menelusuri bisa ikut membawa part lain.
+	local strays: { BasePart } = {}
+	for _, x in model:GetDescendants() do
+		if x:IsA("BasePart") and x ~= keep and not paired[x :: BasePart] then
+			table.insert(strays, x :: BasePart)
+		end
+	end
+	for _, part in strays do
+		part:Destroy()
+	end
+	return #strays
 end
 
 -- Kartu avatar SEKARANG. `refresh()` dipanggil pemakai tiap look berubah; karakter baru
@@ -675,22 +800,8 @@ function OutfitPreview.mountCurrent(self: OutfitPreview, viewport: ViewportFrame
 	camera.Parent = viewport
 	viewport.CurrentCamera = camera
 
-	local view: View = {
-		center = Vector3.zero,
-		dir = Vector3.new(0, 0, 1),
-		dist = 12,
-		yaw = 0,
-		ready = false,
-		apply = function() end,
-	}
-	local function applyCamera()
-		if not view.ready then
-			return
-		end
-		local offset = (CFrame.Angles(0, view.yaw, 0) * view.dir) * view.dist
-		camera.CFrame = CFrame.lookAt(view.center + offset, view.center)
-	end
-	view.apply = applyCamera
+	local view = newView(camera)
+	local applyCamera = view.apply
 
 	local alive = true
 	local model: Model? = nil
@@ -766,6 +877,13 @@ function OutfitPreview.mountCurrent(self: OutfitPreview, viewport: ViewportFrame
 		poses = if char then pairParts(char, fresh) else {}
 		srcRoot = if char then char:FindFirstChild("HumanoidRootPart") :: BasePart? else nil
 		dstRoot = fresh:FindFirstChild("HumanoidRootPart") :: BasePart?
+		if char ~= nil then
+			-- Dibuang SEBELUM refit: part nyasar juga melarkan bounding box -> kamera mundur jauh.
+			local strays = dropUnpaired(fresh, poses, dstRoot)
+			if strays > 0 then
+				log.warn("kartu preview: part tanpa pasangan dibuang", strays, "terpasang", #poses)
+			end
+		end
 		refit()
 	end
 
@@ -874,6 +992,42 @@ function OutfitPreview.mountCurrent(self: OutfitPreview, viewport: ViewportFrame
 				return
 			end
 			view.yaw += delta
+			applyCamera()
+		end,
+		addPitch = function(delta: number)
+			if not alive then
+				return
+			end
+			view.pitch = math.clamp(view.pitch + delta, -MAX_PITCH, MAX_PITCH)
+			applyCamera()
+		end,
+		addZoom = function(steps: number)
+			if not alive then
+				return
+			end
+			view.zoom = math.clamp(view.zoom * ZOOM_STEP ^ steps, MIN_ZOOM, MAX_ZOOM)
+			applyCamera()
+		end,
+		addPan = function(dx: number, dy: number)
+			if not alive then
+				return
+			end
+			-- Piksel geser layar -> stud, diskalakan dengan jarak kamera supaya satu jari menempuh
+			-- bagian layar yang sama baik saat kartu di-zoom dekat maupun jauh.
+			local rate = view.dist * view.zoom * PAN_RATE
+			view.panX = math.clamp(view.panX - dx * rate, -MAX_PAN, MAX_PAN)
+			view.panY = math.clamp(view.panY + dy * rate, -MAX_PAN, MAX_PAN)
+			applyCamera()
+		end,
+		resetView = function()
+			if not alive then
+				return
+			end
+			view.yaw = 0
+			view.pitch = 0
+			view.zoom = 1
+			view.panX = 0
+			view.panY = 0
 			applyCamera()
 		end,
 		refresh = request,

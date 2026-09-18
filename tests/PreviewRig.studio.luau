@@ -40,6 +40,7 @@
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local ServerScriptService = game:GetService("ServerScriptService")
+local UserInputService = game:GetService("UserInputService")
 
 local TAG = "[SPIKEPREVIEW]"
 local RIG_PREFIX = "PREVIEW_RIG_"
@@ -942,6 +943,346 @@ function M.mirror()
 		say("%s siap", mode)
 	end
 	say("mirror: STATIC vs MIRROR berdampingan. Hapus: S.mirrorOff()")
+end
+
+-- ===== PR bar aksi kartu preview: SIAPA yang menerima drag? (18 Sep 2026) =====
+-- Kartu preview menutupi PERSIS area tempat karakter dunia berdiri, sementara TryOnCamera masih
+-- mendengarkan drag di layar. Kalau drag di atas kartu TIDAK tersedot GUI, satu gerakan jari
+-- memutar DUA hal sekaligus: kamera dunia (tak terlihat, di belakang kartu) dan kartu itu sendiri.
+-- Itulah yang harus diukur SEBELUM bar aksi dibuat, karena jawabannya mengunci cara pasang input:
+--   FRAME  = Frame biasa (persis kartu produksi sekarang)
+--   ACTIVE = Frame yang sama + `Active = true`
+--   BUTTON = ImageButton menutupi viewport
+-- Yang diukur saat satu kali drag di atas tiap kartu:
+--   processed true/false  -> apakah GUI menyedot input (true = tersedot, TryOnCamera diam)
+--   kamera DUNIA bergeser berapa DERAJAT selama drag itu (0 = bersih, >0 = input bocor)
+-- Sekalian dijawab: batas zoom (Camera.NearPlaneZ -> jarak aman minimum) dan apakah pitch/pan
+-- di dalam ViewportFrame masih terlihat wajar.
+--
+-- CARA PAKAI (tab CLIENT, dan BUKA KATALOG dulu supaya TryOnCamera hidup):
+--   local S = require(game.ReplicatedStorage.Tests["PreviewRig.studio"]) S.controls()
+--   -> drag kiri di atas kartu FRAME, lepas. Ulangi di ACTIVE, lalu BUTTON. Baca 3 baris laporan.
+--   -> scroll di atas kartu = zoom (cetak faktor + jarak). Shift+drag = geser (pan).
+--   S.controlsOff()
+local CONTROLS_GUI = "SPIKE_Controls"
+local CONTROLS_SPECS = {
+	{ name = "FRAME", active = false, button = false },
+	{ name = "ACTIVE", active = true, button = false },
+	{ name = "BUTTON", active = false, button = true },
+}
+local CONTROLS_W = 200
+local CONTROLS_H = 260
+local CONTROLS_GAP = 12
+local CONTROLS_SENS = 0.008 -- radian per piksel (sama dengan OrbitMath.DEFAULTS.sensitivity)
+local CONTROLS_PAN = 0.01 -- stud per piksel
+local controlConns: { RBXScriptConnection } = {}
+
+type ControlCard = {
+	name: string,
+	holder: GuiObject,
+	camera: Camera,
+	center: Vector3,
+	dir: Vector3,
+	dist: number,
+	yaw: number,
+	pitch: number,
+	zoom: number,
+	panX: number,
+	panY: number,
+	apply: () -> (),
+}
+
+-- Kartu di bawah kursor. ScreenGui spike memakai IgnoreGuiInset supaya AbsolutePosition dan
+-- input.Position memakai titik nol yang SAMA (tanpa itu selisihnya setinggi topbar Roblox).
+local function controlCardAt(cards: { ControlCard }, x: number, y: number): ControlCard?
+	for _, card in cards do
+		local p = card.holder.AbsolutePosition
+		local s = card.holder.AbsoluteSize
+		if x >= p.X and x <= p.X + s.X and y >= p.Y and y <= p.Y + s.Y then
+			return card
+		end
+	end
+	return nil
+end
+
+local function controlAngleBetween(a: Vector3, b: Vector3): number
+	return math.deg(math.acos(math.clamp(a:Dot(b), -1, 1)))
+end
+
+function M.controlsOff()
+	for _, conn in controlConns do
+		conn:Disconnect()
+	end
+	table.clear(controlConns)
+	local player = Players.LocalPlayer
+	local gui = if player then player:FindFirstChild("PlayerGui") else nil
+	local old = if gui then gui:FindFirstChild(CONTROLS_GUI) else nil
+	if old then
+		old:Destroy()
+		say("controlsOff: panel kontrol dihapus")
+	end
+end
+
+function M.controls()
+	if not RunService:IsClient() then
+		say("S.controls() HARUS dari tab CLIENT")
+		return
+	end
+	local char = firstCharacter()
+	if char == nil then
+		return
+	end
+	M.controlsOff()
+	local target = char :: Model
+
+	local screen = Instance.new("ScreenGui")
+	screen.Name = CONTROLS_GUI
+	screen.ResetOnSpawn = false
+	screen.IgnoreGuiInset = true -- titik nol AbsolutePosition = titik nol input.Position
+	screen.Parent = Players.LocalPlayer:WaitForChild("PlayerGui")
+
+	local cards: { ControlCard } = {}
+	local total = #CONTROLS_SPECS * CONTROLS_W + (#CONTROLS_SPECS - 1) * CONTROLS_GAP
+
+	for index, spec in CONTROLS_SPECS do
+		local holder = Instance.new("Frame")
+		holder.Name = spec.name
+		holder.BackgroundColor3 = Color3.fromRGB(16, 16, 19)
+		holder.BorderSizePixel = 0
+		holder.AnchorPoint = Vector2.new(0, 1)
+		holder.Position = UDim2.new(0.5, -total / 2 + (index - 1) * (CONTROLS_W + CONTROLS_GAP), 1, -16)
+		holder.Size = UDim2.fromOffset(CONTROLS_W, CONTROLS_H)
+		holder.Active = spec.active
+		holder.Parent = screen
+
+		local caption = Instance.new("TextLabel")
+		caption.BackgroundTransparency = 1
+		caption.Size = UDim2.new(1, 0, 0, 18)
+		caption.Text = spec.name
+		caption.TextColor3 = Color3.fromRGB(226, 183, 77)
+		caption.TextSize = 14
+		caption.ZIndex = 5
+		caption.Parent = holder
+
+		local viewport = Instance.new("ViewportFrame")
+		viewport.BackgroundColor3 = Color3.fromRGB(10, 10, 12)
+		viewport.Position = UDim2.fromOffset(0, 18)
+		viewport.Size = UDim2.new(1, 0, 1, -18)
+		viewport.Ambient = Color3.fromRGB(120, 120, 134)
+		viewport.LightColor = Color3.fromRGB(236, 236, 245)
+		viewport.LightDirection = Vector3.new(-0.4, -1, -0.65)
+		viewport.Parent = holder
+
+		if spec.button then
+			-- Penutup transparan: yang menyedot input, bukan viewport-nya.
+			local cover = Instance.new("ImageButton")
+			cover.Name = "Cover"
+			cover.BackgroundTransparency = 1
+			cover.Size = UDim2.fromScale(1, 1)
+			cover.ZIndex = 4
+			cover.AutoButtonColor = false
+			cover.Parent = viewport
+		end
+
+		local world = Instance.new("WorldModel")
+		world.Name = "Preview"
+		world.Parent = viewport
+
+		local wasArchivable = target.Archivable
+		target.Archivable = true
+		local okClone, copy = pcall(function()
+			return target:Clone()
+		end)
+		target.Archivable = wasArchivable
+		local rig = if okClone and typeof(copy) == "Instance" then copy :: Model else nil
+		if rig == nil then
+			say("%s: clone karakter gagal (%s)", spec.name, tostring(copy))
+			continue
+		end
+		local body = rig :: Model
+		tidyForPreview(body)
+		for _, x in body:GetDescendants() do
+			if x:IsA("BasePart") then
+				(x :: BasePart).Anchored = true -- pose diatur penuh oleh cermin
+			end
+		end
+		body:PivotTo(CFrame.new())
+		body.Parent = world
+
+		local camera = Instance.new("Camera")
+		camera.FieldOfView = 30
+		camera.Parent = viewport
+		viewport.CurrentCamera = camera
+
+		local box, size = body:GetBoundingBox()
+		local half = math.rad(15)
+		local baseDist = (math.min(size.Y, 12) / 2) / math.tan(half) * 1.15 + size.Z / 2
+
+		local card: ControlCard = {
+			name = spec.name,
+			holder = holder,
+			camera = camera,
+			center = box.Position,
+			dir = box.LookVector,
+			dist = baseDist,
+			yaw = 0,
+			pitch = 0,
+			zoom = 1,
+			panX = 0,
+			panY = 0,
+			apply = function() end,
+		}
+		card.apply = function()
+			local rot = CFrame.Angles(0, card.yaw, 0) * CFrame.Angles(card.pitch, 0, 0)
+			local eye = card.center + (rot * card.dir) * (card.dist * card.zoom)
+			local aim = CFrame.lookAt(eye, card.center)
+			local shift = aim.RightVector * card.panX + aim.UpVector * card.panY
+			camera.CFrame = CFrame.lookAt(eye + shift, card.center + shift)
+		end
+		card.apply()
+		table.insert(cards, card)
+
+		local poses = pairParts(target, body)
+		local srcRoot = target:FindFirstChild("HumanoidRootPart")
+		local dstRoot = body:FindFirstChild("HumanoidRootPart")
+		if srcRoot and dstRoot then
+			local from = srcRoot :: BasePart
+			local to = dstRoot :: BasePart
+			table.insert(
+				controlConns,
+				RunService.RenderStepped:Connect(function()
+					if from.Parent == nil or to.Parent == nil then
+						return
+					end
+					local base = to.CFrame
+					local inv = from.CFrame:Inverse()
+					for _, pose in poses do
+						if pose.d ~= to then
+							pose.d.CFrame = base * (inv * pose.s.CFrame)
+						end
+					end
+				end)
+			)
+		end
+	end
+
+	if #cards == 0 then
+		say("controls: tidak ada kartu yang jadi")
+		return
+	end
+	local first = cards[1]
+	-- Camera.NearPlaneZ = jarak terdekat yang masih digambar -> batas bawah zoom yang aman.
+	local nearOk, near = pcall(function()
+		return first.camera.NearPlaneZ
+	end)
+	local nearZ = if nearOk and type(near) == "number" then math.abs(near) else 0.1
+	say(
+		"zoom: NearPlaneZ=%.3f stud, jarak awal=%.2f stud -> faktor aman >= %.2f",
+		nearZ,
+		first.dist,
+		(nearZ + 1) / first.dist
+	)
+
+	-- ===== pengukuran drag =====
+	local held: ControlCard? = nil
+	local lastX, lastY = 0, 0
+	local okCount, leakCount = 0, 0
+	local startLook = Vector3.new(0, 0, 1)
+
+	local function worldLook(): Vector3
+		local cam = workspace.CurrentCamera
+		return if cam then cam.CFrame.LookVector else Vector3.new(0, 0, 1)
+	end
+
+	table.insert(
+		controlConns,
+		UserInputService.InputBegan:Connect(function(input: InputObject, processed: boolean)
+			local t = input.UserInputType
+			if t ~= Enum.UserInputType.MouseButton1 and t ~= Enum.UserInputType.Touch then
+				return
+			end
+			local card = controlCardAt(cards, input.Position.X, input.Position.Y)
+			if card == nil then
+				return
+			end
+			held = card
+			lastX, lastY = input.Position.X, input.Position.Y
+			okCount, leakCount = 0, 0
+			if processed then
+				okCount += 1
+			else
+				leakCount += 1
+			end
+			startLook = worldLook()
+		end)
+	)
+
+	table.insert(
+		controlConns,
+		UserInputService.InputChanged:Connect(function(input: InputObject, processed: boolean)
+			local t = input.UserInputType
+			if t == Enum.UserInputType.MouseWheel then
+				local card = controlCardAt(cards, input.Position.X, input.Position.Y)
+				if card ~= nil then
+					card.zoom = math.clamp(card.zoom * 0.9 ^ input.Position.Z, 0.25, 2)
+					card.apply()
+					say("%s zoom: faktor %.2f -> jarak %.2f stud", card.name, card.zoom, card.dist * card.zoom)
+				end
+				return
+			end
+			if t ~= Enum.UserInputType.MouseMovement and t ~= Enum.UserInputType.Touch then
+				return
+			end
+			local card = held
+			if card == nil then
+				return
+			end
+			if processed then
+				okCount += 1
+			else
+				leakCount += 1
+			end
+			local dx = input.Position.X - lastX
+			local dy = input.Position.Y - lastY
+			lastX, lastY = input.Position.X, input.Position.Y
+			if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then
+				card.panX -= dx * CONTROLS_PAN
+				card.panY += dy * CONTROLS_PAN
+			else
+				card.yaw -= dx * CONTROLS_SENS
+				card.pitch = math.clamp(card.pitch - dy * CONTROLS_SENS, math.rad(-35), math.rad(35))
+			end
+			card.apply()
+		end)
+	)
+
+	table.insert(
+		controlConns,
+		UserInputService.InputEnded:Connect(function(input: InputObject)
+			local t = input.UserInputType
+			if t ~= Enum.UserInputType.MouseButton1 and t ~= Enum.UserInputType.Touch then
+				return
+			end
+			local card = held
+			if card == nil then
+				return
+			end
+			held = nil
+			say(
+				"%s: processed true=%d false=%d, kamera DUNIA bergeser %.2f derajat, pan=(%.2f, %.2f)",
+				card.name,
+				okCount,
+				leakCount,
+				controlAngleBetween(startLook, worldLook()),
+				card.panX,
+				card.panY
+			)
+		end)
+	)
+
+	say("controls: 3 kartu di bawah layar. Drag di tiap kartu lalu LEPAS -> 1 baris laporan per kartu.")
+	say("controls: 0 derajat = input tersedot GUI (bersih). >0 derajat = drag BOCOR ke TryOnCamera.")
+	say("controls: scroll = zoom, Shift+drag = geser avatar. Hapus: S.controlsOff()")
 end
 
 return M
