@@ -8,6 +8,9 @@
 --   S.wear("A")                -- pasang varian, DIBIARKAN sampai S.off()
 --   S.wear("B") / S.wear("C") / S.wear("D")
 --   S.off()                    -- lepas semua pasangan spike
+--   S.publish(133520807586498)  -- [SERVER] taruh template Decal di ReplicatedStorage
+--   S.previewClient(133520807586498) -- [CLIENT] dua boneka preview: template vs texture saja
+--   S.clear()                   -- hapus boneka (bisa dari tab mana pun)
 --
 -- ===== TEMUAN YANG SUDAH TETAP (jangan diulang) =====
 -- 1. Makeup TIDAK bisa lewat HumanoidDescription (spike #17c): SetAccessories + Apply
@@ -350,6 +353,115 @@ function M.compare(assetId: number?)
 	end
 	root:Destroy()
 	say("compare: A / B / D berjajar di depanmu — satu screenshot cukup. Hapus dengan S.clear()")
+end
+
+-- ===== SPIKE PREVIEW (PR makeup-wardrobe) =====
+-- Pertanyaannya: makeup tidak muncul di preview 3D kartu outfit, karena model preview dibuat DI
+-- CLIENT dari HumanoidDescription (makeup bukan bagian description). Kalau template Decal-nya
+-- direplikasi ke client, apakah anak `WrapTextureTransfer` IKUT ter-replikasi -- dan apakah
+-- hasilnya presisi seperti di karakter asli?
+--
+-- Cara pakai (dua langkah, dua tab Command Bar):
+--   tab SERVER: local S = require(game.ReplicatedStorage.Tests["MakeupDecal.studio"]) S.publish(133520807586498)
+--   tab CLIENT: local S = require(game.ReplicatedStorage.Tests["MakeupDecal.studio"]) S.previewClient(133520807586498)
+-- Lalu lihat dua boneka: kiri = clone template (TPL), kanan = Decal dari texture saja (TEX).
+-- Kalau TPL presisi dan TEX meleset, jalur replikasi template TERBUKTI layak.
+local TEMPLATE_FOLDER = "SPIKE_MakeupTemplates"
+
+-- [SERVER] LoadAsset lalu simpan template Decal di ReplicatedStorage supaya ikut ter-replikasi.
+function M.publish(assetId: number)
+	local ReplicatedStorage = game:GetService("ReplicatedStorage")
+	local root = loadAsset(assetId)
+	if root == nil then
+		return
+	end
+	local decal = findDecal(root)
+	if decal == nil then
+		say("publish: aset %d tidak berisi Decal", assetId)
+		root:Destroy()
+		return
+	end
+	local folder = ReplicatedStorage:FindFirstChild(TEMPLATE_FOLDER)
+	if folder == nil then
+		local f = Instance.new("Folder")
+		f.Name = TEMPLATE_FOLDER
+		f.Parent = ReplicatedStorage
+		folder = f
+	end
+	local old = (folder :: Instance):FindFirstChild(tostring(assetId))
+	if old then
+		old:Destroy()
+	end
+	local copy = decal:Clone()
+	copy.Name = tostring(assetId)
+	copy.Parent = folder
+	say("publish: template %d ditaruh di ReplicatedStorage.%s", assetId, TEMPLATE_FOLDER)
+	dumpTree("publish", copy, 0) -- di server anak WrapTextureTransfer PASTI ada
+	root:Destroy()
+end
+
+-- [CLIENT] Dua boneka berjajar: TPL (clone template replikasi) vs TEX (Decal dari texture saja).
+function M.previewClient(assetId: number)
+	local Players = game:GetService("Players")
+	local ReplicatedStorage = game:GetService("ReplicatedStorage")
+	local player = Players.LocalPlayer
+	if player == nil then
+		say("previewClient HARUS dijalankan dari tab CLIENT")
+		return
+	end
+	local folder = ReplicatedStorage:FindFirstChild(TEMPLATE_FOLDER)
+	local template = if folder then folder:FindFirstChild(tostring(assetId)) else nil
+	if template == nil then
+		say("template %d belum ada di client -> jalankan S.publish(%d) dari tab SERVER dulu", assetId, assetId)
+		return
+	end
+	-- INILAH pertanyaannya: apakah anak WrapTextureTransfer ikut sampai ke client?
+	dumpTree("client-template", template, 0)
+	local wrap = template:FindFirstChildWhichIsA("WrapTextureTransfer" :: any, true)
+	say("client: WrapTextureTransfer ikut ter-replikasi? %s", tostring(wrap ~= nil))
+
+	local char = player.Character
+	local humanoid = if char then char:FindFirstChildOfClass("Humanoid") else nil
+	if humanoid == nil then
+		say("previewClient: karakter belum siap, coba lagi sebentar")
+		return
+	end
+	local desc = (humanoid :: Humanoid):GetAppliedDescription()
+	local cam = workspace.CurrentCamera
+	local base = cam.CFrame * CFrame.new(0, 0, -8)
+	for i, variant in { "TPL", "TEX" } do
+		local okModel, model = pcall(function()
+			return Players:CreateHumanoidModelFromDescriptionAsync(desc, Enum.HumanoidRigType.R15)
+		end)
+		if not okModel then
+			say("boneka %s gagal: %s", variant, tostring(model))
+			continue
+		end
+		local dummy = model :: Model
+		dummy.Name = DUMMY_PREFIX .. variant
+		local head = dummy:FindFirstChild("Head")
+		if head then
+			local decal: Decal
+			if variant == "TPL" then
+				decal = (template :: Decal):Clone()
+			else
+				decal = Instance.new("Decal")
+				decal.Texture = (template :: Decal).Texture
+			end
+			decal.Name = PREFIX .. variant
+			decal.Face = Enum.NormalId.Front
+			decal.Parent = head
+		end
+		labelOf(dummy, variant)
+		dummy:PivotTo(base * CFrame.new((i - 1.5) * 4, 0, 0) * CFrame.Angles(0, math.pi, 0))
+		local dummyRoot = dummy:FindFirstChild("HumanoidRootPart")
+		if dummyRoot then
+			(dummyRoot :: BasePart).Anchored = true
+		end
+		dummy.Parent = workspace
+		say("boneka %s siap (client-side, hanya kamu yang lihat)", variant)
+	end
+	say("previewClient: TPL = clone template, TEX = texture saja. Hapus dengan S.clear()")
 end
 
 return M
