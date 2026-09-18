@@ -798,4 +798,150 @@ function M.anim()
 	say("anim: PLAY vs STEP berdampingan. Hapus: S.animOff()")
 end
 
+-- ===== PR kolom kiri: animasi lewat CERMIN POSE (18 Sep 2026) =====
+-- Spike sebelumnya membuktikan rig di ViewportFrame BEKU (0,000 stud) dan `Animator:StepAnimation`
+-- sudah tidak ada. Tapi karakter ASLI di workspace jelas beranimasi (animation pack pemain).
+-- Ide: clone di kartu tidak perlu "hidup" sendiri -- cukup MENYALIN pose karakter asli tiap frame.
+--   STATIC = clone diam (pembanding, seperti produksi sekarang)
+--   MIRROR = tiap RenderStepped, CFrame tiap part disalin relatif HumanoidRootPart
+-- Semua part clone di-anchor supaya weld/constraint tidak menarik balik CFrame yang kita setel.
+--   local S = require(game.ReplicatedStorage.Tests["PreviewRig.studio"]) S.mirror()
+--   S.mirrorOff()
+local MIRROR_GUI = "SPIKE_Mirror"
+local mirrorConns: { RBXScriptConnection } = {}
+
+-- Pasangan part asli <-> part clone. Clone dibuat dari model yang sama, jadi urutan anaknya identik.
+local function pairParts(src: Instance, dst: Instance): { { s: BasePart, d: BasePart } }
+	local out: { { s: BasePart, d: BasePart } } = {}
+	local function walk(a: Instance, b: Instance)
+		local bc = b:GetChildren()
+		for i, child in a:GetChildren() do
+			local mate = bc[i]
+			if mate == nil or mate.ClassName ~= child.ClassName then
+				continue
+			end
+			if child:IsA("BasePart") and mate:IsA("BasePart") then
+				table.insert(out, { s = child :: BasePart, d = mate :: BasePart })
+			end
+			walk(child, mate)
+		end
+	end
+	walk(src, dst)
+	return out
+end
+
+function M.mirrorOff()
+	for _, conn in mirrorConns do
+		conn:Disconnect()
+	end
+	table.clear(mirrorConns)
+	local player = Players.LocalPlayer
+	local gui = if player then player:FindFirstChild("PlayerGui") else nil
+	local old = if gui then gui:FindFirstChild(MIRROR_GUI) else nil
+	if old then
+		old:Destroy()
+		say("mirrorOff: panel cermin dihapus")
+	end
+end
+
+function M.mirror()
+	if not RunService:IsClient() then
+		say("S.mirror() HARUS dari tab CLIENT")
+		return
+	end
+	local char = firstCharacter()
+	if char == nil then
+		return
+	end
+	M.mirrorOff()
+
+	local screen = Instance.new("ScreenGui")
+	screen.Name = MIRROR_GUI
+	screen.ResetOnSpawn = false
+	screen.Parent = Players.LocalPlayer:WaitForChild("PlayerGui")
+
+	for index, mode in { "STATIC", "MIRROR" } do
+		local viewport = makeViewport(screen, index, mode)
+		local world = Instance.new("WorldModel")
+		world.Name = "Preview"
+		world.Parent = viewport
+
+		local target = char :: Model
+		local wasArchivable = target.Archivable
+		target.Archivable = true
+		local okClone, copy = pcall(function()
+			return target:Clone()
+		end)
+		target.Archivable = wasArchivable
+		if not okClone or typeof(copy) ~= "Instance" then
+			say("%s: clone gagal %s", mode, tostring(copy))
+			continue
+		end
+		local rig = copy :: Model
+		tidyForPreview(rig)
+		if mode == "MIRROR" then
+			-- anchor SEMUA: pose diatur penuh oleh kita, bukan oleh weld/constraint
+			for _, x in rig:GetDescendants() do
+				if x:IsA("BasePart") then
+					(x :: BasePart).Anchored = true
+				end
+			end
+		end
+		rig:PivotTo(CFrame.new())
+		rig.Parent = world
+		frameFullBody(viewport, rig)
+
+		if mode == "MIRROR" then
+			local pairs_ = pairParts(target, rig)
+			local srcRoot = target:FindFirstChild("HumanoidRootPart")
+			local dstRoot = rig:FindFirstChild("HumanoidRootPart")
+			say(
+				"MIRROR: %d pasang part, root asli %s / clone %s",
+				#pairs_,
+				tostring(srcRoot ~= nil),
+				tostring(dstRoot ~= nil)
+			)
+			if srcRoot and dstRoot then
+				local from = srcRoot :: BasePart
+				local to = dstRoot :: BasePart
+				table.insert(
+					mirrorConns,
+					RunService.RenderStepped:Connect(function()
+						if to.Parent == nil or from.Parent == nil then
+							return
+						end
+						local base = to.CFrame
+						local inv = from.CFrame:Inverse()
+						for _, pair in pairs_ do
+							if pair.d ~= to then
+								pair.d.CFrame = base * (inv * pair.s.CFrame)
+							end
+						end
+					end)
+				)
+			end
+		end
+
+		local hand = rig:FindFirstChild("LeftHand", true) or rig:FindFirstChild("Left Arm", true)
+		if hand and hand:IsA("BasePart") then
+			task.spawn(function()
+				local part = hand :: BasePart
+				local last = part.Position
+				local moved = 0
+				for _ = 1, 6 do
+					task.wait(0.5)
+					if part.Parent == nil then
+						return
+					end
+					moved += (part.Position - last).Magnitude
+					last = part.Position
+				end
+				say("%s: tangan bergerak total %.3f stud dalam 3 detik", mode, moved)
+			end)
+		end
+		say("%s siap", mode)
+	end
+	say("mirror: STATIC vs MIRROR berdampingan. Hapus: S.mirrorOff()")
+end
+
 return M
