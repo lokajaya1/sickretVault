@@ -296,5 +296,70 @@ return function()
 	res = svc3:search({ categoryId = "hats" }) :: any
 	eq(res.code, "FAILED", "enum sort hilang")
 
+	-- 11. Klik nama creator (#17d): boleh TANPA kategori, nama & tipe diteruskan ke API
+	local crApi = fakeApi(1)
+	local crSvc = CatalogService.new({ api = crApi, toEnum = fakeEnum })
+	res = crSvc:search({ creatorName = "  94E  ", creatorType = "Group" }) :: any
+	assert(res.ok, "pencarian creator tanpa kategori ok")
+	eq(crApi.lastOpts.creatorName, "94E", "spasi di ujung nama creator dibuang")
+	eq(crApi.lastOpts.creatorType, "CreatorTypeFilter.Group", "creatorType jadi Enum")
+	eq(crApi.lastOpts.assetTypes, nil, "tanpa kategori -> tanpa saringan tipe")
+
+	before = crApi.search
+	crSvc:search({ creatorName = "94E", creatorType = "Group" })
+	eq(crApi.search, before, "creator yang sama dilayani cache")
+	crSvc:search({ creatorName = "94E", creatorType = "User" })
+	eq(crApi.search, before + 1, "creatorType berbeda -> kunci cache berbeda")
+	crSvc:search({ categoryId = "hats", creatorName = "94E" })
+	eq(crApi.lastOpts.assetTypes ~= nil, true, "creator + kategori tetap menyaring tipe")
+
+	-- 12. Tolakan jalur creator
+	eq((crSvc:search({ creatorType = "Group" }) :: any).code, "BAD_ARG", "creatorType tanpa nama ditolak")
+	eq((crSvc:search({ creatorName = "94E", creatorType = "Klan" }) :: any).code, "BAD_ARG", "creatorType ngawur")
+	eq((crSvc:search({ creatorName = "   " }) :: any).code, "BAD_ARG", "nama creator kosong")
+	eq((crSvc:search({}) :: any).code, "BAD_ARG", "tanpa kategori & tanpa creator ditolak")
+
+	-- 13. Stok limited: units 0 = SOLD OUT (jangan dibuang), TotalQuantity ikut, CreatorType diteruskan
+	local stockApi = fakeApi(1)
+	function stockApi.searchCatalog(self: any, opts: any)
+		self.search += 1
+		self.lastOpts = opts
+		return true,
+			{
+				items = {
+					{
+						Id = 1,
+						Name = "Habis terjual",
+						ItemType = "Asset",
+						AssetType = "Hat",
+						Price = 95,
+						CreatorName = "USTA",
+						CreatorType = "Group",
+						ItemRestrictions = { "Collectible" },
+						UnitsAvailableForConsumption = 0,
+						TotalQuantity = 27999,
+					},
+					{
+						Id = 2,
+						Name = "Biasa",
+						ItemType = "Asset",
+						AssetType = "Hat",
+						Price = 50,
+						UnitsAvailableForConsumption = 0,
+						TotalQuantity = 0,
+					},
+				},
+				isFinished = true,
+				pages = 1,
+			}
+	end
+	local sres = CatalogService.new({ api = stockApi, toEnum = fakeEnum }):search({ categoryId = "hats" }) :: any
+	assert(sres.ok, "pencarian stok ok")
+	eq(sres.items[1].unitsLeft, 0, "limited habis -> unitsLeft 0, BUKAN nil")
+	eq(sres.items[1].totalQuantity, 27999, "stok awal ikut")
+	eq(sres.items[1].creatorType, "Group", "creatorType diteruskan ke kartu")
+	eq(sres.items[2].unitsLeft, nil, "item biasa tidak punya sisa stok")
+	eq(sres.items[2].totalQuantity, nil, "item biasa tidak punya stok awal")
+
 	print("PASS CatalogService.spec")
 end

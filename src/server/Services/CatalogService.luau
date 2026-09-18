@@ -4,6 +4,9 @@
 --   local catalog = CatalogService.new({ api = api })
 --   local res = catalog:search({ categoryId = "hats", keyword = "", sort = "Relevance", page = 1 })
 --   local res = catalog:search({ groupId = "clothing", filter = "free", page = 1 })  -- chip baris kedua
+--   local res = catalog:search({ creatorName = "94E", creatorType = "Group" })       -- klik nama creator
+-- Pencarian creator boleh TANPA kategori/grup (semua tipe); spike 19 Sep 2026: nama ngawur -> 0 item,
+-- bukan daftar item gratis bawaan seperti penyakit multi-tipe + Relevance di #17b.
 -- Chip grup (Config/CatalogMenu.FILTERS): "all" (semua tipe grup), "free" (MaxPrice 0),
 -- "limited" (SalesTypeFilter.Collectibles). Grup dengan categoryFilter (FEATURED) memakai
 -- CatalogCategoryFilter dan TIDAK mengirim daftar tipe.
@@ -23,6 +26,7 @@ local log = Log.new("CatalogService")
 local PAGE_LIMIT = 30 -- item per halaman (nilai valid RobloxApi: 10/28/30/60/120)
 local MAX_PAGE = 20 -- cegah client merayapi katalog terlalu dalam
 local MAX_KEYWORD = 50
+local MAX_CREATOR = 50
 local CACHE_SIZE = 300 -- jumlah kombinasi (kategori+keyword+sort) yang disimpan
 local BUSY_TIMEOUT = 15 -- detik menunggu permintaan lain pada kunci yang sama
 -- Spike Studio 18 Sep 2026 (tests/CatalogFilter.studio): SearchCatalogAsync dengan BANYAK AssetTypes
@@ -53,6 +57,8 @@ export type Request = {
 	filter: string?, -- "all" | "free" | "limited" (butuh groupId)
 	keyword: string?,
 	sort: string?,
+	creatorName: string?, -- pencarian per pencipta (nama creator diklik)
+	creatorType: string?, -- "User" | "Group"; butuh creatorName
 	page: number?,
 }
 
@@ -62,7 +68,8 @@ export type Request = {
 --   LowestResalePrice    : harga pasar item limited, hanya berarti bila HasResellers = true
 --   ItemRestrictions     : { "Collectible", "Limited", "LimitedUnique", ... } -> pita LIMITED
 --   PriceStatus          : "Free" | "No Resellers" | ... (teks dari Roblox)
---   UnitsAvailableForConsumption : sisa stok item limited berstok
+--   UnitsAvailableForConsumption : sisa stok limited (0 = SOLD OUT, bukan 'tidak ada data')
+--   TotalQuantity                : stok awal limited (spike 19 Sep 2026: mis. 28029 dari 64000)
 export type ItemDto = {
 	id: number,
 	itemType: string, -- "Asset" | "Bundle"
@@ -70,11 +77,13 @@ export type ItemDto = {
 	bundleType: string?,
 	name: string,
 	creatorName: string?,
+	creatorType: string?, -- "User" | "Group"; dipakai saat nama creator diklik
 	price: number?, -- harga penerbit; nil = tidak dijual
 	resalePrice: number?, -- harga pasar (limited yang punya penjual ulang)
 	limited: boolean?, -- true = item terbatas (pita LIMITED di kartu)
 	priceStatus: string?, -- mis. "Free", "No Resellers" (apa adanya dari Roblox)
-	unitsLeft: number?, -- sisa stok limited berstok
+	unitsLeft: number?, -- sisa stok limited; 0 = habis terjual
+	totalQuantity: number?, -- stok awal limited
 }
 
 export type Response = {
@@ -161,9 +170,17 @@ local function toDto(raw: any): ItemDto?
 	if raw.HasResellers == true and type(raw.LowestResalePrice) == "number" and raw.LowestResalePrice > 0 then
 		resale = raw.LowestResalePrice
 	end
+	-- Spike 19 Sep 2026: units = 0 dengan TotalQuantity besar berarti SOLD OUT — itu informasi,
+	-- bukan ketiadaan data. Karena itu 0 TIDAK dibuang (aturan `> 0` di #17c salah).
 	local units: number? = nil
-	if limited and type(raw.UnitsAvailableForConsumption) == "number" and raw.UnitsAvailableForConsumption > 0 then
-		units = raw.UnitsAvailableForConsumption
+	local total: number? = nil
+	if limited then
+		if type(raw.UnitsAvailableForConsumption) == "number" and raw.UnitsAvailableForConsumption >= 0 then
+			units = raw.UnitsAvailableForConsumption
+		end
+		if type(raw.TotalQuantity) == "number" and raw.TotalQuantity > 0 then
+			total = raw.TotalQuantity
+		end
 	end
 	if type(raw.AssetType) == "string" and BLOCKED_ASSET_TYPES[raw.AssetType] then
 		return nil -- mis. Gear dari CategoryFilter.Featured: tidak bisa dipakai avatar
@@ -175,11 +192,13 @@ local function toDto(raw: any): ItemDto?
 		bundleType = if type(raw.BundleType) == "string" then raw.BundleType else nil,
 		name = if type(raw.Name) == "string" then raw.Name else "",
 		creatorName = if type(raw.CreatorName) == "string" then raw.CreatorName else nil,
+		creatorType = if type(raw.CreatorType) == "string" then raw.CreatorType else nil,
 		price = price,
 		resalePrice = resale,
 		limited = if limited then true else nil,
 		priceStatus = if type(raw.PriceStatus) == "string" then raw.PriceStatus else nil,
 		unitsLeft = units,
+		totalQuantity = total,
 	}
 end
 
@@ -200,6 +219,26 @@ function CatalogService.normalize(raw: any): (Request?, string?)
 	if type(raw) ~= "table" then
 		return nil, "permintaan harus tabel"
 	end
+	local creatorName = raw.creatorName
+	if creatorName ~= nil then
+		if type(creatorName) ~= "string" then
+			return nil, "creatorName harus string"
+		end
+		creatorName = string.gsub(creatorName, "%c", "")
+		creatorName = string.match(creatorName, "^%s*(.-)%s*$") or ""
+		if creatorName == "" or utf8.len(creatorName) == nil or #creatorName > MAX_CREATOR then
+			return nil, "creatorName tidak valid"
+		end
+	end
+	local creatorType = raw.creatorType
+	if creatorType ~= nil then
+		if creatorName == nil then
+			return nil, "creatorType butuh creatorName"
+		end
+		if creatorType ~= "User" and creatorType ~= "Group" then
+			return nil, "creatorType tidak dikenal"
+		end
+	end
 	local categoryId, groupId, filter = raw.categoryId, raw.groupId, raw.filter
 	if filter ~= nil then
 		if type(filter) ~= "string" or not CatalogMenu.isFilter(filter) then
@@ -209,11 +248,13 @@ function CatalogService.normalize(raw: any): (Request?, string?)
 			return nil, "grup tidak dikenal"
 		end
 		categoryId = nil
-	else
+	elseif categoryId ~= nil or creatorName == nil then
 		groupId = nil
 		if type(categoryId) ~= "string" or Categories.byId[categoryId] == nil then
 			return nil, "kategori tidak dikenal"
 		end
+	else
+		groupId = nil -- pencarian per creator tanpa kategori: semua tipe
 	end
 	local keyword = raw.keyword
 	if keyword == nil then
@@ -247,6 +288,8 @@ function CatalogService.normalize(raw: any): (Request?, string?)
 		filter = filter,
 		keyword = keyword,
 		sort = sort,
+		creatorName = creatorName,
+		creatorType = creatorType,
 		page = page,
 	},
 		nil
@@ -256,7 +299,10 @@ local function cacheKey(req: Request): string
 	local what = if req.filter
 		then ("g:%s:%s"):format(req.groupId or "?", req.filter)
 		else ("c:%s"):format(req.categoryId or "?")
-	return ("%s|%s|%s"):format(what, string.lower(req.keyword or ""), req.sort or "Relevance")
+	local creator = if req.creatorName
+		then ("|%s:%s"):format(string.lower(req.creatorName), req.creatorType or "*")
+		else ""
+	return ("%s|%s|%s%s"):format(what, string.lower(req.keyword or ""), req.sort or "Relevance", creator)
 end
 
 local function enumList(self: CatalogService, enumName: string, names: { string }?): ({ any }?, string?)
@@ -316,14 +362,30 @@ local function firstPage(self: CatalogService, req: Request): (boolean, any)
 			return false, { code = "FAILED", message = err or "opsi grup gagal" }
 		end
 		opts = built
-	else
-		local cat = Categories.byId[req.categoryId :: string]
+	elseif req.categoryId then
+		local cat = Categories.byId[req.categoryId]
 		local assetTypes, e1 = enumList(self, "AvatarAssetType", cat.assetTypes)
 		local bundleTypes, e2 = enumList(self, "BundleType", cat.bundleTypes)
 		if e1 or e2 then
 			return false, { code = "FAILED", message = e1 or e2 }
 		end
 		opts = { limit = PAGE_LIMIT, assetTypes = assetTypes, bundleTypes = bundleTypes }
+	else
+		opts = { limit = PAGE_LIMIT } -- pencarian per creator: semua tipe
+	end
+	if req.creatorName then
+		opts.creatorName = req.creatorName
+		if req.creatorType then
+			-- Studio 19 Sep 2026: CatalogSearchParams.CreatorType menerima Enum.CreatorTypeFilter,
+			-- BUKAN Enum.CreatorType ("Invalid type 'CreatorType' for enum 'CreatorTypeFilter'").
+			-- Enumnya tidak ada -> tetap cari dengan NAMA saja, jangan gagalkan seluruh pencarian.
+			local ct = self._toEnum("CreatorTypeFilter", req.creatorType)
+			if ct ~= nil then
+				opts.creatorType = ct
+			else
+				log.warn("CreatorTypeFilter", req.creatorType, "tidak ada; cari dengan nama saja")
+			end
+		end
 	end
 	-- Banyak tipe sekaligus + Relevance -> daftar item gratis bawaan Roblox (spike 18 Sep 2026).
 	-- Berlaku untuk chip grup MAUPUN kategori bertipe banyak (mis. "Layered").
@@ -414,5 +476,9 @@ function CatalogService.search(self: CatalogService, raw: any): Response
 	local hasMore = target < #e.pages or not e.finished
 	return { ok = true, items = items, page = target, hasMore = hasMore and target < MAX_PAGE }
 end
+
+-- Dibuka untuk ItemDetailService (baris Recommended): hasil getBatchItemDetails berbentuk sama
+-- dengan hasil pencarian, jadi kartunya memakai normalizer yang sama persis.
+CatalogService.toDto = toDto
 
 return CatalogService

@@ -16,6 +16,7 @@ return {
 		Checkout = "Checkout", -- client -> server: { { id, itemType } } -> { ok, code? }
 		GetBundle = "GetBundle",
 		GetItemDetail = "GetItemDetail",
+		GetRecommended = "GetRecommended", -- { id, itemType, assetType? } -> { ok, items }
 		GetState = "GetState",
 		Wardrobe = "Wardrobe", -- client -> server: WardrobeValidator.Request -> { ok, code?, outfits?, ... }
 	},

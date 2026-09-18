@@ -5,6 +5,8 @@
 --   detail:open(123, "Asset")    -- YIELD saat memuat -> panggil dari task.spawn di UI
 --   detail:close()               -- tombol Back
 --   detail:retry()               -- tombol "Coba lagi" setelah error
+-- Rekomendasi (#17d) dimuat SESUDAH detail (butuh assetType dari detail) lewat remote terpisah,
+-- jadi panel muncul dulu dan baris Recommended menyusul; gagalnya cukup menyembunyikan barisnya.
 -- Balasan lama diabaikan (buka item lain / tutup saat masih memuat).
 -- `invoke` bisa diganti saat test (tanpa remote).
 
@@ -26,9 +28,12 @@ export type State = {
 	detail: any?, -- ItemDetail.Detail dari server (nil saat memuat / error)
 	loading: boolean,
 	error: string?, -- "RATE_LIMITED" | "NOT_FOUND" | "FAILED" | "BAD_ARG" | "NETWORK"
+	recommended: { any }?, -- daftar ItemDto untuk baris Recommended; nil = belum ada / gagal
+	recLoading: boolean,
 }
 
 export type Invoke = (request: { id: number, itemType: string }) -> any
+export type InvokeRec = (request: { id: number, itemType: string, assetType: string? }) -> any
 
 local DetailController = {}
 DetailController.__index = DetailController
@@ -36,6 +41,7 @@ DetailController.__index = DetailController
 export type DetailController = typeof(setmetatable(
 	{} :: {
 		_invoke: Invoke,
+		_invokeRec: InvokeRec,
 		_state: State,
 		_cache: Cache.Cache,
 		_token: number,
@@ -50,13 +56,29 @@ local function defaultInvoke(request: { id: number, itemType: string }): any
 	return Remotes.func(RemoteNames.Functions.GetItemDetail):InvokeServer(request)
 end
 
-local function closedState(): State
-	return { isOpen = false, id = nil, itemType = nil, detail = nil, loading = false, error = nil }
+local function defaultInvokeRec(request: any): any
+	local Remotes = require(Shared.Net.Remotes)
+	local RemoteNames = require(Shared.Net.RemoteNames)
+	return Remotes.func(RemoteNames.Functions.GetRecommended):InvokeServer(request)
 end
 
-function DetailController.new(invoke: Invoke?, clock: (() -> number)?): DetailController
+local function closedState(): State
+	return {
+		isOpen = false,
+		id = nil,
+		itemType = nil,
+		detail = nil,
+		loading = false,
+		error = nil,
+		recommended = nil,
+		recLoading = false,
+	}
+end
+
+function DetailController.new(invoke: Invoke?, clock: (() -> number)?, invokeRec: InvokeRec?): DetailController
 	return setmetatable({
 		_invoke = invoke or defaultInvoke,
+		_invokeRec = invokeRec or defaultInvokeRec,
 		_state = closedState(),
 		_cache = Cache.new({ ttl = CACHE_TTL, maxSize = CACHE_SIZE, clock = clock }),
 		_token = 0,
@@ -99,6 +121,7 @@ function DetailController._load(self: DetailController)
 	if hit ~= nil then
 		s.detail, s.loading, s.error = hit, false, nil
 		self:_emit()
+		self:_loadRecommended(token)
 		return
 	end
 	s.detail, s.loading, s.error = nil, true, nil
@@ -120,6 +143,42 @@ function DetailController._load(self: DetailController)
 		self._cache:set(key, res.detail)
 	end
 	self:_emit()
+	if s.detail ~= nil then
+		self:_loadRecommended(token)
+	end
+end
+
+-- Baris Recommended. Dipanggil SESUDAH detail ada (assetType-nya dari situ). Gagal = baris
+-- disembunyikan, bukan pesan error: rekomendasi bukan isi utama halaman.
+function DetailController._loadRecommended(self: DetailController, token: number)
+	local s = self._state
+	local id, itemType = s.id :: number, s.itemType :: string
+	local assetType = if type(s.detail) == "table" then s.detail.assetType else nil
+	if itemType == "Asset" and type(assetType) ~= "string" then
+		return -- aset tanpa tipe: server pasti menolak, jangan buang panggilan
+	end
+	local key = "rec:" .. itemType .. ":" .. tostring(id)
+	local hit = self._cache:get(key)
+	if hit ~= nil then
+		s.recommended, s.recLoading = hit, false
+		self:_emit()
+		return
+	end
+	s.recommended, s.recLoading = nil, true
+	self:_emit()
+
+	local ok, res = pcall(self._invokeRec, { id = id, itemType = itemType, assetType = assetType })
+	if token ~= self._token then
+		return -- sudah buka item lain / ditutup
+	end
+	s.recLoading = false
+	if ok and type(res) == "table" and res.ok and type(res.items) == "table" then
+		s.recommended = res.items
+		self._cache:set(key, res.items)
+	else
+		log.debug("rekomendasi tidak tersedia", itemType, id)
+	end
+	self:_emit()
 end
 
 -- Buka panel untuk item. Item yang sama & sudah termuat/sedang dimuat -> tidak memanggil ulang.
@@ -136,7 +195,16 @@ function DetailController.open(self: DetailController, id: number, itemType: str
 	if s.isOpen and s.id == id and s.itemType == itemType and s.error == nil then
 		return
 	end
-	self._state = { isOpen = true, id = id, itemType = itemType, detail = nil, loading = false, error = nil }
+	self._state = {
+		isOpen = true,
+		id = id,
+		itemType = itemType,
+		detail = nil,
+		loading = false,
+		error = nil,
+		recommended = nil,
+		recLoading = false,
+	}
 	self:_load()
 end
 

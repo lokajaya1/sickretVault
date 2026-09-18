@@ -14,6 +14,7 @@ return {
 		Checkout = { capacity = 3, refillPerSec = 0.2 }, -- 1 prompt tiap ~5 dtk
 		GetBundle = { capacity = 10, refillPerSec = 2 },
 		GetItemDetail = { capacity = 10, refillPerSec = 2 },
+		GetRecommended = { capacity = 6, refillPerSec = 1 }, -- 2 panggilan API per permintaan
 		GetState = { capacity = 5, refillPerSec = 1 },
 		Wardrobe = { capacity = 8, refillPerSec = 1 }, -- save/rename memanggil filter teks (mahal)
 	},

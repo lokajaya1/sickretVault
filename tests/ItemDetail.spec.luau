@@ -86,5 +86,27 @@ return function()
 	eq(ItemDetail.fromRaw({ Id = 1.5 }, "Asset"), nil, "Id pecahan")
 	eq(ItemDetail.fromRaw({ Id = 1, ItemType = "Emote" }, "Asset"), nil, "itemType asing")
 
+	-- 6. Stok limited (#17d): 0 = habis terjual, bukan "tidak ada data"
+	local habis = ItemDetail.fromRaw({
+		Id = 8,
+		Name = "Yum Yum",
+		ItemRestrictions = { "Collectible" },
+		UnitsAvailableForConsumption = 0,
+		TotalQuantity = 27999,
+	}, "Asset")
+	assert(habis, "limited habis terbaca")
+	eq(habis.unitsLeft, 0, "sisa stok 0 dipertahankan")
+	eq(habis.totalQuantity, 27999, "stok awal")
+
+	local biasa = ItemDetail.fromRaw({
+		Id = 9,
+		Name = "Topi biasa",
+		UnitsAvailableForConsumption = 0,
+		TotalQuantity = 0,
+	}, "Asset")
+	assert(biasa, "item biasa terbaca")
+	eq(biasa.unitsLeft, nil, "item biasa tidak punya sisa stok")
+	eq(biasa.totalQuantity, nil, "item biasa tidak punya stok awal")
+
 	print("PASS ItemDetail.spec")
 end

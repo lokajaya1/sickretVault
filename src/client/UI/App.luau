@@ -648,6 +648,19 @@ function App.mount(opts: Options?): App
 				self:openWardrobe()
 			end
 		end,
+		-- Nama creator diklik: panel detail ditutup, katalog berganti jadi semua karya pencipta itu.
+		onCreator = function(d)
+			local name = d.creatorName
+			if type(name) ~= "string" or name == "" or name == "Unknown" then
+				return
+			end
+			detail:close()
+			panel:openCreator(name, d.creatorType)
+		end,
+		-- Kartu di baris Recommended: buka detailnya (panel yang sama, item lain).
+		onRecommended = function(item)
+			self:openDetail(item.id, item.itemType)
+		end,
 		-- Tap part bundle: sedang dipakai -> lepas part itu; belum -> pakai part itu saja.
 		onPartActivated = function(part, d)
 			if outfit:isWorn(part.assetId) then
