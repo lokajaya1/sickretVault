@@ -11,6 +11,8 @@
 --   detail:destroy()
 -- Isi: Back + judul; thumbnail; nama; creator (+verified); tipe; harga; Try On/Remove + Buy + 🛒;
 -- deskripsi; "Included Items" (part bundle, tap -> onPartActivated).
+-- #17d: nama creator BISA DIKLIK (teks biasa, emas saat disentuh) -> onCreator; sisa stok item
+-- limited; baris "Recommended" geser mendatar di bawah tombol beli -> onRecommended.
 
 local Shared = game:GetService("ReplicatedStorage"):WaitForChild("Shared")
 local ItemDetail = require(Shared.Domain.ItemDetail)
@@ -24,6 +26,9 @@ local BUTTON_H = 40
 local CART_W = 56 -- tombol 🛒 di kanan Buy
 local PART_MIN = 84 -- lebar minimum tile part
 local PART_TEXT = 28 -- tinggi nama di bawah gambar part
+local REC_W = 96 -- lebar kartu Recommended
+local REC_H = 130 -- tinggi baris Recommended (gambar + nama + harga)
+local REC_TEXT = 34 -- tinggi nama + harga di bawah gambar
 local ROBUX = utf8.char(0xE002) -- ikon Robux bawaan font Roblox
 local VERIFIED = utf8.char(0xE000) -- lencana verified bawaan font Roblox
 
@@ -45,10 +50,13 @@ export type Props = {
 	onCart: ((detail: any) -> ())?, -- tombol 🛒 tambah / buang dari keranjang (nil = disembunyikan)
 	isInCart: ((detail: any) -> boolean)?,
 	onPartActivated: (part: any, detail: any) -> (),
+	onCreator: ((detail: any) -> ())?, -- nama creator diklik (nil = tidak bisa diklik)
+	onRecommended: ((item: any) -> ())?, -- kartu di baris Recommended diklik
 	onBack: (() -> ())?, -- default: controller:close()
 }
 
 type Tile = { button: ImageButton, stroke: UIStroke, part: any, conn: RBXScriptConnection? }
+type RecTile = { button: ImageButton, conn: RBXScriptConnection? }
 
 local ItemDetailPanel = {}
 ItemDetailPanel.__index = ItemDetailPanel
@@ -65,7 +73,12 @@ export type ItemDetailPanel = typeof(setmetatable(
 		_top: Frame,
 		_thumb: ImageLabel,
 		_name: TextLabel,
-		_creator: TextLabel,
+		_creator: TextButton,
+		_stock: TextLabel,
+		_recHeader: TextLabel,
+		_recRow: ScrollingFrame,
+		_recTiles: { RecTile },
+		_recKey: string?,
 		_type: TextLabel,
 		_price: TextLabel,
 		_favorites: TextLabel,
@@ -305,7 +318,23 @@ function ItemDetailPanel.new(props: Props): ItemDetailPanel
 		LayoutOrder = 1,
 		Parent = info,
 	})
-	local creator = label({ Name = "Creator", TextColor3 = Tokens.Color.TextMuted, LayoutOrder = 2, Parent = info })
+	-- Nama creator: tetap terlihat seperti teks biasa, tapi bisa diklik (emas saat disentuh).
+	local creator: TextButton = make("TextButton", {
+		Name = "Creator",
+		Text = "",
+		BackgroundTransparency = 1,
+		AutoButtonColor = false,
+		FontFace = Tokens.Font.Regular,
+		TextSize = Tokens.TextSize.Body,
+		TextColor3 = Tokens.Color.TextMuted,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextYAlignment = Enum.TextYAlignment.Top,
+		TextWrapped = true,
+		AutomaticSize = Enum.AutomaticSize.Y,
+		Size = UDim2.new(1, 0, 0, 0),
+		LayoutOrder = 2,
+		Parent = info,
+	})
 	local typeLabel = label({
 		Name = "Type",
 		TextSize = Tokens.TextSize.Caption,
@@ -325,6 +354,13 @@ function ItemDetailPanel.new(props: Props): ItemDetailPanel
 		TextSize = Tokens.TextSize.Caption,
 		TextColor3 = Tokens.Color.TextMuted,
 		LayoutOrder = 5,
+		Parent = info,
+	})
+	local stock = label({
+		Name = "Stock",
+		TextSize = Tokens.TextSize.Caption,
+		TextColor3 = Tokens.Color.TextMuted,
+		LayoutOrder = 6,
 		Parent = info,
 	})
 
@@ -371,17 +407,46 @@ function ItemDetailPanel.new(props: Props): ItemDetailPanel
 		Parent = actions,
 	})
 
+	-- Baris Recommended: geser MENDATAR, tepat di bawah tombol beli (keputusan UX 19 Sep 2026).
+	local recHeader = label({
+		Name = "RecommendedHeader",
+		Text = "Recommended",
+		FontFace = Tokens.Font.Bold,
+		LayoutOrder = 3,
+		Visible = false,
+		Parent = scroll,
+	})
+	local recRow: ScrollingFrame = make("ScrollingFrame", {
+		Name = "Recommended",
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		LayoutOrder = 4,
+		Visible = false,
+		Size = UDim2.new(1, 0, 0, REC_H),
+		ScrollingDirection = Enum.ScrollingDirection.X,
+		AutomaticCanvasSize = Enum.AutomaticSize.X,
+		CanvasSize = UDim2.new(0, 0, 0, 0),
+		ScrollBarThickness = 0,
+		Parent = scroll,
+	}, {
+		make("UIListLayout", {
+			FillDirection = Enum.FillDirection.Horizontal,
+			SortOrder = Enum.SortOrder.LayoutOrder,
+			Padding = UDim.new(0, Tokens.Space.S),
+		}),
+	})
+
 	local descHeader = label({
 		Name = "DescriptionHeader",
 		Text = "Description",
 		FontFace = Tokens.Font.Bold,
-		LayoutOrder = 3,
+		LayoutOrder = 5,
 		Parent = scroll,
 	})
 	local desc = label({
 		Name = "Description",
 		TextColor3 = Tokens.Color.TextMuted,
-		LayoutOrder = 4,
+		LayoutOrder = 6,
 		Parent = scroll,
 	})
 
@@ -389,7 +454,7 @@ function ItemDetailPanel.new(props: Props): ItemDetailPanel
 		Name = "PartsHeader",
 		Text = "Included Items",
 		FontFace = Tokens.Font.Bold,
-		LayoutOrder = 5,
+		LayoutOrder = 7,
 		Parent = scroll,
 	})
 	local partsLayout: UIGridLayout = make("UIGridLayout", {
@@ -400,7 +465,7 @@ function ItemDetailPanel.new(props: Props): ItemDetailPanel
 	local parts: Frame = make("Frame", {
 		Name = "Parts",
 		BackgroundTransparency = 1,
-		LayoutOrder = 6,
+		LayoutOrder = 8,
 		AutomaticSize = Enum.AutomaticSize.Y,
 		Size = UDim2.new(1, 0, 0, 0),
 		Parent = scroll,
@@ -419,6 +484,11 @@ function ItemDetailPanel.new(props: Props): ItemDetailPanel
 		_thumb = thumb,
 		_name = name,
 		_creator = creator,
+		_stock = stock,
+		_recHeader = recHeader,
+		_recRow = recRow,
+		_recTiles = {},
+		_recKey = nil,
 		_type = typeLabel,
 		_price = price,
 		_favorites = favorites,
@@ -446,6 +516,29 @@ function ItemDetailPanel.new(props: Props): ItemDetailPanel
 			else
 				ctl:close()
 			end
+		end)
+	)
+	table.insert(
+		conns,
+		creator.Activated:Connect(function()
+			local d = self._detail
+			if d and props.onCreator then
+				props.onCreator(d)
+			end
+		end)
+	)
+	table.insert(
+		conns,
+		creator.MouseEnter:Connect(function()
+			if props.onCreator then
+				creator.TextColor3 = Tokens.Color.Accent
+			end
+		end)
+	)
+	table.insert(
+		conns,
+		creator.MouseLeave:Connect(function()
+			creator.TextColor3 = Tokens.Color.TextMuted
 		end)
 	)
 	table.insert(
@@ -579,6 +672,97 @@ function ItemDetailPanel._buildTiles(self: ItemDetailPanel, d: any)
 	end
 end
 
+function ItemDetailPanel._clearRecs(self: ItemDetailPanel)
+	for _, tile in self._recTiles do
+		if tile.conn then
+			tile.conn:Disconnect()
+		end
+		tile.button:Destroy()
+	end
+	table.clear(self._recTiles)
+	self._recKey = nil
+end
+
+-- Kartu Recommended memakai DTO yang sama dengan kartu katalog (id/itemType/name/price).
+function ItemDetailPanel._buildRecs(self: ItemDetailPanel, key: string, items: { any })
+	if self._recKey == key then
+		return
+	end
+	self:_clearRecs()
+	self._recKey = key
+	for i, item in items do
+		local kind = if item.itemType == "Bundle" then "BundleThumbnail" else "Asset"
+		local b: ImageButton = make("ImageButton", {
+			Name = "Rec_" .. tostring(item.id),
+			AutoButtonColor = true,
+			BackgroundColor3 = Tokens.Color.PanelRaised,
+			BackgroundTransparency = Tokens.Transparency.PanelRaised,
+			BorderSizePixel = 0,
+			LayoutOrder = i,
+			Size = UDim2.fromOffset(REC_W, REC_H),
+			Parent = self._recRow,
+		}, { corner(Tokens.Radius.Medium) })
+		make("ImageLabel", {
+			Name = "Thumbnail",
+			BackgroundTransparency = 1,
+			Image = thumbnail(kind, item.id, 150),
+			ScaleType = Enum.ScaleType.Fit,
+			Position = UDim2.fromOffset(Tokens.Space.XS, Tokens.Space.XS),
+			Size = UDim2.new(1, -Tokens.Space.XS * 2, 1, -REC_TEXT - Tokens.Space.XS),
+			Parent = b,
+		})
+		label({
+			Name = "RecName",
+			Text = if type(item.name) == "string" and item.name ~= "" then item.name else "Item",
+			TextSize = Tokens.TextSize.Caption,
+			TextWrapped = false,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+			TextXAlignment = Enum.TextXAlignment.Center,
+			AutomaticSize = Enum.AutomaticSize.None,
+			Position = UDim2.new(0, Tokens.Space.XS, 1, -REC_TEXT),
+			Size = UDim2.new(1, -Tokens.Space.XS * 2, 0, REC_TEXT / 2),
+			Parent = b,
+		})
+		local price = item.resalePrice or item.price
+		label({
+			Name = "RecPrice",
+			Text = if price == nil then "Off Sale" elseif price <= 0 then "Free" else ROBUX .. " " .. tostring(price),
+			TextSize = Tokens.TextSize.Caption,
+			TextColor3 = if price == nil then Tokens.Color.TextMuted else Tokens.Color.Robux,
+			TextWrapped = false,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+			TextXAlignment = Enum.TextXAlignment.Center,
+			AutomaticSize = Enum.AutomaticSize.None,
+			Position = UDim2.new(0, Tokens.Space.XS, 1, -REC_TEXT / 2),
+			Size = UDim2.new(1, -Tokens.Space.XS * 2, 0, REC_TEXT / 2),
+			Parent = b,
+		})
+		local tile: RecTile = { button = b, conn = nil }
+		tile.conn = b.Activated:Connect(function()
+			if self._props.onRecommended then
+				self._props.onRecommended(item)
+			end
+		end)
+		table.insert(self._recTiles, tile)
+	end
+end
+
+-- Teks stok item limited. units = 0 berarti habis terjual (spike 19 Sep 2026), bukan "tidak ada data".
+local function stockText(d: any): string
+	if not d.isLimited or type(d.unitsLeft) ~= "number" then
+		return ""
+	end
+	if d.unitsLeft <= 0 then
+		return if type(d.totalQuantity) == "number"
+			then ("Sold out - %s made"):format(shortNumber(d.totalQuantity))
+			else "Sold out"
+	end
+	if type(d.totalQuantity) == "number" then
+		return ("%s of %s left"):format(shortNumber(d.unitsLeft), shortNumber(d.totalQuantity))
+	end
+	return ("%s left"):format(shortNumber(d.unitsLeft))
+end
+
 function ItemDetailPanel._render(self: ItemDetailPanel, state: any)
 	self.instance.Visible = state.isOpen == true
 	if not state.isOpen then
@@ -612,6 +796,10 @@ function ItemDetailPanel._render(self: ItemDetailPanel, state: any)
 	if not has then
 		self._title.Text = if state.itemType == "Bundle" then "Bundle Details" else "Item Details"
 		self._creator.Text = ""
+		self._stock.Text = ""
+		self._recHeader.Visible = false
+		self._recRow.Visible = false
+		self:_clearRecs()
 		self._type.Text = ""
 		self._price.Text = ""
 		self._favorites.Text = ""
@@ -628,6 +816,7 @@ function ItemDetailPanel._render(self: ItemDetailPanel, state: any)
 	self._price.Text = pText
 	self._price.TextColor3 = pColor
 	self._favorites.Text = if d.favoriteCount then "♥ " .. shortNumber(d.favoriteCount) else ""
+	self._stock.Text = stockText(d)
 	self._desc.Text = if d.description ~= "" then d.description else "No description."
 	-- Buy: tidak dijual -> abu-abu & tidak bereaksi
 	local forSale = d.isForSale == true
@@ -647,8 +836,20 @@ function ItemDetailPanel._render(self: ItemDetailPanel, state: any)
 		self:_clearTiles()
 	end
 
+	-- Baris Recommended menyusul sesudah detail; kosong / gagal -> barisnya disembunyikan saja.
+	local recs = if type(state.recommended) == "table" then state.recommended else nil
+	local hasRecs = recs ~= nil and #recs > 0
+	self._recHeader.Visible = hasRecs
+	self._recRow.Visible = hasRecs
+	if hasRecs then
+		self:_buildRecs(d.itemType .. ":" .. tostring(d.id), recs :: { any })
+	else
+		self:_clearRecs()
+	end
+
 	if changed then
 		self._scroll.CanvasPosition = Vector2.zero
+		self._recRow.CanvasPosition = Vector2.zero
 	end
 	self:refreshWorn()
 end
@@ -699,6 +900,7 @@ end
 function ItemDetailPanel.destroy(self: ItemDetailPanel)
 	self._unsubscribe()
 	self:_clearTiles()
+	self:_clearRecs()
 	for _, c in self._conns do
 		c:Disconnect()
 	end

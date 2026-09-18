@@ -49,7 +49,7 @@ export type SearchOptions = {
 	maxPrice: number?,
 	includeOffSale: boolean?,
 	creatorName: string?,
-	creatorType: any?, -- Enum.CreatorType (User | Group); tidak diset = semua pencipta
+	creatorType: any?, -- Enum.CreatorTypeFilter (BUKAN CreatorType); tidak diset = semua pencipta
 	limit: number?, -- 10 | 28 | 30 | 60 | 120 (default 30)
 }
 

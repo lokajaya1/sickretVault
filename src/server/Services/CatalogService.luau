@@ -376,11 +376,15 @@ local function firstPage(self: CatalogService, req: Request): (boolean, any)
 	if req.creatorName then
 		opts.creatorName = req.creatorName
 		if req.creatorType then
-			local ct = self._toEnum("CreatorType", req.creatorType)
-			if ct == nil then
-				return false, { code = "FAILED", message = "CreatorType." .. req.creatorType .. " tidak ada" }
+			-- Studio 19 Sep 2026: CatalogSearchParams.CreatorType menerima Enum.CreatorTypeFilter,
+			-- BUKAN Enum.CreatorType ("Invalid type 'CreatorType' for enum 'CreatorTypeFilter'").
+			-- Enumnya tidak ada -> tetap cari dengan NAMA saja, jangan gagalkan seluruh pencarian.
+			local ct = self._toEnum("CreatorTypeFilter", req.creatorType)
+			if ct ~= nil then
+				opts.creatorType = ct
+			else
+				log.warn("CreatorTypeFilter", req.creatorType, "tidak ada; cari dengan nama saja")
 			end
-			opts.creatorType = ct
 		end
 	end
 	-- Banyak tipe sekaligus + Relevance -> daftar item gratis bawaan Roblox (spike 18 Sep 2026).

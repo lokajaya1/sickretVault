@@ -6,6 +6,8 @@
 --   catalog:setCategory("hats")      -- muat halaman 1 (kategori tunggal)
 --   catalog:setFilter("clothing", "free") -- chip baris kedua: all | free | limited satu grup
 --   catalog:loadMore()               -- halaman berikutnya (abaikan jika sedang memuat / habis)
+--   catalog:setCreator("94E", "Group") -- nama creator diklik di halaman detail (#17d)
+--   catalog:clearCreator()           -- chip "94E x" di header: kembali ke kategori sebelumnya
 -- `invoke` bisa diganti saat test (tanpa remote).
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -24,6 +26,7 @@ export type Item = {
 	bundleType: string?,
 	name: string,
 	creatorName: string?,
+	creatorType: string?,
 	price: number?,
 }
 
@@ -31,6 +34,8 @@ export type State = {
 	categoryId: string?, -- kategori tunggal yang aktif (nil saat chip filter dipakai)
 	groupId: string?, -- grup mozaik untuk chip filter
 	filter: string?, -- "all" | "free" | "limited" (nil = memakai categoryId)
+	creatorName: string?, -- mode hasil creator: kategori & grup dilepas, semua tipe ikut
+	creatorType: string?, -- "User" | "Group"
 	keyword: string,
 	sort: string,
 	items: { Item },
@@ -50,6 +55,7 @@ export type CatalogController = typeof(setmetatable(
 		_invoke: Invoke,
 		_state: State,
 		_seen: { [string]: boolean },
+		_before: { categoryId: string?, groupId: string?, filter: string? }?,
 		_token: number,
 		_listeners: { (State) -> () },
 	},
@@ -70,6 +76,8 @@ function CatalogController.new(invoke: Invoke?): CatalogController
 			categoryId = first.id,
 			groupId = nil,
 			filter = nil,
+			creatorName = nil,
+			creatorType = nil,
 			keyword = "",
 			sort = "Relevance",
 			items = {},
@@ -79,6 +87,7 @@ function CatalogController.new(invoke: Invoke?): CatalogController
 			error = nil,
 		},
 		_seen = {},
+		_before = nil,
 		_token = 0,
 		_listeners = {},
 	}, CatalogController)
@@ -135,6 +144,8 @@ function CatalogController._fetch(self: CatalogController)
 		categoryId = if s.filter then nil else s.categoryId,
 		groupId = s.groupId,
 		filter = s.filter,
+		creatorName = s.creatorName,
+		creatorType = s.creatorType,
 		keyword = s.keyword,
 		sort = s.sort,
 		page = page,
@@ -171,6 +182,7 @@ function CatalogController.setCategory(self: CatalogController, categoryId: stri
 	self._state.categoryId = categoryId
 	self._state.groupId = nil
 	self._state.filter = nil
+	self:_forgetCreator()
 	self:_reset()
 	self:_fetch()
 end
@@ -188,6 +200,57 @@ function CatalogController.setFilter(self: CatalogController, groupId: string, f
 	self._state.groupId = groupId
 	self._state.filter = filter
 	self._state.categoryId = nil
+	self:_forgetCreator()
+	self:_reset()
+	self:_fetch()
+end
+
+-- Keluar dari mode creator tanpa memuat ulang (dipakai setCategory / setFilter yang sudah memuat).
+function CatalogController._forgetCreator(self: CatalogController)
+	self._state.creatorName = nil
+	self._state.creatorType = nil
+	self._before = nil
+end
+
+-- Nama creator diklik di halaman detail: kategori & grup dilepas supaya SEMUA tipe karyanya muncul
+-- (spike 19 Sep 2026: CreatorName tanpa saringan tipe memberi hasil waras; nama ngawur -> 0 item).
+-- Keyword dikosongkan: kata kunci lama + creator baru hampir selalu memberi nol hasil.
+function CatalogController.setCreator(self: CatalogController, creatorName: string, creatorType: string?)
+	if type(creatorName) ~= "string" or creatorName == "" then
+		log.warn("nama creator tidak valid", creatorName)
+		return
+	end
+	if creatorType ~= "User" and creatorType ~= "Group" then
+		creatorType = nil -- tipe asing / tidak diketahui: cari dengan nama saja
+	end
+	local s = self._state
+	if s.creatorName == nil then
+		self._before = { categoryId = s.categoryId, groupId = s.groupId, filter = s.filter }
+	end
+	s.creatorName = creatorName
+	s.creatorType = creatorType
+	s.categoryId = nil
+	s.groupId = nil
+	s.filter = nil
+	s.keyword = ""
+	self:_reset()
+	self:_fetch()
+end
+
+-- Chip "<nama> x" di header: kembali ke kategori/chip yang aktif sebelum masuk mode creator.
+function CatalogController.clearCreator(self: CatalogController)
+	local s = self._state
+	if s.creatorName == nil then
+		return
+	end
+	local before = self._before or { categoryId = Categories.list[1].id }
+	self:_forgetCreator()
+	s.categoryId = before.categoryId
+	s.groupId = before.groupId
+	s.filter = before.filter
+	if s.categoryId == nil and s.groupId == nil then
+		s.categoryId = Categories.list[1].id
+	end
 	self:_reset()
 	self:_fetch()
 end

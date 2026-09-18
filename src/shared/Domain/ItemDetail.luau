@@ -22,6 +22,8 @@ export type Detail = {
 	assetType: string?, -- aset: nama tipe, mis. "Hat"
 	bundleType: string?, -- bundle: mis. "BodyParts", "Animations"
 	isLimited: boolean,
+	unitsLeft: number?, -- limited: sisa stok; 0 = habis terjual (spike 19 Sep 2026)
+	totalQuantity: number?, -- limited: stok awal
 	parts: { Types.BundlePart }?, -- bundle: diisi server dari BundleService
 }
 
@@ -82,6 +84,15 @@ function ItemDetail.fromRaw(raw: any, itemType: string): Detail?
 			end
 		end
 	end
+	-- Stok limited. `units = 0` dengan TotalQuantity besar berarti SOLD OUT, jadi nol TIDAK dibuang;
+	-- yang dibuang hanya angka untuk item non-limited (di sana 0/0 memang berarti 'tidak berlaku').
+	local unitsLeft: number? = nil
+	local totalQuantity: number? = nil
+	if isLimited then
+		unitsLeft = nonNegative(raw.UnitsAvailableForConsumption)
+		local total = nonNegative(raw.TotalQuantity)
+		totalQuantity = if total ~= nil and total > 0 then total else nil
+	end
 	-- IsPurchasable hanya ada di GetItemDetailsAsync; bila tidak ada, anggap dijual jika ada harga.
 	local purchasable = if type(raw.IsPurchasable) == "boolean" then raw.IsPurchasable else price ~= nil
 
@@ -100,6 +111,8 @@ function ItemDetail.fromRaw(raw: any, itemType: string): Detail?
 		assetType = if kind == "Asset" then Map.normalize(raw.AssetType) else nil,
 		bundleType = if kind == "Bundle" then str(raw.BundleType) else nil,
 		isLimited = isLimited,
+		unitsLeft = unitsLeft,
+		totalQuantity = totalQuantity,
 		parts = nil,
 	}
 end

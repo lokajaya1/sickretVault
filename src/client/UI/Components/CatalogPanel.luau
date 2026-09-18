@@ -5,6 +5,7 @@
 --      baris 2 = chip All / Free / Limited lalu kategori grup aktif) + grid ItemCard,
 --      plus tombol kembali ke menu. Chip filter -> controller:setFilter(grup, chip).
 --   panel:showMenu()   panel:openGroup(group)   panel:page() -- "menu" | "list"
+--   panel:openCreator("94E", "Group")  -- hasil satu pencipta (#17d): tanpa grup, tanpa chip tipe
 -- Posisi & ukuran dari Shared/Util/PanelLayout: layar lebar -> panel di kanan; ponsel tegak -> panel dari bawah.
 -- Hanya MENAMPILKAN state CatalogController dan meneruskan aksi pemain ke controller.
 --   local panel = CatalogPanel.new({ controller = catalog, parent = screenGui, onItemActivated = fn })
@@ -61,6 +62,7 @@ export type CatalogPanel = typeof(setmetatable(
 		_grid: ScrollingFrame,
 		_menu: CategoryMenu.CategoryMenu,
 		_title: TextLabel,
+		_creatorName: string?,
 		_back: TextButton,
 		_tabBar: ScrollingFrame,
 		_groupBar: ScrollingFrame,
@@ -421,6 +423,7 @@ function CatalogPanel.new(props: Props): CatalogPanel
 		_grid = grid,
 		_menu = menu,
 		_title = title,
+		_creatorName = nil,
 		_back = back,
 		_tabBar = tabBar,
 		_groupBar = groupBar,
@@ -817,6 +820,7 @@ function CatalogPanel.showMenu(self: CatalogPanel)
 	self:disarm()
 	self._page = "menu"
 	self._group = nil
+	self._creatorName = nil
 	self:_applyPage()
 end
 
@@ -828,6 +832,7 @@ function CatalogPanel.openGroup(self: CatalogPanel, group: CatalogMenu.Group)
 	self:disarm()
 	self._page = "list"
 	self._group = group
+	self._creatorName = nil
 	self._wearing = false
 	self._lastCount = 0
 	self._grid.CanvasPosition = Vector2.zero
@@ -836,6 +841,20 @@ function CatalogPanel.openGroup(self: CatalogPanel, group: CatalogMenu.Group)
 	self:_keepGroupScroll() -- baris grup tetap di posisi pemain (dulu dipaksa ke 0 di sini)
 	self:_applyPage()
 	spawnCall(self._props.controller.setFilter, self._props.controller, group.id, "all")
+end
+
+-- Hasil satu pencipta (nama creator diklik di halaman detail). Tidak punya grup, jadi chip tipe
+-- disembunyikan: yang ditampilkan SEMUA karya pencipta itu. Tombol "<" kembali ke menu kategori.
+function CatalogPanel.openCreator(self: CatalogPanel, creatorName: string, creatorType: string?)
+	self:disarm()
+	self._page = "list"
+	self._group = nil
+	self._creatorName = creatorName
+	self._wearing = false
+	self._lastCount = 0
+	self._grid.CanvasPosition = Vector2.zero
+	self:_applyPage()
+	spawnCall(self._props.controller.setCreator, self._props.controller, creatorName, creatorType)
 end
 
 -- Chip All / Free / Limited pada grup yang sedang dibuka.
@@ -867,16 +886,21 @@ function CatalogPanel._applyPage(self: CatalogPanel)
 	self._grid.Visible = not isMenu
 	self._status.Visible = not isMenu
 	self._retry.Visible = not isMenu and self._hasError
-	self._title.Text = if isMenu or group == nil then "Catalog" else group.label
+	self._title.Text = if isMenu
+		then "Catalog"
+		elseif self._creatorName then "By " .. self._creatorName
+		elseif group == nil then "Catalog"
+		else group.label
 
 	if isMenu then
 		self._menu:setArea(0, self._contentTop, self._innerW, self._innerH - self._contentTop)
 		return
 	end
 
-	-- Chip filter berlaku di semua grup -> selalu tampil di halaman daftar item.
+	-- Chip filter berlaku di semua grup -> selalu tampil di halaman daftar item, KECUALI di hasil
+	-- satu pencipta (di sana tidak ada grup yang bisa disaring).
 	for _, b in self._filterTabs do
-		b.Visible = true
+		b.Visible = self._creatorName == nil
 	end
 
 	-- Tab: hanya kategori milik grup ini (Wearing tetap di paling kiri bila ada).

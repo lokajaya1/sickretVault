@@ -130,6 +130,7 @@ local searchLimiter = RateLimiter.fromLimits(RemoteNames.Functions.CatalogSearch
 local stateLimiter = RateLimiter.fromLimits(RemoteNames.Functions.GetState)
 local bundleLimiter = RateLimiter.fromLimits(RemoteNames.Functions.GetBundle)
 local detailLimiter = RateLimiter.fromLimits(RemoteNames.Functions.GetItemDetail)
+local recLimiter = RateLimiter.fromLimits(RemoteNames.Functions.GetRecommended)
 local checkoutLimiter = RateLimiter.fromLimits(RemoteNames.Functions.Checkout)
 local wardrobeLimiter = RateLimiter.fromLimits(RemoteNames.Functions.Wardrobe)
 
@@ -316,6 +317,37 @@ Remotes.func(RemoteNames.Functions.GetItemDetail).OnServerInvoke = function(play
 	return { ok = true, detail = res }
 end
 
+-- 5b2. GetRecommended: { id, itemType, assetType? } -> { ok, items } | { ok = false, code }.
+-- Terpisah dari GetItemDetail supaya panel detail muncul dulu; rekomendasi menyusul sendiri.
+Remotes.func(RemoteNames.Functions.GetRecommended).OnServerInvoke = function(player: Player, raw: any)
+	if not recLimiter:take(player.UserId) then
+		return { ok = false, code = "RATE_LIMITED" }
+	end
+	if type(raw) ~= "table" then
+		return { ok = false, code = "BAD_ARG" }
+	end
+	local id, itemType, assetType = raw.id, raw.itemType, raw.assetType
+	if type(id) ~= "number" or id <= 0 or id % 1 ~= 0 or id > 2 ^ 53 then
+		return { ok = false, code = "BAD_ARG" }
+	end
+	if itemType ~= "Asset" and itemType ~= "Bundle" then
+		return { ok = false, code = "BAD_ARG" }
+	end
+	if assetType ~= nil and type(assetType) ~= "string" then
+		return { ok = false, code = "BAD_ARG" }
+	end
+	local pOk, ok, res = pcall(details.getRecommended, details, id, itemType, assetType)
+	if not pOk then
+		log.error("GetRecommended error", ok, player.Name)
+		return { ok = false, code = "FAILED" }
+	end
+	if not ok then
+		log.debug("GetRecommended", itemType, id, res.code, player.Name)
+		return { ok = false, code = res.code }
+	end
+	return { ok = true, items = res }
+end
+
 -- 5c. Checkout: { { id, itemType } } -> { ok = true } | { ok = false, code }.
 -- ok = true artinya prompt tampil; hasil (PromptBulkPurchaseFinished) didengarkan di client.
 Remotes.func(RemoteNames.Functions.Checkout).OnServerInvoke = function(player: Player, raw: any)
@@ -477,6 +509,7 @@ Players.PlayerRemoving:Connect(function(player: Player)
 	stateLimiter:reset(player.UserId)
 	bundleLimiter:reset(player.UserId)
 	detailLimiter:reset(player.UserId)
+	recLimiter:reset(player.UserId)
 	checkoutLimiter:reset(player.UserId)
 	wardrobeLimiter:reset(player.UserId)
 	if wardrobe then

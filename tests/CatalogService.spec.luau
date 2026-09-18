@@ -302,7 +302,7 @@ return function()
 	res = crSvc:search({ creatorName = "  94E  ", creatorType = "Group" }) :: any
 	assert(res.ok, "pencarian creator tanpa kategori ok")
 	eq(crApi.lastOpts.creatorName, "94E", "spasi di ujung nama creator dibuang")
-	eq(crApi.lastOpts.creatorType, "CreatorType.Group", "creatorType jadi Enum")
+	eq(crApi.lastOpts.creatorType, "CreatorTypeFilter.Group", "creatorType jadi Enum")
 	eq(crApi.lastOpts.assetTypes, nil, "tanpa kategori -> tanpa saringan tipe")
 
 	before = crApi.search
