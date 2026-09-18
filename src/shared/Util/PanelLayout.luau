@@ -9,6 +9,7 @@
 --   PanelLayout.mosaic(innerW, innerH, cols, rows) -- ukuran satu unit kartu mozaik (menu kategori)
 --   L.anchorX, L.anchorY         -- titik tengah area kosong (piksel) untuk kamera try-on
 --   L.dockX, L.dockY, L.dockW, L.dockH -- area kiri bawah (di bawah avatar) untuk tombol aksi + strip Wearing
+--   L.previewX, L.previewY, L.previewW, L.previewH -- kartu preview avatar (area kosong DI ATAS dock)
 --   L.actionsH, L.stripH         -- tinggi baris tombol aksi & strip di dalam dock
 
 export type Layout = {
@@ -29,6 +30,10 @@ export type Layout = {
 	dockH: number,
 	actionsH: number,
 	stripH: number,
+	previewX: number,
+	previewY: number,
+	previewW: number,
+	previewH: number,
 }
 
 local PanelLayout = {}
@@ -119,7 +124,7 @@ function PanelLayout.compute(width: number, height: number): Layout
 	local actionsH = if compact then P.ACTIONS_H_COMPACT else P.ACTIONS_H
 	local stripH = if compact then P.STRIP_H_COMPACT else P.STRIP_H
 	local dockH = actionsH + (if compact then P.DOCK_GAP_COMPACT else P.DOCK_GAP) + stripH
-	local x, y, w, h, anchorX, anchorY, dockX, dockY, dockW
+	local x, y, w, h, anchorX, anchorY, dockX, dockY, dockW, topY
 	if mode == "side" then
 		local ratio = if compact then P.SIDE_RATIO_COMPACT else P.SIDE_RATIO
 		w = math.floor(clamp(width * ratio, P.SIDE_MIN, P.SIDE_MAX))
@@ -134,8 +139,8 @@ function PanelLayout.compute(width: number, height: number): Layout
 		dockW = math.max(0, x - m * 2)
 		dockY = math.max(0, height - m - dockH)
 		anchorX = x / 2 -- tengah area kosong di kiri panel
-		local top = if compact then m else P.TOP
-		anchorY = (top + dockY) / 2
+		topY = if compact then m else P.TOP
+		anchorY = (topY + dockY) / 2
 	else
 		w = width
 		x = 0
@@ -146,8 +151,16 @@ function PanelLayout.compute(width: number, height: number): Layout
 		dockW = math.max(0, width - P.MARGIN * 2)
 		dockY = math.max(0, y - P.MARGIN - dockH)
 		anchorX = width / 2
-		anchorY = (P.TOP + dockY) / 2
+		topY = P.TOP
+		anchorY = (topY + dockY) / 2
 	end
+	-- Kartu preview avatar mengisi area kosong yang sama dengan tempat karakter tadi berdiri:
+	-- selebar dock, dari bawah tombol atas sampai tepat di atas dock.
+	local gap = if compact then P.DOCK_GAP_COMPACT else P.DOCK_GAP
+	local previewX = dockX
+	local previewW = dockW
+	local previewY = topY
+	local previewH = math.max(0, dockY - topY - gap)
 	local columns, cellW, cellH = PanelLayout.grid(w - P.PADDING * 2, compact)
 	return {
 		mode = mode,
@@ -167,6 +180,10 @@ function PanelLayout.compute(width: number, height: number): Layout
 		dockH = dockH,
 		actionsH = actionsH,
 		stripH = stripH,
+		previewX = previewX,
+		previewY = previewY,
+		previewW = previewW,
+		previewH = previewH,
 	}
 end
 
