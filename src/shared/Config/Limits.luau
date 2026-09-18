@@ -12,6 +12,7 @@ return {
 		AvatarIntent = { capacity = 20, refillPerSec = 8 },
 		CatalogSearch = { capacity = 6, refillPerSec = 1 },
 		Checkout = { capacity = 3, refillPerSec = 0.2 }, -- 1 prompt tiap ~5 dtk
+		GetAnimationClip = { capacity = 8, refillPerSec = 2 }, -- LoadAsset di server, hasilnya di-cache
 		GetBundle = { capacity = 10, refillPerSec = 2 },
 		GetItemDetail = { capacity = 10, refillPerSec = 2 },
 		GetRecommended = { capacity = 6, refillPerSec = 1 }, -- 2 panggilan API per permintaan

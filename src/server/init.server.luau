@@ -131,6 +131,7 @@ local stateLimiter = RateLimiter.fromLimits(RemoteNames.Functions.GetState)
 local bundleLimiter = RateLimiter.fromLimits(RemoteNames.Functions.GetBundle)
 local detailLimiter = RateLimiter.fromLimits(RemoteNames.Functions.GetItemDetail)
 local recLimiter = RateLimiter.fromLimits(RemoteNames.Functions.GetRecommended)
+local clipLimiter = RateLimiter.fromLimits(RemoteNames.Functions.GetAnimationClip)
 local checkoutLimiter = RateLimiter.fromLimits(RemoteNames.Functions.Checkout)
 local wardrobeLimiter = RateLimiter.fromLimits(RemoteNames.Functions.Wardrobe)
 
@@ -315,6 +316,24 @@ Remotes.func(RemoteNames.Functions.GetItemDetail).OnServerInvoke = function(play
 		return { ok = false, code = res.code }
 	end
 	return { ok = true, detail = res }
+end
+
+-- 5b1b. GetAnimationClip: { assetId } -> { ok, animationId } | { ok = false, code }.
+-- Kartu animasi butuh id KLIP untuk memutar preview, dan cuma server yang boleh memanggil
+-- InsertService (temuan #18 no. 4). Hasilnya di-cache gateway, jadi id yang sama tidak diambil dua kali.
+Remotes.func(RemoteNames.Functions.GetAnimationClip).OnServerInvoke = function(player: Player, raw: any)
+	if not clipLimiter:take(player.UserId) then
+		return { ok = false, code = "RATE_LIMITED" }
+	end
+	local assetId = if type(raw) == "table" then raw.assetId else nil
+	if type(assetId) ~= "number" then
+		return { ok = false, code = "BAD_ARG" }
+	end
+	local ok, clip = assetDecals:getAnimationClip(assetId)
+	if not ok then
+		return { ok = false, code = if clip then clip.code else "FAILED" }
+	end
+	return { ok = true, animationId = clip.animationId }
 end
 
 -- 5b2. GetRecommended: { id, itemType, assetType? } -> { ok, items } | { ok = false, code }.

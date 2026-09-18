@@ -5,6 +5,7 @@
 --   local decals = AssetDecal.new()
 --   local ok, info = decals:getMakeup(133520807586498)   -- info = { textureId, template }
 --   local ok, bg = decals:getBackground(121199209890990) -- bg   = { imageId, image, color }
+--   local ok, an = decals:getAnimationClip(3576823880)   -- an   = { animationId = "rbxassetid://..." }
 --
 -- Kenapa gateway sendiri (spike 18 Sep 2026, tests/MakeupDecal*.studio):
 --   1. Makeup TIDAK bisa dipakai lewat HumanoidDescription; jalurnya Decal yang ditempel ke Head.
@@ -70,6 +71,8 @@ export type AssetDecal = typeof(setmetatable(
 		_inflight: { [number]: boolean },
 		_backgrounds: Cache.Cache, -- assetId -> Background | { code, message }
 		_bgInflight: { [number]: boolean },
+		_clips: Cache.Cache, -- assetId -> { animationId } | { code, message }
+		_clipInflight: { [number]: boolean },
 	},
 	AssetDecal
 ))
@@ -118,6 +121,12 @@ function AssetDecal.new(deps: Deps?): AssetDecal
 			clock = d.clock or os.clock,
 		}),
 		_bgInflight = {},
+		_clips = Cache.new({
+			ttl = Limits.ItemCacheTTL,
+			maxSize = 200,
+			clock = d.clock or os.clock,
+		}),
+		_clipInflight = {},
 	}, AssetDecal)
 end
 
@@ -151,6 +160,23 @@ local function readBackground(model: any): Background?
 		return nil
 	end
 	return { imageId = imageId, image = "rbxassetid://" .. tostring(imageId), color = color }
+end
+
+-- Aset animasi/emote katalog berisi objek `Animation`, dan AnimationId-nya menunjuk KLIP yang
+-- sesungguhnya -- bukan id katalognya. Spike 19 Sep 2026 (PreviewRig.studio S.animAsset): aset
+-- 3576823880 "Point2" berisi Animation 'Point 2 Face' dengan AnimationId
+-- "http://www.roblox.com/asset/?id=10714395441". Bentuknya URL, bukan "rbxassetid://", jadi
+-- angkanya diambil dan dirakit ulang. Memutar id katalog langsung ditolak engine
+-- ("AnimationClip loaded is not valid" -- putaran 1 spike).
+local function readAnimation(model: any): any?
+	local found = model:FindFirstChildWhichIsA("Animation", true)
+	local raw = if found then found.AnimationId else nil
+	model:Destroy()
+	local digits = if type(raw) == "string" then raw:match("%d+") else nil
+	if digits == nil then
+		return nil
+	end
+	return { animationId = "rbxassetid://" .. digits }
 end
 
 -- Menunggu permintaan id yang sama yang sedang berjalan. Return hasil cache-nya (bisa nil).
@@ -264,11 +290,60 @@ function AssetDecal.getBackground(self: AssetDecal, assetId: number): (boolean, 
 	return true, entry
 end
 
+-- Id klip animasi untuk satu item animasi/emote. Jalannya sama dengan getMakeup/getBackground
+-- (retry, cache, permintaan berbarengan menunggu yang sedang berjalan), cache-nya terpisah.
+function AssetDecal.getAnimationClip(self: AssetDecal, assetId: number): (boolean, any)
+	if not isId(assetId) then
+		return false, makeError(0, "BAD_ARG", "assetId harus angka bulat positif")
+	end
+
+	local hit = self._clips:get(assetId)
+	if hit == nil and self._clipInflight[assetId] then
+		hit = self:_waitInflight(assetId, self._clipInflight, self._clips)
+	end
+	if hit ~= nil then
+		if hit.animationId then
+			return true, hit
+		end
+		return false, makeError(assetId, hit.code or "FAILED", hit.message or "gagal sebelumnya")
+	end
+
+	self._clipInflight[assetId] = true
+	local ok, result = Retry.run(function()
+		return self._insert:LoadAsset(assetId)
+	end, self._retry)
+
+	if not ok then
+		local message = tostring(result)
+		local code: ErrorCode = if AssetDecal.isPermanentError(result) then "NOT_FOUND" else "FAILED"
+		if code == "NOT_FOUND" then
+			self._clips:set(assetId, { animationId = nil, code = code, message = message })
+		end
+		self._clipInflight[assetId] = nil
+		log.warn("LoadAsset animasi gagal", assetId, code, message)
+		return false, makeError(assetId, code, message)
+	end
+
+	local entry = readAnimation(result)
+	if entry == nil then
+		self._clips:set(assetId, { animationId = nil, code = "NO_ANIMATION", message = "aset tanpa Animation" })
+		self._clipInflight[assetId] = nil
+		log.warn("aset tanpa Animation", assetId)
+		return false, makeError(assetId, "NO_ANIMATION", "aset tanpa Animation")
+	end
+
+	self._clips:set(assetId, entry)
+	self._clipInflight[assetId] = nil
+	return true, entry
+end
+
 function AssetDecal.clear(self: AssetDecal)
 	self._textures:clear()
 	self._inflight = {}
 	self._backgrounds:clear()
 	self._bgInflight = {}
+	self._clips:clear()
+	self._clipInflight = {}
 end
 
 return AssetDecal

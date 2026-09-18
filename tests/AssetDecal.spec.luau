@@ -15,6 +15,9 @@ local ID_NO_DECAL = 777
 local ID_BG = 121199209890990 -- Prism Skies (AvatarBackground)
 local BG_IMAGE = 139431817156818
 
+local ID_ANIM = 3576823880 -- "Point2" (emote katalog)
+local ANIM_URL = "http://www.roblox.com/asset/?id=10714395441" -- bentuk asli AnimationId (spike #28)
+
 local function eq(a: any, b: any, msg: string)
 	assert(a == b, ("%s: expected %s, got %s"):format(msg, tostring(b), tostring(a)))
 end
@@ -40,6 +43,24 @@ local function fakeModel(texture: string?, destroyed: { n: number }): any
 	end
 	function model.FindFirstChild(_self: any, _name: string, _recursive: boolean?): any
 		return nil -- aset makeup TIDAK punya Folder AvatarBackground
+	end
+	function model.Destroy(_self: any)
+		destroyed.n += 1
+	end
+	return model
+end
+
+-- Aset animasi palsu: Model > Animation dengan AnimationId berbentuk URL.
+local function fakeAnimModel(url: string?, destroyed: { n: number }): any
+	local model = {}
+	function model.FindFirstChildWhichIsA(_self: any, className: string, _recursive: boolean?): any
+		if className == "Animation" and url ~= nil then
+			return { AnimationId = url }
+		end
+		return nil
+	end
+	function model.FindFirstChild(_self: any, _name: string, _recursive: boolean?): any
+		return nil
 	end
 	function model.Destroy(_self: any)
 		destroyed.n += 1
@@ -245,6 +266,34 @@ return function()
 	api:clear()
 	api:getBackground(ID_BG)
 	eq(calls.load, 2, "setelah clear, LoadAsset latar dipanggil lagi")
+
+	-- 9f. id klip animasi (PR #28): AnimationId berbentuk URL -> dirakit ulang jadi rbxassetid://
+	local animDestroyed = { n = 0 }
+	local animCalls = { load = 0 }
+	local animApi = AssetDecal.new({
+		insertService = {
+			LoadAsset = function(_self: any, id: number): any
+				animCalls.load += 1
+				if id == ID_ANIM then
+					return fakeAnimModel(ANIM_URL, animDestroyed)
+				end
+				return fakeAnimModel(nil, animDestroyed) -- aset tanpa Animation
+			end,
+		},
+		retry = { attempts = 1, baseDelay = 0 },
+		sleep = function(_t: number) end,
+	})
+	local okAnim, clip = animApi:getAnimationClip(ID_ANIM)
+	eq(okAnim, true, "klip animasi terbaca")
+	eq(clip.animationId, "rbxassetid://10714395441", "id katalog TIDAK dipakai, id klip yang dipakai")
+	eq(animDestroyed.n, 1, "model hasil LoadAsset dibuang")
+	animApi:getAnimationClip(ID_ANIM)
+	eq(animCalls.load, 1, "hasil klip di-cache")
+	local okNone, errNone = animApi:getAnimationClip(999)
+	eq(okNone, false, "aset tanpa Animation ditolak")
+	eq(errNone.code, "NO_ANIMATION", "kodenya NO_ANIMATION")
+	local okBad = animApi:getAnimationClip(-1)
+	eq(okBad, false, "id tidak valid ditolak")
 
 	-- 10. penanda error permanen
 	eq(AssetDecal.isPermanentError("Asset not found"), true, "not found permanen")

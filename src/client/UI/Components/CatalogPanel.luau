@@ -12,7 +12,15 @@
 --   panel:setVisible(true)   panel:getLayout()   panel:destroy()
 -- Tab "Wearing" (bila props.getWearing ada) menampilkan item yang sedang dipakai, bukan hasil katalog.
 -- Kotak cari juga menerima link/ID item: Enter -> props.onLink(id, kind) (bukan pencarian).
--- Tap kartu -> overlay TRY / BUY / ⓘ / 🛒 di kartu itu (satu kartu saja); gulir / tutup panel -> overlay hilang.
+-- Selain itu ada kotak "Enter Item Link.." sendiri di KIRI BAWAH panel (pola CAC): jalur tempel
+-- link yang tidak perlu mengosongkan kotak cari dulu. Ia menempati pita di atas baris status,
+-- bersama tombol bulat zoom/gear di kanan; grid dipendekkan supaya kartu tidak tertutup.
+-- Tombol bulat kanan bawah: + / - mengubah UKURAN KARTU (PanelLayout.ZOOM_STEPS, bukan kamera) dan
+-- gear membuka sakelar tampilan kartu. Ikon gear DIGAMBAR dari Frame (tiga titik), bukan glyph:
+-- BuilderSans tidak bisa diandalkan untuk simbol (temuan #25 no. 3).
+-- Tap kartu -> overlay TRY / BUY / ⓘ / 🛒 / ☆ di kartu itu (satu kartu saja); gulir / tutup panel
+-- -> overlay hilang. Bintang ☆ memakai props.onFavorite + props.favoriteOf; panel sendiri tidak
+-- pernah membaca status favorit (mahal — lihat DetailController), ia cuma menggambar yang diketahui.
 -- Header punya tombol keranjang "🛒 n" (bila props.onOpenCart ada) di kiri tombol tutup: panel:setCartCount(n).
 -- Di ujung kanan kotak cari ada tombol "Search Options" (#17e): popover melayang berisi sort,
 -- rentang harga, creator, dan sakelar off-sale. Ikonnya digambar dari Frame, bukan glyph font
@@ -35,6 +43,11 @@ local HEADER_H = 40
 local GAP = Tokens.Space.S
 local WEARING = "__wearing" -- kunci tab Wearing di _tabs (bukan kategori server)
 local STATUS_H = 28
+local LINK_MIN_W = 150 -- kotak "Enter Item Link.." tidak boleh lebih sempit dari ini
+local ROUND_H = 30 -- tombol bulat & kotak link; setinggi kotak cari (36) terasa kegedean di panel
+local ROUND_H_COMPACT = 26
+local THUMB_DELAY = 0.25 -- jeda antar pencarian gambar kartu mozaik (jangan memberondong API)
+local MINUS = utf8.char(0x2212) -- "−" ADA di BuilderSans (temuan #25 no. 3); "+" juga
 local STATUS_H_COMPACT = 20
 local CART_BTN_W = 60
 local BACK_W = 36
@@ -56,6 +69,10 @@ export type Props = {
 	onInfo: ((item: any) -> ())?, -- tombol ⓘ -> panel detail
 	onCart: ((item: any) -> ())?, -- tombol 🛒 di kartu (tambah / buang dari keranjang)
 	isInCart: ((item: any) -> boolean)?, -- true = tombol 🛒 kartu ditandai "sudah di keranjang"
+	onFavorite: ((item: any) -> ())?, -- bintang di overlay kartu (nil = bintang disembunyikan)
+	favoriteOf: ((item: any) -> boolean?)?, -- status yang SUDAH diketahui; nil = belum diketahui
+	-- Preview avatar memakai item saat kursor diam di kartu; kembalikan fungsi pembatalnya.
+	onPreview: ((item: any, viewport: ViewportFrame) -> (() -> ())?)?,
 	onOpenCart: (() -> ())?, -- tombol 🛒 di header (nil = tombol disembunyikan)
 	onClose: (() -> ())?,
 	isSelected: ((item: any) -> boolean)?, -- true = kartu diberi sorotan (item sedang dipakai)
@@ -83,6 +100,21 @@ export type CatalogPanel = typeof(setmetatable(
 		instance: Frame,
 		_props: Props,
 		_grid: ScrollingFrame,
+		_linkBox: TextBox,
+		_hasLink: boolean,
+		_gridLayout: UIGridLayout,
+		_cardsHolder: Frame,
+		_zoomIn: TextButton,
+		_zoomOut: TextButton,
+		_gear: TextButton,
+		_zoomIndex: number, -- indeks di PanelLayout.ZOOM_STEPS
+		_gearPanel: Frame,
+		_gearOpen: boolean,
+		_gearRows: { [string]: TextButton }, -- "name" | "price" | "limited"
+		_display: ItemCard.Display,
+		_thumbsAsked: boolean, -- gambar kartu mozaik hanya diambil sekali per sesi
+		_gridTop: number, -- dihitung applyLayout
+		_gridBottomUsed: number,
 		_menu: CategoryMenu.CategoryMenu,
 		_title: TextLabel,
 		_creatorName: string?,
@@ -181,6 +213,33 @@ end
 -- Jalankan fungsi controller di thread baru (remote akan yield).
 local function spawnCall(fn: (...any) -> ...any, ...: any)
 	task.spawn(fn, ...)
+end
+
+-- Tombol bulat melayang di pita bawah (zoom + / -, gear). Teks dikosongkan untuk gear: ikonnya
+-- digambar dari Frame oleh pemanggil.
+local function roundButton(name: string, text: string, parent: Instance): TextButton
+	local b: TextButton = make("TextButton", {
+		Name = name,
+		Text = text,
+		FontFace = Tokens.Font.Bold,
+		TextSize = Tokens.TextSize.Button,
+		TextColor3 = Tokens.Color.Text,
+		AutoButtonColor = true,
+		BackgroundColor3 = Tokens.Color.Background,
+		BackgroundTransparency = 0.08,
+		BorderSizePixel = 0,
+		ZIndex = Tokens.ZIndex.Panel + 1,
+		Visible = false,
+		Parent = parent,
+	}, {
+		corner(Tokens.Radius.Pill),
+		make("UIStroke", {
+			ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+			Color = Tokens.Color.Stroke,
+			Transparency = 0.35,
+		}),
+	})
+	return b
 end
 
 -- Chip cepat rentang harga: di ponsel mengetik angka itu repot, jadi yang sering dipakai disiapkan.
@@ -286,6 +345,114 @@ function CatalogPanel.new(props: Props): CatalogPanel
 		corner(Tokens.Radius.Medium),
 		make("UIPadding", { PaddingLeft = UDim.new(0, Tokens.Space.M), PaddingRight = UDim.new(0, Tokens.Space.M) }),
 	})
+
+	-- Kotak "Enter Item Link.." (kiri bawah). Posisinya diatur applyLayout.
+	local linkBox: TextBox = make("TextBox", {
+		Name = "LinkBox",
+		PlaceholderText = "Enter Item Link..",
+		PlaceholderColor3 = Tokens.Color.TextMuted,
+		Text = "",
+		ClearTextOnFocus = false,
+		FontFace = Tokens.Font.Regular,
+		TextSize = Tokens.TextSize.Caption,
+		TextColor3 = Tokens.Color.Text,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		BackgroundColor3 = Tokens.Color.Background,
+		BackgroundTransparency = 0.08,
+		BorderSizePixel = 0,
+		Size = UDim2.fromOffset(LINK_MIN_W, ROUND_H),
+		ZIndex = Tokens.ZIndex.Panel + 1, -- melayang di atas grid
+		Visible = false,
+		Parent = root,
+	}, {
+		corner(Tokens.Radius.Pill),
+		make("UIPadding", { PaddingLeft = UDim.new(0, Tokens.Space.M), PaddingRight = UDim.new(0, Tokens.Space.S) }),
+		make("UIStroke", {
+			ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+			Color = Tokens.Color.Stroke,
+			Transparency = 0.35,
+		}),
+	})
+
+	-- Tombol bulat kanan bawah (posisi diatur applyLayout).
+	local zoomIn = roundButton("ZoomIn", "+", root)
+	local zoomOut = roundButton("ZoomOut", MINUS, root)
+	local gear = roundButton("Gear", "", root)
+
+	-- Ikon gear = tiga titik menurun, digambar dari Frame (pelajaran #25 no. 3).
+	for i = 1, 3 do
+		make("Frame", {
+			Name = "Dot" .. tostring(i),
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Position = UDim2.new(0.5, 0, 0.5, (i - 2) * 6),
+			Size = UDim2.fromOffset(4, 4),
+			BackgroundColor3 = Tokens.Color.Text,
+			BorderSizePixel = 0,
+			ZIndex = Tokens.ZIndex.Panel + 2,
+			Parent = gear,
+		}, { corner(Tokens.Radius.Pill) })
+	end
+
+	-- Popover gear: sakelar tampilan kartu. Permukaannya LEBIH GELAP dari panel + tepi emas —
+	-- popover ber-Color.Panel di atas panel Color.Panel kehilangan batasnya (temuan #27 no. 6).
+	local gearPanel: Frame = make("Frame", {
+		Name = "GearPanel",
+		Active = true,
+		BackgroundColor3 = Tokens.Color.Background,
+		BackgroundTransparency = 0,
+		BorderSizePixel = 0,
+		Size = UDim2.fromOffset(190, 112),
+		Visible = false,
+		ZIndex = Tokens.ZIndex.Popup,
+		Parent = root,
+	}, {
+		corner(Tokens.Radius.Medium),
+		make("UIStroke", { Color = Tokens.Color.Accent, Transparency = 0.35 }),
+		make("UIPadding", {
+			PaddingTop = UDim.new(0, Tokens.Space.S),
+			PaddingBottom = UDim.new(0, Tokens.Space.S),
+			PaddingLeft = UDim.new(0, Tokens.Space.S),
+			PaddingRight = UDim.new(0, Tokens.Space.S),
+		}),
+		make("UIListLayout", {
+			FillDirection = Enum.FillDirection.Vertical,
+			SortOrder = Enum.SortOrder.LayoutOrder,
+			Padding = UDim.new(0, 4),
+		}),
+	})
+
+	local gearRows: { [string]: TextButton } = {}
+	for i, row in { { "name", "Nama item" }, { "price", "Harga" }, { "limited", "Pita LIMITED" } } do
+		local holder: Frame = make("Frame", {
+			Name = "GearRow_" .. row[1],
+			BackgroundTransparency = 1,
+			LayoutOrder = i,
+			Size = UDim2.new(1, 0, 0, 28),
+			ZIndex = Tokens.ZIndex.Popup + 1,
+			Parent = gearPanel,
+		})
+		make("TextLabel", {
+			Name = "Label",
+			Text = row[2],
+			FontFace = Tokens.Font.Regular,
+			TextSize = Tokens.TextSize.Caption,
+			TextColor3 = Tokens.Color.Text,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			BackgroundTransparency = 1,
+			Size = UDim2.new(1, -56, 1, 0),
+			ZIndex = Tokens.ZIndex.Popup + 1,
+			Parent = holder,
+		})
+		gearRows[row[1]] = textButton("ON", {
+			Name = "Toggle",
+			TextSize = Tokens.TextSize.Caption,
+			Position = UDim2.new(1, -52, 0, 2),
+			Size = UDim2.fromOffset(52, 24),
+			ZIndex = Tokens.ZIndex.Popup + 1,
+			Parent = holder,
+		})
+	end
 
 	-- Tombol "Search Options" di ujung kanan kotak cari (#17e).
 	local optButton: TextButton = make("TextButton", {
@@ -706,15 +873,41 @@ function CatalogPanel.new(props: Props): CatalogPanel
 		ScrollBarThickness = 4,
 		ZIndex = Tokens.ZIndex.Panel,
 		Parent = root,
-	}, {
-		make("UIPadding", { PaddingRight = UDim.new(0, 6), PaddingTop = UDim.new(0, 2) }),
+	}, {})
+
+	-- Padding bawah diatur applyLayout: pita bawah & baris status MELAYANG di atas grid, jadi
+	-- kanvas butuh ruang ekstra supaya baris kartu terakhir bisa digulir sampai lepas dari sana.
+	local gridPad: UIPadding = make("UIPadding", {
+		PaddingRight = UDim.new(0, 6),
+		PaddingTop = UDim.new(0, 2),
+		Parent = grid,
 	})
+
+	-- Isi kanvas ditumpuk tegak. UIGridLayout tidak bisa memuat kartu selebar dua kolom, jadi
+	-- kartu punya wadah sendiri.
+	make("UIListLayout", {
+		FillDirection = Enum.FillDirection.Vertical,
+		SortOrder = Enum.SortOrder.LayoutOrder,
+		Padding = UDim.new(0, GAP),
+		Parent = grid,
+	})
+	local cardsHolder: Frame = make("Frame", {
+		Name = "Cards",
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		LayoutOrder = 2,
+		Size = UDim2.new(1, 0, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		ZIndex = Tokens.ZIndex.Panel,
+		Parent = grid,
+	})
+
 	local gridLayout: UIGridLayout = make("UIGridLayout", {
 		CellSize = UDim2.fromOffset(Tokens.Size.Card.X, Tokens.Size.Card.Y),
 		CellPadding = UDim2.fromOffset(GAP, GAP),
 		SortOrder = Enum.SortOrder.LayoutOrder, -- penting: default bisa urut Name
 		HorizontalAlignment = Enum.HorizontalAlignment.Center,
-		Parent = grid,
+		Parent = cardsHolder,
 	})
 
 	-- Status bawah + tombol coba lagi
@@ -755,6 +948,21 @@ function CatalogPanel.new(props: Props): CatalogPanel
 		instance = root,
 		_props = props,
 		_grid = grid,
+		_linkBox = linkBox,
+		_hasLink = props.onLink ~= nil,
+		_gridLayout = gridLayout,
+		_cardsHolder = cardsHolder,
+		_zoomIn = zoomIn,
+		_zoomOut = zoomOut,
+		_gear = gear,
+		_zoomIndex = PanelLayout.ZOOM_DEFAULT,
+		_gearPanel = gearPanel,
+		_gearOpen = false,
+		_gearRows = gearRows,
+		_display = { name = true, price = true, limited = true },
+		_thumbsAsked = false,
+		_gridTop = 0,
+		_gridBottomUsed = 0,
 		_menu = menu,
 		_title = title,
 		_creatorName = nil,
@@ -928,7 +1136,10 @@ function CatalogPanel.new(props: Props): CatalogPanel
 		self._layout = L
 		root.Position = UDim2.fromOffset(L.x, L.y)
 		root.Size = UDim2.fromOffset(L.w, L.h)
-		gridLayout.CellSize = UDim2.fromOffset(L.cellW, L.cellH)
+		-- Ukuran kartu dihitung ULANG dengan tingkat zoom pemain (L.cellW bawaan = zoom 1).
+		local _, cellW, cellH =
+			PanelLayout.grid(L.w - PanelLayout.PADDING * 2, L.compact, PanelLayout.zoomAt(self._zoomIndex))
+		gridLayout.CellSize = UDim2.fromOffset(cellW, cellH)
 
 		-- Header: normal = judul di baris sendiri; compact = judul disembunyikan, cari + tutup satu baris.
 		local c = L.compact
@@ -968,9 +1179,38 @@ function CatalogPanel.new(props: Props): CatalogPanel
 		tabBar.Position = UDim2.fromOffset(0, tTop)
 		local gTop = tTop + Tokens.Size.TabHeight + 6 + (if c then 4 else GAP)
 		local stH = if c then STATUS_H_COMPACT else STATUS_H
-		grid.Position = UDim2.fromOffset(0, gTop)
-		grid.Size = UDim2.new(1, 0, 1, -gTop - stH)
+		-- Pita bawah (kotak link + tombol bulat) MELAYANG di atas grid. Sempat dibuat memotong
+		-- tinggi grid, tapi di ponsel mendatar itu memakan satu baris kartu penuh (uji iPhone 13
+		-- 19 Sep 2026: grid tinggal satu baris). Ganti caranya: grid tetap setinggi mungkin, dan
+		-- ruang untuk pita diberikan lewat padding bawah KANVAS -> gulirannya tetap lega.
+		local bandH = if c then ROUND_H_COMPACT else ROUND_H
+		local bandUsed = 0
+		-- Kanvas disisakan ruang untuk pita DAN baris status yang dua-duanya melayang di dasar.
+		gridPad.PaddingBottom = UDim.new(0, bandH + stH + 8)
+		self._gridTop = gTop
+		self._gridBottomUsed = stH + bandUsed
+		self:_applyGridLayout()
+		-- Kotak link dibuat lebih pendek di layar sempit: di sana tiga tombol bulat + kotak link
+		-- berebut satu baris yang sama.
+		local linkRoom = bandH * 3 + GAP * 2 + Tokens.Space.M
+		local linkW = math.max(120, math.min(math.floor(L.w * 0.4), L.w - linkRoom))
+		-- Pita menempel DASAR panel (bukan di atas baris status): di layar pendek jarak ke tepi
+		-- bawah terasa seperti ruang terbuang (dinilai di Studio 19 Sep 2026).
+		linkBox.Position = UDim2.new(0, 0, 1, -bandH)
+		linkBox.Size = UDim2.fromOffset(linkW, bandH)
+		-- Tombol bulat menempel kanan: gear paling kanan, lalu  -  , lalu  +
+		local bandY = -bandH
+		for i, b in { gear, zoomOut, zoomIn } do
+			b.Size = UDim2.fromOffset(bandH, bandH)
+			b.Position = UDim2.new(1, -(bandH * i + GAP * (i - 1)), 1, bandY)
+		end
+		self:_syncZoomButtons()
+		-- Popover gear menggantung DI ATAS tombolnya, rata kanan (tombolnya di dasar panel).
+		gearPanel.Position = UDim2.new(1, -gearPanel.AbsoluteSize.X, 1, bandY - gearPanel.AbsoluteSize.Y - 4)
+		-- Baris status naik ke atas pita supaya keduanya tidak bertumpuk.
+		status.Position = UDim2.new(0, 0, 1, -(bandH + 4))
 		status.Size = UDim2.new(1, -90, 0, stH)
+		retry.Position = UDim2.new(1, 0, 1, -(bandH + 4))
 		status.TextSize = if c then Tokens.TextSize.Caption else Tokens.TextSize.Body
 		retry.Size = UDim2.fromOffset(80, stH - 4)
 
@@ -985,6 +1225,49 @@ function CatalogPanel.new(props: Props): CatalogPanel
 
 	table.insert(
 		conns,
+		gear.Activated:Connect(function()
+			self:_setGearOpen(not self._gearOpen)
+		end)
+	)
+	for key, b in gearRows do
+		table.insert(
+			conns,
+			b.Activated:Connect(function()
+				self:_toggleDisplay(key)
+			end)
+		)
+	end
+	table.insert(
+		conns,
+		zoomIn.Activated:Connect(function()
+			self:_setZoom(self._zoomIndex + 1)
+		end)
+	)
+	table.insert(
+		conns,
+		zoomOut.Activated:Connect(function()
+			self:_setZoom(self._zoomIndex - 1)
+		end)
+	)
+
+	-- Enter di kotak link: id/link diteruskan apa adanya ke props.onLink (App yang memberi pesan
+	-- kalau tidak valid). Kotak dikosongkan hanya kalau linknya terbaca.
+	table.insert(
+		conns,
+		linkBox.FocusLost:Connect(function(enter: boolean)
+			local onLink = props.onLink
+			if not enter or onLink == nil or linkBox.Text == "" then
+				return
+			end
+			local id, kind = ItemLink.parse(linkBox.Text)
+			if id then
+				linkBox.Text = ""
+			end
+			onLink(id, kind)
+		end)
+	)
+	table.insert(
+		conns,
 		optButton.Activated:Connect(function()
 			self:_setOptionsOpen(not self._optOpen)
 		end)
@@ -993,6 +1276,7 @@ function CatalogPanel.new(props: Props): CatalogPanel
 		conns,
 		optScrim.Activated:Connect(function()
 			self:_setOptionsOpen(false)
+			self:_setGearOpen(false)
 		end)
 	)
 	table.insert(
@@ -1151,6 +1435,13 @@ function CatalogPanel._newCard(self: CatalogPanel, item: any, order: number): It
 				card:setInCart(self:_isInCart(it)) -- overlay tetap terbuka: 🛒+ <-> 🛒✓
 			end
 			else nil,
+		onPreview = props.onPreview,
+		-- Bintang: overlay tetap terbuka (pemain melihat bintangnya berubah jadi ★ di tempat).
+		onFavorite = if props.onFavorite
+			then function(it)
+				(props.onFavorite :: any)(it)
+			end
+			else nil,
 	})
 	return card
 end
@@ -1254,13 +1545,15 @@ function CatalogPanel._renderCards(self: CatalogPanel, items: { any })
 		local card = cards[i]
 		if card == nil then
 			card = self:_newCard(item, i)
-			card.instance.Parent = self._grid
+			card.instance.Parent = self._cardsHolder
 			cards[i] = card
 		elseif card.item ~= item then
 			card:setItem(item)
 		end
 		card:setSelected(self:_isSelected(item))
 		card:setInCart(self:_isInCart(item))
+		card:setFavorite(self:_favoriteOf(item))
+		card:setDisplay(self._display)
 	end
 	for i = #cards, #items + 1, -1 do
 		cards[i]:destroy()
@@ -1333,6 +1626,121 @@ end
 function CatalogPanel._isInCart(self: CatalogPanel, item: any): boolean
 	local fn = self._props.isInCart
 	return fn ~= nil and fn(item) == true
+end
+
+-- Grid mengisi sisa panel di bawah tab. Dipisah dari applyLayout karena dulu dipakai bersama
+-- kartu hero; sekarang tinggal penempatan gridnya saja.
+function CatalogPanel._applyGridLayout(self: CatalogPanel)
+	if self._layout == nil then
+		return
+	end
+	self._grid.Position = UDim2.fromOffset(0, self._gridTop)
+	self._grid.Size = UDim2.new(1, 0, 1, -self._gridTop)
+end
+
+-- Gambar kartu mozaik: satu item teratas per grup. Diambil SEKALI per sesi, dan DIJEDA antar grup
+-- karena ini pencarian sungguhan ke API yang sama dengan katalog (#17b pernah kena HTTP 429 saat
+-- request diberondong). Hasilnya di-cache server (CatalogService.firstPage), jadi murah di kali
+-- berikutnya. Gagal / grup kosong = kartu tetap tampil tanpa gambar, bukan pesan error.
+function CatalogPanel._loadMenuThumbs(self: CatalogPanel)
+	if self._thumbsAsked then
+		return
+	end
+	self._thumbsAsked = true
+	local ctl = self._props.controller
+	task.spawn(function()
+		for _, group in CatalogMenu.list do
+			if not group.soon then
+				local items = ctl:peek({ groupId = group.id, filter = "all" })
+				local first = if type(items) == "table" then items[1] else nil
+				if type(first) == "table" and type(first.id) == "number" then
+					local kind = if first.itemType == "Bundle" then "BundleThumbnail" else "Asset"
+					local size = Tokens.Size.Thumbnail
+					self._menu:setThumb(
+						group.id,
+						("rbxthumb://type=%s&id=%d&w=%d&h=%d"):format(kind, first.id, size, size)
+					)
+				end
+				task.wait(THUMB_DELAY)
+			end
+		end
+	end)
+end
+
+-- Buka/tutup popover gear. Scrim yang sama dengan popover Search Options dipakai supaya klik di
+-- luar menutupnya, dan dua popover tidak pernah terbuka bersamaan.
+function CatalogPanel._setGearOpen(self: CatalogPanel, open: boolean)
+	if open == self._gearOpen then
+		return
+	end
+	self._gearOpen = open
+	if open then
+		self:_setOptionsOpen(false)
+		self:_syncGearRows()
+	end
+	self._gearPanel.Visible = open
+	self._optScrim.Visible = open or self._optOpen
+end
+
+-- Balik satu sakelar tampilan lalu terapkan ke SEMUA kartu yang sedang ada.
+function CatalogPanel._toggleDisplay(self: CatalogPanel, key: string)
+	local d: any = self._display
+	d[key] = d[key] == false -- nil / true dianggap "tampil" -> dibalik jadi mati, dan sebaliknya
+	self:_syncGearRows()
+	for _, card in self._cards do
+		card:setDisplay(self._display)
+	end
+end
+
+function CatalogPanel._syncGearRows(self: CatalogPanel)
+	for key, b in self._gearRows do
+		local on = (self._display :: any)[key] ~= false
+		b.Text = if on then "ON" else "OFF"
+		b.BackgroundColor3 = if on then Tokens.Color.Accent else Tokens.Color.PanelRaised
+		b.TextColor3 = if on then Tokens.Color.AccentText else Tokens.Color.TextMuted
+	end
+end
+
+-- Ganti tingkat zoom kartu lalu hitung ulang tata letak. Di luar rentang = diabaikan.
+function CatalogPanel._setZoom(self: CatalogPanel, index: number)
+	local steps = #PanelLayout.ZOOM_STEPS
+	local target = math.clamp(math.floor(index), 1, steps)
+	if target == self._zoomIndex then
+		return
+	end
+	self._zoomIndex = target
+	local L = self._layout
+	if L ~= nil then
+		local _, cellW, cellH = PanelLayout.grid(L.w - PanelLayout.PADDING * 2, L.compact, PanelLayout.zoomAt(target))
+		self._gridLayout.CellSize = UDim2.fromOffset(cellW, cellH)
+	end
+	self:_syncZoomButtons()
+end
+
+-- Tombol di ujung rentang diredupkan (masih terlihat, tapi tidak bereaksi).
+function CatalogPanel._syncZoomButtons(self: CatalogPanel)
+	local steps = #PanelLayout.ZOOM_STEPS
+	local function dim(b: TextButton, enabled: boolean)
+		b.AutoButtonColor = enabled
+		b.TextTransparency = if enabled then 0 else 0.6
+		b.BackgroundTransparency = if enabled then 0.08 else 0.5
+	end
+	dim(self._zoomIn, self._zoomIndex < steps)
+	dim(self._zoomOut, self._zoomIndex > 1)
+end
+
+-- Status favorit yang SUDAH diketahui untuk sebuah item. nil = belum pernah dibaca -> kartu
+-- menggambar bintang redup, bukan bintang kosong terang (lihat ItemCard.setFavorite).
+function CatalogPanel._favoriteOf(self: CatalogPanel, item: any): boolean?
+	local fn = self._props.favoriteOf
+	return if fn ~= nil then fn(item) else nil
+end
+
+-- Status favorit sebuah item baru diketahui / berubah -> perbarui bintang semua kartu.
+function CatalogPanel.refreshFavorites(self: CatalogPanel)
+	for _, card in self._cards do
+		card:setFavorite(self:_favoriteOf(card.item))
+	end
 end
 
 -- Keranjang berubah -> angka di tombol header & tanda 🛒 di kartu.
@@ -1433,6 +1841,13 @@ function CatalogPanel._applyPage(self: CatalogPanel)
 		setTabActive(b, group ~= nil and gid == group.id)
 	end
 	self._grid.Visible = not isMenu
+	self._linkBox.Visible = not isMenu and self._hasLink
+	self._zoomIn.Visible = not isMenu
+	self._zoomOut.Visible = not isMenu
+	self._gear.Visible = not isMenu
+	if isMenu then
+		self:_setGearOpen(false)
+	end
 	self._status.Visible = not isMenu
 	self._retry.Visible = not isMenu and self._hasError
 	self._title.Text = if isMenu
@@ -1443,6 +1858,7 @@ function CatalogPanel._applyPage(self: CatalogPanel)
 
 	if isMenu then
 		self._menu:setArea(0, self._contentTop, self._innerW, self._innerH - self._contentTop)
+		self:_loadMenuThumbs()
 		return
 	end
 

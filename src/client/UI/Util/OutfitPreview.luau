@@ -13,7 +13,12 @@
 --   Latar hanya terpasang di mount yang MEMINTANYA (`{ background = true }`), yaitu preview yang
 --   mewakili avatar SEKARANG. Kartu Saved Outfits & halaman detail TIDAK memakainya: kartu itu
 --   menggambarkan look yang TERSIMPAN, sedangkan latar adalah pilihan pemain saat ini.
+--   local stop = previews:mountAnimated(viewport, { "rbxassetid://10714395441", ... }) -- kartu ANIMASI
+--   Beberapa klip diputar BERGANTIAN: satu animation pack berisi idle/jalan/lari/lompat, dan
+--   memutar idle saja tidak mewakili isinya (dinilai di Studio 19 Sep 2026).
 --   previews:destroy()
+-- opts.focus = "head" | "torso" | "legs" | "full" (default): kamera mendekat ke bagian tubuh itu.
+-- Dipakai preview kartu katalog (#28): kartu ~100 px, avatar seluruh badan di situ jadi bercak kecil.
 -- key = "<id>:<updatedAt>" -> model dibuat ulang hanya bila isi outfit berubah.
 -- Uji Studio 17 Sep 2026: Players:CreateHumanoidModelFromDescriptionAsync JALAN DI CLIENT (0.44s,
 -- layered clothing tampil) walau docs menulis "Server only" -> WAJIB diuji di game live.
@@ -216,7 +221,7 @@ local function attachMakeup(model: Model, rows: any): () -> ()
 end
 
 -- Opsi per-mount. `background = true` hanya untuk preview avatar SEKARANG (lihat catatan di atas).
-export type MountOptions = { background: boolean? }
+export type MountOptions = { background: boolean?, focus: string? }
 
 export type Handle = {
 	cancel: () -> (),
@@ -360,6 +365,51 @@ function OutfitPreview.frame(model: Model, camera: Camera, aspect: number): (Vec
 	camera.FieldOfView = FOV
 	camera.CFrame = CFrame.lookAt(cf.Position + cf.LookVector * dist, cf.Position)
 	return cf.Position, cf.LookVector, dist
+end
+
+-- Nama part per bagian tubuh, urut dari yang paling diinginkan. R15 dan R6 sekaligus:
+-- R6 memakai "Torso" / "Left Leg" (pakai spasi), R15 memakai "UpperTorso" / "LeftUpperLeg".
+local FOCUS_PARTS: { [string]: { string } } = {
+	head = { "Head" },
+	torso = { "UpperTorso", "Torso", "LowerTorso" },
+	legs = { "LeftUpperLeg", "LeftLowerLeg", "Left Leg", "RightUpperLeg" },
+}
+-- Ruang di sekitar part yang dibidik (kelipatan ukurannya). Kepala paling ketat; kaki paling
+-- longgar karena sepatu & celana panjang menjulur ke bawah part yang dijadikan patokan.
+local FOCUS_PAD: { [string]: number } = { head = 2.1, torso = 1.9, legs = 2.4 }
+
+-- Seperti OutfitPreview.frame, tapi kamera mendekat ke SATU bagian tubuh. Orientasinya tetap
+-- diambil dari bounding box model (cara yang sudah terbukti benar di kartu Saved Outfits);
+-- yang berubah cuma titik pusat dan ukuran kotak yang harus muat. Part tidak ketemu / focus
+-- "full" -> jatuh ke frame() seluruh badan.
+function OutfitPreview.frameOn(model: Model, camera: Camera, aspect: number, focus: string?): (Vector3, Vector3, number)
+	local names = if focus ~= nil then FOCUS_PARTS[focus] else nil
+	if names == nil then
+		return OutfitPreview.frame(model, camera, aspect)
+	end
+	local part: BasePart? = nil
+	for _, name in names do
+		local found = model:FindFirstChild(name)
+		if found and found:IsA("BasePart") then
+			part = found
+			break
+		end
+	end
+	if part == nil then
+		return OutfitPreview.frame(model, camera, aspect)
+	end
+	local cf = model:GetBoundingBox()
+	local pad = FOCUS_PAD[focus] or 2
+	local size = part.Size * pad
+	local halfV = math.rad(FOV / 2)
+	local halfH = math.atan(math.tan(halfV) * math.max(aspect, 0.1))
+	local dist = math.max((size.Y / 2) / math.tan(halfV), (size.X / 2) / math.tan(halfH)) + size.Z / 2
+	-- Tinggi dari part yang dibidik, tapi kiri-kanan & depan-belakang tetap dari tengah badan
+	-- supaya avatarnya tidak melenceng ke pinggir kartu (kaki KIRI yang jadi patokan).
+	local center = Vector3.new(cf.Position.X, part.Position.Y, cf.Position.Z)
+	camera.FieldOfView = FOV
+	camera.CFrame = CFrame.lookAt(center + cf.LookVector * dist, center)
+	return center, cf.LookVector, dist
 end
 
 function OutfitPreview.new(deps: Deps?): OutfitPreview
@@ -538,9 +588,11 @@ function OutfitPreview.mount(
 		end
 		local model = template:Clone()
 		model.Parent = world
+		local focus = if type(opts) == "table" then opts.focus else nil
 		local function refit()
 			local s = viewport.AbsoluteSize
-			local center, dir, dist = OutfitPreview.frame(model, camera, if s.Y > 0 then s.X / s.Y else 1)
+			local aspect = if s.Y > 0 then s.X / s.Y else 1
+			local center, dir, dist = OutfitPreview.frameOn(model, camera, aspect, focus)
 			view.center = center
 			view.dir = dir
 			view.dist = dist
@@ -1033,6 +1085,134 @@ function OutfitPreview.mountCurrent(self: OutfitPreview, viewport: ViewportFrame
 		refresh = request,
 		setLive = setLive,
 	}
+end
+
+-- ===== PREVIEW ANIMASI (PR #28) =====
+-- Jalur TERPISAH dari mount biasa, dan alasannya diukur di Studio 19 Sep 2026:
+--   * Model dari CreateHumanoidModelFromDescriptionAsync punya NOL sendi (temuan #24 no. 3 mengira
+--     ini berarti "ViewportFrame melarang animasi" -- KELIRU, yang benar rig itu tidak punya sendi).
+--   * CLONE karakter pemain punya 15 AnimationConstraint (place ini memakai rig sendi generasi baru,
+--     bukan Motor6D), dan di dalam ViewportFrame track-nya BENAR-BENAR berjalan: spike mengukur
+--     Length=2,30 detik & IsPlaying=true.
+--   * HumanoidRootPart WAJIB di-anchor; tanpa itu seluruh boneka melorot dan gerak jatuhnya sempat
+--     terbaca sebagai "animasi jalan" (3,742 stud padahal track diam).
+-- Model TIDAK di-cache: yang ditampilkan adalah avatar pemain sekarang, dan clone-nya murah
+-- (0,005 detik, temuan #24 no. 1) dibanding 425 ms untuk model dari deskripsi.
+-- Kembalian: fungsi pembatal. nil = tidak bisa dipreview (karakter belum ada / clone gagal).
+function OutfitPreview.mountAnimated(self: OutfitPreview, viewport: ViewportFrame, clips: { string }): (() -> ())?
+	if self._destroyed or #clips == 0 then
+		return nil
+	end
+	local clone = cloneCharacter()
+	if clone == nil then
+		return nil
+	end
+	-- Clone karakter membawa skrip Animate bawaan Roblox, dan ViewportFrame ini ada di PlayerGui
+	-- -> LocalScript-nya IKUT JALAN di Studio (di klien ia melempar error kosong; lihat devforum
+	-- "Character 'Animate' script inside a ViewportFrame only works in Studio", solusinya sama:
+	-- buang skripnya). Kalau dibiarkan, ia memutar idle animation pack PEMAIN, jadi kartu emote
+	-- Point2 malah memperagakan Dizzy (dinilai di Studio 19 Sep 2026). prepare() membuang semua
+	-- BaseScript sekaligus mengatur Massless/CanCollide dan meng-anchor HumanoidRootPart saja --
+	-- part lain WAJIB bebas supaya animasinya bisa menggerakkannya.
+	prepare(clone)
+
+	local world = Instance.new("WorldModel")
+	world.Name = "Preview"
+	world.Parent = viewport
+	local camera = Instance.new("Camera")
+	camera.FieldOfView = FOV
+	camera.Parent = viewport
+	viewport.CurrentCamera = camera
+	clone.Parent = world
+
+	local function refit()
+		local s = viewport.AbsoluteSize
+		OutfitPreview.frameOn(clone, camera, if s.Y > 0 then s.X / s.Y else 1, "full")
+	end
+	refit()
+	local conn = viewport:GetPropertyChangedSignal("AbsoluteSize"):Connect(refit)
+
+	local humanoid = clone:FindFirstChildOfClass("Humanoid")
+	local animator = if humanoid then humanoid:FindFirstChildOfClass("Animator") else nil
+	if humanoid ~= nil and animator == nil then
+		animator = Instance.new("Animator")
+		animator.Parent = humanoid
+	end
+	if animator ~= nil then
+		-- Track yang sudah berjalan ikut tersalin bersama clone-nya; tanpa ini gerakan pemain
+		-- bertumpuk dengan klip kartu.
+		for _, t in (animator :: Animator):GetPlayingAnimationTracks() do
+			t:Stop(0)
+		end
+	end
+	-- Satu pack berisi beberapa gerakan; diputar BERGANTIAN dalam lingkaran selama kartu di-hover.
+	-- Satu klip saja (emote / kartu aset animasi) diputar melingkar dan tidak pernah dimuat ulang.
+	local playing: AnimationTrack? = nil
+	local alive = true
+	local function load(id: string): AnimationTrack?
+		local anim = Instance.new("Animation")
+		anim.AnimationId = id
+		local ok, loaded = pcall(function()
+			return (animator :: Animator):LoadAnimation(anim)
+		end)
+		if not ok or loaded == nil then
+			log.warn("preview animasi gagal dimuat", id, loaded)
+			return nil
+		end
+		return loaded
+	end
+
+	if animator ~= nil then
+		task.spawn(function()
+			local index = 0
+			while alive do
+				index = index % #clips + 1
+				local track = load(clips[index])
+				if track == nil then
+					return
+				end
+				if not alive then
+					track:Destroy()
+					return
+				end
+				playing = track
+				track.Looped = true
+				track:Play()
+				if #clips == 1 then
+					return -- tidak ada gerakan lain: biarkan berputar sampai hover dilepas
+				end
+				-- Tunggu selama klipnya. Length baru terisi SETELAH asetnya selesai diunduh
+				-- (putaran 2 spike membaca 0 karena hanya menunggu 0,3 detik), jadi ditunggu
+				-- dulu, dengan lantai 1,5 detik supaya gerakan pendek tetap sempat terbaca.
+				local waited = 0
+				while alive and track.Length <= 0 and waited < 5 do
+					task.wait(0.1)
+					waited += 0.1
+				end
+				local hold = math.max(track.Length, 1.5)
+				local spent = 0
+				while alive and spent < hold do
+					task.wait(0.1)
+					spent += 0.1
+				end
+				playing = nil
+				track:Stop()
+				track:Destroy()
+			end
+		end)
+	end
+
+	return function()
+		alive = false
+		conn:Disconnect()
+		if playing then
+			playing:Stop()
+			playing:Destroy()
+		end
+		clone:Destroy()
+		world:Destroy()
+		camera:Destroy()
+	end
 end
 
 function OutfitPreview.forget(self: OutfitPreview, key: string)
