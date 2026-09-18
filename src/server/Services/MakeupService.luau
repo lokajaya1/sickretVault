@@ -218,6 +218,53 @@ function MakeupService.clear(self: MakeupService, player: any): (boolean, Code?)
 	return true, nil
 end
 
+-- Pasang kembali makeup tersimpan saat join. rows = hasil PlayerData.decodeMakeup.
+-- YIELD (gateway). TIDAK menimpa kalau pemain sudah memilih makeup di sesi ini.
+-- Baris yang asetnya gagal dimuat dilewati (sisanya tetap dipasang).
+function MakeupService.restore(self: MakeupService, player: any, rows: any): (boolean, Code?)
+	local session = self._sessions[player]
+	if session == nil then
+		return false, "NOT_READY"
+	end
+	if not Makeup.isEmpty(session.makeup) then
+		return false, "NOTHING" -- pemain sudah mengubah sendiri; jangan ditimpa
+	end
+	if type(rows) ~= "table" or #rows == 0 then
+		return false, "NOTHING"
+	end
+
+	local applied = 0
+	for _, row in rows do
+		local okDecal, decalInfo = self._decals:getMakeup(row.assetId) -- yield
+		if self._sessions[player] ~= session then
+			return false, "NOT_READY"
+		end
+		if okDecal then
+			local nextState, err = Makeup.set(session.makeup, {
+				assetId = row.assetId,
+				slot = row.slot,
+				textureId = decalInfo.textureId,
+			})
+			if nextState then
+				session.makeup = nextState
+				session.templates[row.slot] = decalInfo.template
+				applied += 1
+			else
+				log.warn("makeup tersimpan ditolak", row.assetId, err)
+			end
+		else
+			log.warn("makeup tersimpan gagal dimuat", row.assetId, decalInfo and decalInfo.code)
+		end
+	end
+
+	if applied == 0 then
+		return false, "NOTHING"
+	end
+	self:reapply(player)
+	self:_publish(player)
+	return true, nil
+end
+
 -- Apakah id ini sedang dipakai sebagai makeup? (dipakai router intent remove)
 function MakeupService.isWorn(self: MakeupService, player: any, assetId: number): boolean
 	return Makeup.hasAsset(self:get(player), assetId)

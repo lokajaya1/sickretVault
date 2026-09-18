@@ -261,5 +261,35 @@ return function()
 	eq(code, "NOT_READY", "kode NOT_READY")
 	eq(#svc:dto(player), 0, "dto kosong")
 
+	-- 14. restore dari data tersimpan (assetId + slot; texture diambil ulang dari gateway)
+	svc:attach(player)
+	local rows = { { assetId = ID_FACE, slot = "face" }, { assetId = ID_LIP, slot = "lip" } }
+	ok = svc:restore(player, rows)
+	eq(ok, true, "restore berhasil")
+	eq(#svc:dto(player), 2, "dua makeup kembali")
+	eq(#ourDecals(head), 2, "decal terpasang")
+	eq(svc:isWorn(player, ID_FACE), true, "face dipakai lagi")
+
+	-- 15. restore TIDAK menimpa pilihan pemain di sesi ini
+	ok, code = svc:restore(player, rows)
+	eq(ok, false, "sudah ada makeup -> tidak ditimpa")
+	eq(code, "NOTHING", "kode NOTHING")
+
+	-- 16. baris yang gagal dimuat dilewati, sisanya tetap dipasang
+	svc:detach(player)
+	svc:attach(player)
+	ok = svc:restore(player, { { assetId = ID_BROKEN, slot = "face" }, { assetId = ID_LIP, slot = "lip" } })
+	eq(ok, true, "sebagian berhasil")
+	eq(#svc:dto(player), 1, "hanya yang berhasil")
+	eq(svc:isWorn(player, ID_LIP), true, "lip terpasang")
+	ok, code = svc:restore(player, { { assetId = ID_GONE, slot = "eye" } })
+	eq(ok, false, "state sudah terisi -> ditolak")
+	svc:detach(player)
+	svc:attach(player)
+	ok, code = svc:restore(player, {})
+	eq(ok, false, "tidak ada baris")
+	eq(code, "NOTHING", "kode NOTHING")
+	svc:detach(player)
+
 	print("PASS MakeupService.spec")
 end

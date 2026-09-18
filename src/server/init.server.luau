@@ -62,12 +62,17 @@ if Features.PlayerData then
 end
 
 -- Makeup TIDAK bisa lewat HumanoidDescription (spike #18) -> Decal di Head, service sendiri.
-local makeup = MakeupService.new({
+local makeup: MakeupService.MakeupService
+makeup = MakeupService.new({
 	decals = assetDecals,
 	itemInfo = itemInfo,
 	onState = function(player: Player, dto)
 		if player.Parent == Players then
 			makeupChanged:FireClient(player, dto)
+		end
+		if playerData then
+			-- yang disimpan cuma assetId + slot; texture diambil ulang saat join
+			playerData:setLastMakeup(player, makeup:get(player))
 		end
 	end,
 })
@@ -293,6 +298,13 @@ local function loadPlayerData(player: Player)
 	end
 	local settings = playerData:getSettings(player)
 	local saved = if settings and settings.restoreOutfit then playerData:getLastOutfit(player) else nil
+	-- makeup dipasang duluan: ia tidak ikut OutfitState, jadi tidak terpengaruh restore/apply di bawah
+	if settings and settings.restoreOutfit then
+		local okMakeup, codeMakeup = makeup:restore(player, playerData:getLastMakeup(player))
+		if okMakeup or codeMakeup ~= "NOTHING" then
+			log.info("restore makeup", okMakeup, codeMakeup, player.Name)
+		end
+	end
 	if saved then
 		local ok, code = avatar:restore(player, saved)
 		log.info("restore outfit", ok, code, player.Name)
