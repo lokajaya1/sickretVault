@@ -143,6 +143,8 @@ export type App = typeof(setmetatable(
 		wardrobe: WardrobeController.WardrobeController,
 		wardrobePanel: WardrobePanel.WardrobePanel,
 		previews: OutfitPreview.OutfitPreview,
+		_previewCard: Frame, -- kartu avatar SEKARANG (kolom kiri)
+		_live: OutfitPreview.Handle,
 		leftRail: SideRail.SideRail,
 		rightRail: SideRail.SideRail,
 		toast: Toast.Toast,
@@ -326,6 +328,45 @@ function App.mount(opts: Options?): App
 
 	-- Panel outfit tersimpan (kartu render avatar 3D): setingkat panel keranjang.
 	local previews = OutfitPreview.new()
+
+	-- Kartu avatar SEKARANG (kolom kiri gaya CAC). Kartunya menutupi PERSIS area tempat karakter
+	-- dunia berdiri (anchor kamera try-on), jadi tidak pernah ada dua avatar terlihat sekaligus --
+	-- tanpa perlu mengutak-atik transparansi karakter asli. Isinya clone karakter (OutfitPreview.
+	-- mountCurrent), dan latar AvatarBackground akhirnya punya tempat: `{ background = true }`.
+	local previewCard = Instance.new("Frame")
+	previewCard.Name = "AvatarPreview"
+	previewCard.BackgroundColor3 = Tokens.Color.Panel
+	previewCard.BackgroundTransparency = 0 -- WAJIB pekat: kartu inilah yang menutupi avatar dunia
+	previewCard.BorderSizePixel = 0
+	previewCard.Visible = false
+	previewCard.ZIndex = Tokens.ZIndex.Hud
+	previewCard.Parent = gui
+
+	local previewCorner = Instance.new("UICorner")
+	previewCorner.CornerRadius = Tokens.Radius.Large
+	previewCorner.Parent = previewCard
+
+	local previewStroke = Instance.new("UIStroke")
+	previewStroke.Color = Tokens.Color.Stroke
+	previewStroke.Transparency = Tokens.Transparency.Stroke
+	previewStroke.Parent = previewCard
+
+	local previewPort = Instance.new("ViewportFrame")
+	previewPort.Name = "Preview"
+	previewPort.BackgroundColor3 = Tokens.Color.Background
+	previewPort.BackgroundTransparency = 0
+	previewPort.Ambient = Color3.fromRGB(120, 120, 134)
+	previewPort.LightColor = Color3.fromRGB(236, 236, 245)
+	previewPort.LightDirection = Vector3.new(-0.4, -1, -0.65)
+	previewPort.Size = UDim2.fromScale(1, 1)
+	previewPort.ZIndex = Tokens.ZIndex.Hud + 1
+	previewPort.Parent = previewCard
+
+	local portCorner = Instance.new("UICorner")
+	portCorner.CornerRadius = Tokens.Radius.Large
+	portCorner.Parent = previewPort
+
+	local livePreview = previews:mountCurrent(previewPort, { background = true })
 	-- true = panel detail item dibuka dari Saved Outfits -> Back kembali ke sana, bukan ke katalog.
 	local wardrobeReturn = false
 
@@ -439,6 +480,8 @@ function App.mount(opts: Options?): App
 		wardrobe = wardrobe,
 		wardrobePanel = wardrobePanel,
 		previews = previews,
+		_previewCard = previewCard,
+		_live = livePreview,
 		leftRail = leftRail,
 		rightRail = rightRail,
 		toast = toast,
@@ -501,6 +544,10 @@ function App.mount(opts: Options?): App
 		panel:refreshSelection()
 		detailPanel:refreshWorn()
 		refreshStrip()
+		local refresh = livePreview.refresh
+		if refresh then
+			refresh() -- clone ulang karakter (0,005 detik; makeup ikut sendiri)
+		end
 	end)
 	table.insert(self._conns, { Disconnect = unsubscribe } :: any)
 
@@ -551,6 +598,10 @@ function App._refreshButtons(self: App)
 		rail:setVisible(not open)
 		rail:setCompact(L.compact)
 	end
+	local card = self._previewCard
+	card.Visible = open
+	card.Position = UDim2.fromOffset(L.previewX, L.previewY)
+	card.Size = UDim2.fromOffset(L.previewW, L.previewH)
 	local bar = self.actions.instance
 	bar.Visible = open
 	bar.AnchorPoint = Vector2.zero
@@ -697,6 +748,7 @@ function App.destroy(self: App)
 	self.cart:stop()
 	self.cartPanel:destroy()
 	self.wardrobePanel:destroy()
+	self._live.cancel()
 	self.previews:destroy()
 	self.leftRail:destroy()
 	self.rightRail:destroy()
