@@ -143,7 +143,8 @@ export type App = typeof(setmetatable(
 		wardrobe: WardrobeController.WardrobeController,
 		wardrobePanel: WardrobePanel.WardrobePanel,
 		previews: OutfitPreview.OutfitPreview,
-		_previewCard: Frame, -- kartu avatar SEKARANG (kolom kiri)
+		_previewCard: Frame, -- kartu avatar SEKARANG (kolom kiri); hanya saat latar dipakai
+		_hasBackground: boolean,
 		_live: OutfitPreview.Handle,
 		leftRail: SideRail.SideRail,
 		rightRail: SideRail.SideRail,
@@ -481,6 +482,7 @@ function App.mount(opts: Options?): App
 		wardrobePanel = wardrobePanel,
 		previews = previews,
 		_previewCard = previewCard,
+		_hasBackground = false,
 		_live = livePreview,
 		leftRail = leftRail,
 		rightRail = rightRail,
@@ -545,15 +547,22 @@ function App.mount(opts: Options?): App
 		detailPanel:refreshWorn()
 		refreshStrip()
 		local refresh = livePreview.refresh
-		if refresh then
+		if refresh and previewCard.Visible then
 			refresh() -- clone ulang karakter (0,005 detik; makeup ikut sendiri)
 		end
 	end)
 	table.insert(self._conns, { Disconnect = unsubscribe } :: any)
 
 	-- Latar area preview (AvatarBackground) -> SEMUA ViewportFrame preview sekaligus.
+	-- Latar dipakai -> kartu preview muncul (satu-satunya tempat latar bisa tergambar).
+	-- Tanpa latar kartu DISEMBUNYIKAN: avatar asli di dunia lebih hidup (cahaya, bayangan, animasi
+	-- idle), sedangkan isi ViewportFrame diam sampai PR animasi (Animator:StepAnimation).
 	local unBackground = outfit:onBackground(function(bg)
 		previews:setBackground(bg)
+		if self ~= nil then
+			self._hasBackground = bg ~= nil
+			self:_refreshButtons()
+		end
 	end)
 	table.insert(self._conns, { Disconnect = unBackground } :: any)
 	task.spawn(outfit.start, outfit) -- yield (GetState)
@@ -599,9 +608,18 @@ function App._refreshButtons(self: App)
 		rail:setCompact(L.compact)
 	end
 	local card = self._previewCard
-	card.Visible = open
+	local showCard = open and self._hasBackground
 	card.Position = UDim2.fromOffset(L.previewX, L.previewY)
 	card.Size = UDim2.fromOffset(L.previewW, L.previewH)
+	if showCard and not card.Visible then
+		card.Visible = true
+		local refresh = self._live.refresh
+		if refresh then
+			refresh() -- baru terlihat lagi: samakan dengan look sekarang
+		end
+	else
+		card.Visible = showCard
+	end
 	local bar = self.actions.instance
 	bar.Visible = open
 	bar.AnchorPoint = Vector2.zero
