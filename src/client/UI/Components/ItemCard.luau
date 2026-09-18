@@ -1,5 +1,7 @@
 --!strict
 -- Kartu item katalog: thumbnail + nama + harga + pil "Worn" + pita "LIMITED". Ukuran dari UIGridLayout.
+-- AvatarBackground bukan barang yang menempel di avatar: pilnya "IN USE" dan tombolnya "USE",
+-- supaya tidak terbaca seolah-olah latar itu dipakai seperti topi.
 -- Harga mengikuti data katalog (spike 18 Sep 2026, tests/ItemPrice.studio):
 --   resalePrice ada  -> harga pasar item limited (ada penjual ulang)
 --   price 0          -> "Free"; price nil -> "Off Sale"
@@ -60,6 +62,7 @@ export type ItemCard = typeof(setmetatable(
 		_price: TextLabel,
 		_stroke: UIStroke,
 		_badge: TextLabel,
+		_isBackground: boolean, -- latar area preview: istilah tombol & pil berbeda
 		_limited: TextLabel,
 		_overlay: TextButton,
 		_try: TextButton,
@@ -337,6 +340,7 @@ function ItemCard.new(props: Props): ItemCard
 		_price = price,
 		_stroke = stroke,
 		_badge = badge,
+		_isBackground = AssetTypeMap.Background[props.item.assetType] == true,
 		_limited = limitedBand,
 		_overlay = overlay,
 		_try = try,
@@ -412,6 +416,8 @@ function ItemCard.setItem(self: ItemCard, item: Item)
 	self._buy.TextColor3 = if forSale then Tokens.Color.AccentText else Tokens.Color.TextMuted
 	self._buy.AutoButtonColor = forSale
 	self._try.Visible = AssetTypeMap.isWearable(item.assetType)
+	self._isBackground = AssetTypeMap.Background[item.assetType] == true
+	self._badge.Text = if self._isBackground then "IN USE" else "Worn"
 	self._cart.Visible = self._hasCart and forSale
 	self:setInCart(false) -- pemanggil (CatalogPanel) mengatur ulang sesudah setItem
 	self:setArmed(false) -- kartu dipakai ulang untuk item lain
@@ -422,7 +428,7 @@ function ItemCard.setSelected(self: ItemCard, selected: boolean)
 	self._badge.Visible = selected
 	self._stroke.Color = if selected then Tokens.Color.Accent else Tokens.Color.Stroke
 	self._stroke.Transparency = if selected then 0.4 else Tokens.Transparency.Stroke
-	self._try.Text = if selected then "REMOVE" else "TRY"
+	self._try.Text = if selected then "REMOVE" elseif self._isBackground then "USE" else "TRY"
 	self._try.BackgroundColor3 = if selected then Tokens.Color.Danger else Tokens.Color.Accent
 end
 

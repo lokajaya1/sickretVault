@@ -68,14 +68,18 @@ M.Makeup = {
 	LipMakeup = true,
 }
 
--- Tipe yang ADA di katalog tapi TIDAK bisa dipasang ke avatar sama sekali.
--- AvatarBackground bukan barang yang dipakai: di CAC ia latar area preview (PR terpisah).
--- Makeup DIKELUARKAN dari daftar ini sejak PR #18: tidak lewat HumanoidDescription, tapi
--- ditempel sebagai Decal di Head oleh MakeupService -> tombol TRY dihidupkan lagi.
--- Dipakai UI untuk menyembunyikan tombol TRY, bukan untuk menyembunyikan itemnya.
-M.NotWearable = {
+-- AvatarBackground: ADA di katalog, tapi bukan barang yang menempel di avatar — ia LATAR
+-- area preview (spike 18 Sep 2026: ImageLabel di dalam ViewportFrame, di belakang rig).
+-- Diberi kind sendiri supaya ItemInfoService tidak membuangnya (kind "unknown" dibuang),
+-- dan TANPA slot supaya OutfitState.wear tetap menolaknya -> tidak pernah bocor ke description.
+M.Background = {
 	AvatarBackground = true,
 }
+
+-- Tipe yang ADA di katalog tapi tombol pakainya disembunyikan UI. Sekarang KOSONG:
+-- makeup keluar sejak PR #18 (Decal di Head), AvatarBackground keluar sejak PR avatar-background
+-- (tombolnya memasang latar preview). Dipakai UI untuk menyembunyikan tombol TRY, bukan itemnya.
+M.NotWearable = {} :: { [string]: boolean }
 
 M.BodyPartSlots = { "Head", "Torso", "LeftArm", "RightArm", "LeftLeg", "RightLeg" }
 M.AnimationSlots = {
@@ -92,7 +96,7 @@ M.ClassicSlots = { "Shirt", "Pants", "GraphicTShirt", "Face" }
 M.ColorSlots = { "HeadColor", "TorsoColor", "LeftArmColor", "RightArmColor", "LeftLegColor", "RightLegColor" }
 M.ScaleSlots = { "HeightScale", "WidthScale", "DepthScale", "HeadScale", "BodyTypeScale", "ProportionScale" }
 
-export type Kind = "bodyPart" | "animation" | "classic" | "accessory" | "makeup" | "unknown"
+export type Kind = "bodyPart" | "animation" | "classic" | "accessory" | "makeup" | "background" | "unknown"
 
 -- AssetType dari API bisa berupa string nama atau angka id -> normalisasi ke nama.
 local idToName: { [number]: string } = {}
@@ -122,6 +126,8 @@ function M.classify(assetTypeName: string): (Kind, string?)
 		return "accessory", assetTypeName
 	elseif M.Makeup[assetTypeName] then
 		return "makeup", nil -- slot nil disengaja: bukan slot HumanoidDescription mana pun
+	elseif M.Background[assetTypeName] then
+		return "background", nil -- latar area preview; slot nil karena tidak menempel di avatar
 	end
 	return "unknown", nil
 end

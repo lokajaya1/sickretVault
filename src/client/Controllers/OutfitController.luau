@@ -5,6 +5,7 @@
 --   outfit:start()                          -- dengarkan StateChanged/Notify + minta GetState
 --   outfit:onChanged(function(state) ... end)
 --   outfit:onNotify(function(msg) ... end)  -- msg = { code, op? }
+--   outfit:onBackground(function(bg) ... end) -- bg = { assetId, image, color } | nil (latar preview)
 --   outfit:toggle(item)                     -- kartu katalog: pakai / lepas
 --   outfit:isWorn(assetId) -> boolean
 --   outfit:isBundleWorn(bundleId) -> boolean   -- ada part bundle itu yang sedang dipakai
@@ -25,6 +26,7 @@ export type Deps = {
 	onState: ((fn: (state: any) -> ()) -> any)?, -- StateChanged.OnClientEvent:Connect
 	onNotice: ((fn: (msg: any) -> ()) -> any)?, -- Notify.OnClientEvent:Connect
 	onMakeup: ((fn: (dto: any) -> ()) -> any)?, -- MakeupChanged.OnClientEvent:Connect
+	onBackgroundEvent: ((fn: (dto: any) -> ()) -> any)?, -- BackgroundChanged.OnClientEvent:Connect
 }
 
 local OutfitController = {}
@@ -36,9 +38,11 @@ export type OutfitController = typeof(setmetatable(
 		_state: any?,
 		_worn: { [number]: boolean },
 		_makeup: { [number]: boolean }, -- makeup dipasang sebagai Decal, di luar OutfitState
+		_background: any?, -- latar area preview: { assetId, image, color }; di luar OutfitState juga
 		_bundles: { [number]: boolean },
 		_listeners: { (any) -> () },
 		_noticeListeners: { (Notice) -> () },
+		_backgroundListeners: { (any) -> () },
 		_conns: { any },
 		_started: boolean,
 	},
@@ -73,6 +77,10 @@ local function defaultDeps(): Deps
 			local Remotes, Names = remotes()
 			return Remotes.event(Names.Events.MakeupChanged).OnClientEvent:Connect(fn)
 		end,
+		onBackgroundEvent = function(fn)
+			local Remotes, Names = remotes()
+			return Remotes.event(Names.Events.BackgroundChanged).OnClientEvent:Connect(fn)
+		end,
 	}
 end
 
@@ -86,9 +94,11 @@ function OutfitController.new(deps: Deps?): OutfitController
 		_state = nil,
 		_worn = {},
 		_makeup = {},
+		_background = nil,
 		_bundles = {},
 		_listeners = {},
 		_noticeListeners = {},
+		_backgroundListeners = {},
 		_conns = {},
 		_started = false,
 	}, OutfitController)
@@ -174,6 +184,18 @@ function OutfitController._setMakeup(self: OutfitController, dto: any)
 	end
 end
 
+-- Latar area preview dari server ({ assetId, image, color } | nil). BUKAN bagian OutfitState:
+-- ia tidak menempel di avatar, cuma gambar di belakang ViewportFrame preview. Kartu tetap
+-- digambar ulang supaya tombol item latar ikut berubah jadi "sedang dipakai".
+function OutfitController._setBackground(self: OutfitController, dto: any)
+	local valid = if type(dto) == "table" and type(dto.assetId) == "number" then dto else nil
+	self._background = valid
+	emit(self._backgroundListeners, valid)
+	if self._state ~= nil then
+		emit(self._listeners, self._state)
+	end
+end
+
 function OutfitController._setState(self: OutfitController, state: any)
 	if type(state) ~= "table" then
 		return
@@ -213,11 +235,20 @@ function OutfitController.start(self: OutfitController)
 			end)
 		)
 	end
+	if d.onBackgroundEvent then
+		table.insert(
+			self._conns,
+			(d.onBackgroundEvent :: any)(function(dto)
+				self:_setBackground(dto)
+			end)
+		)
+	end
 	-- StateChanged awal mungkin sudah lewat (atau tertunda) -> minta juga secara eksplisit.
 	local ok, res = pcall(d.getState :: any)
 	if ok and type(res) == "table" and res.ok and self._state == nil then
 		self:_setState(res.state)
 		self:_setMakeup(res.makeup)
+		self:_setBackground(res.background)
 	elseif not ok then
 		log.warn("GetState gagal", res)
 	end
@@ -236,6 +267,9 @@ function OutfitController.getState(self: OutfitController): any?
 end
 
 function OutfitController.isWorn(self: OutfitController, assetId: number): boolean
+	if self._background ~= nil and self._background.assetId == assetId then
+		return true -- latar yang sedang terpasang: tombolnya jadi "lepas"
+	end
 	return self._worn[assetId] == true or self._makeup[assetId] == true
 end
 
@@ -259,6 +293,20 @@ end
 
 function OutfitController.onNotify(self: OutfitController, fn: (Notice) -> ()): () -> ()
 	return subscribe(self._noticeListeners, fn)
+end
+
+-- Latar area preview. Dipanggil LANGSUNG dengan nilai sekarang supaya pemasang yang datang
+-- setelah start() (mis. UI dibangun ulang) tidak kehilangan latar yang sudah berlaku.
+function OutfitController.onBackground(self: OutfitController, fn: (any) -> ()): () -> ()
+	local off = subscribe(self._backgroundListeners, fn)
+	if self._background ~= nil then
+		task.spawn(fn, self._background)
+	end
+	return off
+end
+
+function OutfitController.getBackground(self: OutfitController): any?
+	return self._background
 end
 
 function OutfitController.send(self: OutfitController, intent: { [string]: any })

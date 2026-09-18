@@ -190,7 +190,7 @@ return function()
 
 	-- ===== v4: makeup (assetId + slot saja; texture di-resolve ulang saat join) =====
 	local Makeup = require(Shared.Domain.Makeup)
-	eq(PlayerData.VERSION, 4, "skema v4")
+	eq(PlayerData.VERSION, 5, "skema v5")
 	eq(PlayerData.encodeMakeup(Makeup.empty()), nil, "tanpa makeup -> nil (tidak menambah data)")
 
 	local mk = Makeup.set(Makeup.empty(), {
@@ -231,8 +231,32 @@ return function()
 	eq(PlayerData.encodeOutfit(sample(), Makeup.empty()).mk, nil, "makeup kosong -> mk nil")
 
 	local v4 = PlayerData.migrate({ v = 3, settings = {} })
-	eq(v4.v, 4, "v3 -> v4")
+	eq(v4.v, PlayerData.VERSION, "v3 -> versi terbaru")
 	eq(v4.lastMakeup, nil, "data lama tanpa makeup tetap aman")
+
+	-- ===== v5: latar area preview (assetId saja; ImageId + Color di-resolve ulang saat dipakai) =====
+	eq(PlayerData.encodeBackground(121199209890990), 121199209890990, "assetId latar disimpan apa adanya")
+	eq(PlayerData.encodeBackground(nil), nil, "tanpa latar -> nil (tidak menambah data)")
+	eq(PlayerData.encodeBackground(0), nil, "id cacat tidak ikut tersimpan")
+	eq(PlayerData.encodeBackground("121"), nil, "string bukan id")
+	eq(PlayerData.decodeBackground(121199209890990), 121199209890990, "assetId kembali")
+	eq(PlayerData.decodeBackground(nil), nil, "nil aman")
+	eq(PlayerData.decodeBackground(1.5), nil, "pecahan dibuang")
+	eq(PlayerData.decodeBackground({ id = 5 }), nil, "tabel dibuang")
+
+	local v5 = PlayerData.migrate({ v = 4, settings = {} })
+	eq(v5.v, 5, "v4 -> v5")
+	eq(v5.lastBackground, nil, "data lama tanpa latar tetap aman")
+	eq(
+		PlayerData.migrate({ v = 4, settings = {}, lastBackground = "rusak" }).lastBackground,
+		nil,
+		"latar rusak dibuang"
+	)
+	eq(
+		PlayerData.migrate({ v = 4, settings = {}, lastBackground = 121199209890990 }).lastBackground,
+		121199209890990,
+		"latar yang sah dipertahankan"
+	)
 
 	print("PASS PlayerData.spec")
 end

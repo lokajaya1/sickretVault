@@ -488,4 +488,161 @@ function M.previewClient(assetId: number)
 	say("previewClient: TPL=sebelum parent, TPL2=sesudah parent, TEX=texture saja. Hapus: S.clear()")
 end
 
+-- ===== SPIKE LATAR PREVIEW (PR feature/avatar-background, 18 Sep 2026) =====
+-- Yang belum pasti sebelum menulis kode produksi:
+--   1. ImageLabel yang jadi ANAK ViewportFrame itu digambar atau tidak -- dan kalau digambar,
+--      ia di BELAKANG rig atau malah menutupinya?
+--   2. Cukupkah `ViewportFrame.BackgroundTransparency = 1` supaya gambar di belakangnya tembus?
+--   3. `Color` dari aset itu tint gambar (ImageColor3) atau sekadar warna dasar?
+-- Tiga panel berdampingan, rig yang sama, satu screenshot cukup:
+--   ANAK    = ImageLabel anak ViewportFrame (ZIndex 0)
+--   SAUDARA = ImageLabel saudara, di belakang ViewportFrame (VF BackgroundTransparency = 1)
+--   TINT    = sama seperti SAUDARA + ImageColor3 = Color aset
+-- Cara pakai (tab CLIENT):
+--   local S = require(game.ReplicatedStorage.Tests["MakeupDecal.studio"])
+--   S.backdrop()   -- default Prism Skies: ImageId 139431817156818, Color 0.663/0.835/0.836
+--   S.backdrop(139431817156818, Color3.new(0.663, 0.835, 0.836))
+--   S.backdropOff()
+local BACKDROP_GUI = "SPIKE_Backdrop"
+local BACKDROP_IMAGE = 139431817156818
+local BACKDROP_COLOR = Color3.new(0.663, 0.835, 0.836)
+local BACKDROP_FOV = 30
+local BACKDROP_VARIANTS = { "ANAK", "SAUDARA", "TINT" }
+
+function M.backdropOff()
+	local Players = game:GetService("Players")
+	local player = Players.LocalPlayer
+	local gui = if player then player:FindFirstChild("PlayerGui") else nil
+	local old = if gui then gui:FindFirstChild(BACKDROP_GUI) else nil
+	if old then
+		old:Destroy()
+		say("backdropOff: panel spike dihapus")
+	end
+end
+
+-- Kamera menghadap rig, dihitung dari bounding box (sama seperti OutfitPreview.frame).
+local function frameRig(rig: Model, camera: Camera)
+	local cf, size = rig:GetBoundingBox()
+	local half = math.rad(BACKDROP_FOV / 2)
+	local dist = (math.min(size.Y, 12) / 2) / math.tan(half) * 1.2 + size.Z / 2
+	camera.FieldOfView = BACKDROP_FOV
+	camera.CFrame = CFrame.lookAt(cf.Position + cf.LookVector * dist, cf.Position)
+end
+
+-- Satu panel: container + ImageLabel + ViewportFrame + WorldModel + rig client.
+local function backdropPanel(
+	screen: Instance,
+	variant: string,
+	index: number,
+	desc: HumanoidDescription,
+	imageId: number,
+	tint: Color3
+)
+	local Players = game:GetService("Players")
+	local holder = Instance.new("Frame")
+	holder.Name = variant
+	holder.Size = UDim2.fromOffset(220, 300)
+	holder.Position = UDim2.fromOffset(20 + (index - 1) * 240, 70)
+	holder.BackgroundColor3 = Color3.fromRGB(20, 20, 24)
+	holder.ClipsDescendants = true
+	holder.Parent = screen
+
+	local image = Instance.new("ImageLabel")
+	image.Name = "Backdrop"
+	image.Size = UDim2.fromScale(1, 1)
+	image.BackgroundTransparency = 1
+	image.Image = "rbxassetid://" .. tostring(imageId)
+	image.ScaleType = Enum.ScaleType.Crop
+	image.ZIndex = 1
+	if variant == "TINT" then
+		image.ImageColor3 = tint
+	end
+
+	local viewport = Instance.new("ViewportFrame")
+	viewport.Name = "Viewport"
+	viewport.Size = UDim2.fromScale(1, 1)
+	viewport.BackgroundTransparency = 1
+	viewport.ZIndex = 2
+	viewport.Parent = holder
+	-- INILAH pertanyaan nomor 1: anak ViewportFrame vs saudara di belakangnya.
+	image.Parent = if variant == "ANAK" then viewport else holder
+
+	local caption = Instance.new("TextLabel")
+	caption.Size = UDim2.new(1, 0, 0, 22)
+	caption.Position = UDim2.new(0, 0, 1, -22)
+	caption.BackgroundTransparency = 0.4
+	caption.BackgroundColor3 = Color3.new(0, 0, 0)
+	caption.Text = variant
+	caption.TextColor3 = Color3.fromRGB(255, 255, 255)
+	caption.TextScaled = true
+	caption.ZIndex = 5
+	caption.Parent = holder
+
+	local world = Instance.new("WorldModel")
+	world.Name = "Preview"
+	world.Parent = viewport
+	local camera = Instance.new("Camera")
+	camera.Parent = viewport
+	viewport.CurrentCamera = camera
+
+	local okRig, made = pcall(function()
+		return Players:CreateHumanoidModelFromDescriptionAsync(desc, Enum.HumanoidRigType.R15)
+	end)
+	if not okRig then
+		say("panel %s gagal membuat rig: %s", variant, tostring(made))
+		return
+	end
+	local rig = made :: Model
+	for _, x in rig:GetDescendants() do
+		if x:IsA("BaseScript") then
+			x:Destroy()
+		elseif x:IsA("BasePart") then
+			local part = x :: BasePart
+			part.Massless = true
+			part.CanCollide = false
+			part.CanQuery = false
+		end
+	end
+	local rigRoot = rig.PrimaryPart or rig:FindFirstChild("HumanoidRootPart")
+	if rigRoot and rigRoot:IsA("BasePart") then
+		rigRoot.Anchored = true
+	end
+	local rigHumanoid = rig:FindFirstChildOfClass("Humanoid")
+	if rigHumanoid then
+		(rigHumanoid :: Humanoid).DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
+	end
+	rig:PivotTo(CFrame.new())
+	rig.Parent = world
+	frameRig(rig, camera)
+	say("panel %s siap", variant)
+end
+
+-- [CLIENT] Tiga panel latar berdampingan (lihat catatan di atas).
+function M.backdrop(imageId: number?, color: Color3?)
+	local Players = game:GetService("Players")
+	local player = Players.LocalPlayer
+	if player == nil then
+		say("backdrop HARUS dijalankan dari tab CLIENT")
+		return
+	end
+	local char = player.Character
+	local charHumanoid = if char then char:FindFirstChildOfClass("Humanoid") else nil
+	if charHumanoid == nil then
+		say("backdrop: karakter belum siap, coba lagi sebentar")
+		return
+	end
+	M.backdropOff()
+	local desc = (charHumanoid :: Humanoid):GetAppliedDescription()
+	local screen = Instance.new("ScreenGui")
+	screen.Name = BACKDROP_GUI
+	screen.ResetOnSpawn = false
+	screen.Parent = player:WaitForChild("PlayerGui")
+	local id = imageId or BACKDROP_IMAGE
+	local tint = color or BACKDROP_COLOR
+	for i, variant in BACKDROP_VARIANTS do
+		backdropPanel(screen, variant, i, desc, id, tint)
+	end
+	say("backdrop: ANAK / SAUDARA / TINT berdampingan. Hapus: S.backdropOff()")
+end
+
 return M

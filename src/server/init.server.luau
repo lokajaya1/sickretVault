@@ -47,6 +47,7 @@ local assetDecals = AssetDecal.new() -- InsertService: id item makeup -> texture
 local stateChanged = Remotes.event(RemoteNames.Events.StateChanged)
 local notify = Remotes.event(RemoteNames.Events.Notify)
 local makeupChanged = Remotes.event(RemoteNames.Events.MakeupChanged)
+local backgroundChanged = Remotes.event(RemoteNames.Events.BackgroundChanged)
 
 -- Checkout keranjang: PromptBulkPurchase HARUS dari server; hasilnya didengarkan client.
 local checkout = CheckoutService.new()
@@ -132,12 +133,68 @@ local detailLimiter = RateLimiter.fromLimits(RemoteNames.Functions.GetItemDetail
 local checkoutLimiter = RateLimiter.fromLimits(RemoteNames.Functions.Checkout)
 local wardrobeLimiter = RateLimiter.fromLimits(RemoteNames.Functions.Wardrobe)
 
+-- 4a-0. LATAR area preview (AvatarBackground). Item ini TIDAK menempel di avatar: yang berubah
+--       cuma gambar di belakang ViewportFrame preview, per pemain. Jadi statenya satu assetId di
+--       PlayerData (bukan OutfitState, bukan timeline Undo/Redo milik AvatarService), dan
+--       intent `wear`/`remove` untuknya dihentikan di sini supaya tidak sampai ke AvatarService.
+
+-- Kirim latar ke SATU pemain. assetId nil = latar dilepas. YIELD (InsertService, di-cache gateway).
+local function pushBackground(player: Player, assetId: number?): (boolean, string?)
+	if assetId == nil then
+		backgroundChanged:FireClient(player, nil)
+		return true, nil
+	end
+	local ok, bg = assetDecals:getBackground(assetId)
+	if not ok then
+		return false, if bg then bg.code else "FAILED"
+	end
+	backgroundChanged:FireClient(player, { assetId = assetId, image = bg.image, color = bg.color })
+	return true, nil
+end
+
+-- Return (ditangani, ok, code). ditangani = false -> intent diteruskan ke jalur biasa.
+local function routeBackgroundIntent(player: Player, intent: any): (boolean, boolean, string?)
+	if intent.op ~= "wear" and intent.op ~= "remove" then
+		return false, false, nil
+	end
+	local okInfo, info = itemInfo:get(intent.assetId) -- yield; di-cache, tidak menambah request
+	if not okInfo or info.kind ~= "background" then
+		return false, false, nil
+	end
+	if playerData == nil then
+		return true, false, "NOT_READY"
+	end
+	local worn = playerData:getBackground(player)
+	if intent.op == "remove" then
+		if worn ~= info.assetId then
+			return true, false, "NOTHING"
+		end
+		playerData:setBackground(player, nil)
+		pushBackground(player, nil)
+		return true, true, nil
+	end
+	if worn == info.assetId then
+		return true, false, "NOTHING" -- klik ganda
+	end
+	-- gambar dulu, simpan belakangan: latar yang gagal dimuat tidak boleh nyangkut di profil
+	local okPush, code = pushBackground(player, info.assetId) -- yield
+	if not okPush then
+		return true, false, code or "FAILED"
+	end
+	playerData:setBackground(player, info.assetId)
+	return true, true, nil
+end
+
 -- 4a. Intent `wear` perlu tahu dulu item ini makeup atau bukan: cuma MakeupService yang bisa
 --     menerjemahkan id item -> slot + texture (InsertService, YIELD). UNSUPPORTED_TYPE = bukan
 --     makeup -> diteruskan ke AvatarService seperti biasa. (ItemInfoService punya cache, jadi
 --     pemeriksaan tipe tidak menambah request.)
 --     `remove` & `reset` TIDAK perlu dibelokkan lagi: AvatarService yang memegang state makeup.
 local function routeIntent(player: Player, intent: any): (boolean, string?)
+	local isBackground, okBg, codeBg = routeBackgroundIntent(player, intent) -- yield
+	if isBackground then
+		return okBg, codeBg
+	end
 	if intent.op == "wear" then
 		local ok, res = makeup:resolve(intent.assetId) -- yield
 		if ok then
@@ -183,7 +240,18 @@ Remotes.func(RemoteNames.Functions.GetState).OnServerInvoke = function(player: P
 	if state == nil then
 		return { ok = false, code = "NOT_READY" }
 	end
-	return { ok = true, state = state, makeup = Makeup.toDto(avatar:getMakeup(player)) }
+	local bgId = if playerData then playerData:getBackground(player) else nil
+	local background = nil
+	if bgId ~= nil then
+		local okBg, bg = assetDecals:getBackground(bgId) -- yield; di-cache
+		background = if okBg then { assetId = bgId, image = bg.image, color = bg.color } else nil
+	end
+	return {
+		ok = true,
+		state = state,
+		makeup = Makeup.toDto(avatar:getMakeup(player)),
+		background = background,
+	}
 end
 
 -- 5. CatalogSearch: rate limit -> CatalogService.search. Selalu mengembalikan tabel Response.
@@ -356,6 +424,20 @@ local function prewarmPreviewMakeup(player: Player)
 	log.info("prewarm makeup preview", ready, #ids, player.Name)
 end
 
+-- 5e-3. Latar area preview yang tersimpan: kirim ulang saat pemain join.
+-- YIELD (InsertService) -> ikut task.spawn yang sama dengan prewarm makeup.
+local function restoreBackground(player: Player)
+	if playerData == nil then
+		return
+	end
+	local assetId = playerData:getBackground(player)
+	if assetId == nil then
+		return
+	end
+	local ok, code = pushBackground(player, assetId)
+	log.info("restore latar", ok, code, player.Name)
+end
+
 -- 5f. Sesi avatar per pemain. attach yield (ambil avatar asli) -> task.spawn.
 local function onPlayerAdded(player: Player)
 	makeup:attach(player) -- sebelum avatar: onApplied bisa terpanggil saat attach
@@ -368,6 +450,10 @@ local function onPlayerAdded(player: Player)
 		log.error("data pemain gagal", dErr, player.Name)
 	end
 	task.spawn(function()
+		local bOk, bErr = pcall(restoreBackground, player)
+		if not bOk then
+			log.warn("restore latar gagal", bErr, player.Name)
+		end
 		local pOk, pErr = pcall(prewarmPreviewMakeup, player)
 		if not pOk then
 			log.warn("prewarm makeup gagal", pErr, player.Name)

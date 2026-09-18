@@ -5,6 +5,7 @@
 --   local state, err = PlayerData.decodeOutfit(data.lastOutfit) -- muat (divalidasi ulang)
 --   data.lastMakeup = PlayerData.encodeMakeup(makeupState)      -- makeup: assetId + slot saja
 --   local rows = PlayerData.decodeMakeup(data.lastMakeup)       -- texture di-resolve ulang saat join
+--   data.lastBackground = PlayerData.encodeBackground(assetId)  -- latar area preview: assetId saja
 --   local enc = PlayerData.encodeOutfit(state, makeupState)     -- slot wardrobe = SATU look utuh
 --   local rows = PlayerData.makeupOf(enc)                       -- makeup di dalam slot itu
 -- Data dari DataStore TIDAK dipercaya penuh: skema bisa berubah / rusak -> decode memvalidasi semuanya.
@@ -22,7 +23,7 @@ type State = Types.OutfitState
 
 local PlayerData = {}
 
-PlayerData.VERSION = 4
+PlayerData.VERSION = 5
 PlayerData.OUTFIT_VERSION = 1
 
 local MAX_ID = 2 ^ 53
@@ -36,6 +37,7 @@ export type Data = {
 	v: number,
 	lastOutfit: any?, -- hasil encodeOutfit (nil = pakai avatar asli)
 	lastMakeup: any?, -- hasil encodeMakeup (v4); makeup = Decal di Head, di luar OutfitState
+	lastBackground: number?, -- assetId AvatarBackground (v5); latar area preview, bukan barang dipakai
 	settings: Settings,
 	outfits: { Wardrobe.Entry }, -- slot wardrobe (v2)
 	nextOutfitId: number, -- id slot berikutnya (v2)
@@ -86,7 +88,12 @@ function PlayerData.migrate(data: any): (Data, boolean)
 	OutfitFolders.sanitize(data)
 	-- v3 -> v4: makeup (lastMakeup). Tidak ada yang perlu diisi: field baru boleh nil,
 	-- dan decodeMakeup memvalidasi ulang isinya setiap kali dibaca.
-	-- (migrasi v4 -> v5 dst. ditambahkan di sini, berurutan)
+	-- v4 -> v5: latar area preview (lastBackground = SATU assetId). Nilai rusak dibuang di sini
+	-- supaya sisa sistem boleh menganggapnya id yang sah.
+	if data.lastBackground ~= nil and not isId(data.lastBackground) then
+		data.lastBackground = nil
+	end
+	-- (migrasi v5 -> v6 dst. ditambahkan di sini, berurutan)
 	data.v = PlayerData.VERSION
 	return data, false
 end
@@ -118,6 +125,24 @@ function PlayerData.decodeMakeup(raw: any): { { assetId: number, slot: string } 
 		end
 	end
 	return out
+end
+
+-- ===== Latar area preview (v5) =====
+-- Disimpan MINIMAL: satu assetId AvatarBackground. ImageId + Color TIDAK ikut disimpan karena
+-- harus diambil ulang lewat InsertService (kreator boleh memperbarui asetnya), dan Color3 bukan
+-- nilai yang aman disimpan di DataStore.
+
+-- assetId -> nilai yang boleh disimpan (nil = tidak ada latar / id cacat).
+function PlayerData.encodeBackground(assetId: any): number?
+	return if isId(assetId) then assetId else nil
+end
+
+-- Nilai dari DataStore -> assetId yang sudah divalidasi ulang (nil = tidak ada / rusak).
+function PlayerData.decodeBackground(raw: any): number?
+	if not isId(raw) then
+		return nil
+	end
+	return raw
 end
 
 -- ===== Outfit =====

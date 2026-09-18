@@ -661,7 +661,9 @@ function ItemDetailPanel.refreshWorn(self: ItemDetailPanel)
 	end
 	local worn = self._props.isWorn(d)
 	self._toggle.Visible = AssetTypeMap.isWearable(d.assetType)
-	self._toggle.Text = if worn then "Remove" else "Try On"
+	-- Latar bukan barang yang dipakai avatar -> "Use", bukan "Try On".
+	local isBackground = AssetTypeMap.Background[d.assetType] == true
+	self._toggle.Text = if worn then "Remove" elseif isBackground then "Use" else "Try On"
 	self._toggle.BackgroundColor3 = if worn then Tokens.Color.Danger else Tokens.Color.Accent
 	for _, tile in self._tiles do
 		local on = self._props.isPartWorn(tile.part.assetId)

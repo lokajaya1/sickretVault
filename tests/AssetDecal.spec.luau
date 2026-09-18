@@ -12,6 +12,8 @@ local ID_OK = 133520807586498
 local ID_MISSING = 404
 local ID_FLAKY = 429
 local ID_NO_DECAL = 777
+local ID_BG = 121199209890990 -- Prism Skies (AvatarBackground)
+local BG_IMAGE = 139431817156818
 
 local function eq(a: any, b: any, msg: string)
 	assert(a == b, ("%s: expected %s, got %s"):format(msg, tostring(b), tostring(a)))
@@ -27,7 +29,7 @@ local function fakeDecal(texture: string): any
 	return decal
 end
 
--- Model palsu: hanya menyediakan dua method yang dipakai gateway.
+-- Model palsu: hanya menyediakan method yang dipakai gateway.
 local function fakeModel(texture: string?, destroyed: { n: number }): any
 	local model = {}
 	function model.FindFirstChildWhichIsA(_self: any, className: string, _recursive: boolean?): any
@@ -35,6 +37,36 @@ local function fakeModel(texture: string?, destroyed: { n: number }): any
 			return fakeDecal(texture)
 		end
 		return nil
+	end
+	function model.FindFirstChild(_self: any, _name: string, _recursive: boolean?): any
+		return nil -- aset makeup TIDAK punya Folder AvatarBackground
+	end
+	function model.Destroy(_self: any)
+		destroyed.n += 1
+	end
+	return model
+end
+
+-- Aset AvatarBackground palsu: Model > Folder 'AvatarBackground' > IntValue ImageId + Color3Value Color.
+-- `color` sengaja tabel penanda: gateway hanya meneruskan nilainya, tidak menafsirkannya.
+local FAKE_COLOR: any = { tanda = "Color3 palsu" }
+
+local function fakeBackgroundModel(imageId: any, destroyed: { n: number }): any
+	local folder = {}
+	function folder.FindFirstChild(_self: any, name: string): any
+		if name == "ImageId" then
+			return { Value = imageId }
+		elseif name == "Color" then
+			return { Value = FAKE_COLOR }
+		end
+		return nil
+	end
+	local model = {}
+	function model.FindFirstChild(_self: any, name: string, _recursive: boolean?): any
+		return if name == "AvatarBackground" then folder else nil
+	end
+	function model.FindFirstChildWhichIsA(_self: any, _className: string, _recursive: boolean?): any
+		return nil -- tidak ada Decal di dalam aset latar
 	end
 	function model.Destroy(_self: any)
 		destroyed.n += 1
@@ -64,6 +96,9 @@ return function()
 		end
 		if id == ID_NO_DECAL then
 			return fakeModel(nil, destroyed)
+		end
+		if id == ID_BG then
+			return fakeBackgroundModel(BG_IMAGE, destroyed)
 		end
 		return fakeModel(TEX, destroyed)
 	end
@@ -174,6 +209,42 @@ return function()
 	api:clear()
 	api:getMakeup(ID_OK)
 	eq(calls.load, 2, "setelah clear, LoadAsset dipanggil lagi")
+
+	-- 9b. latar area preview: ImageId + Color dibaca dari Folder, model tetap dibuang
+	api = newApi()
+	local okBg, bg = api:getBackground(ID_BG)
+	eq(okBg, true, "latar berhasil dibaca")
+	eq(bg.imageId, BG_IMAGE, "ImageId dari IntValue")
+	eq(bg.image, "rbxassetid://" .. tostring(BG_IMAGE), "siap dipakai ImageLabel.Image")
+	eq(bg.color, FAKE_COLOR, "Color diteruskan apa adanya")
+	eq(calls.load, 1, "LoadAsset latar sekali")
+	eq(destroyed.n, 1, "model latar dibuang")
+
+	-- 9c. cache latar TERPISAH dari cache makeup (bentuk isinya beda)
+	local okBg2, bg2 = api:getBackground(ID_BG)
+	eq(okBg2, true, "hit cache latar")
+	eq(bg2.imageId, BG_IMAGE, "ImageId sama")
+	eq(calls.load, 1, "tidak ada LoadAsset kedua")
+	local okMix = api:getMakeup(ID_BG)
+	eq(okMix, false, "aset latar bukan makeup -> tetap NO_DECAL")
+
+	-- 9d. id cacat & aset yang bukan latar ditolak jelas, lalu diingat
+	api = newApi()
+	local okBadBg, errBadBg = api:getBackground(0)
+	eq(okBadBg, false, "id cacat ditolak")
+	eq(errBadBg.code, "BAD_ARG", "kode BAD_ARG")
+	local okNoBg, errNoBg = api:getBackground(ID_OK)
+	eq(okNoBg, false, "aset makeup bukan latar")
+	eq(errNoBg.code, "NO_BACKGROUND", "kode NO_BACKGROUND")
+	api:getBackground(ID_OK)
+	eq(calls.load, 1, "hasil NO_BACKGROUND diingat")
+
+	-- 9e. clear ikut mengosongkan cache latar
+	api = newApi()
+	api:getBackground(ID_BG)
+	api:clear()
+	api:getBackground(ID_BG)
+	eq(calls.load, 2, "setelah clear, LoadAsset latar dipanggil lagi")
 
 	-- 10. penanda error permanen
 	eq(AssetDecal.isPermanentError("Asset not found"), true, "not found permanen")
