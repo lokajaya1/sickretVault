@@ -723,10 +723,19 @@ function ItemDetailPanel._buildRecs(self: ItemDetailPanel, key: string, items: {
 			Size = UDim2.new(1, -Tokens.Space.XS * 2, 0, REC_TEXT / 2),
 			Parent = b,
 		})
-		local price = item.resalePrice or item.price
+		-- Item off-sale berharga 0, jadi tanpa pemeriksaan ini barisnya menulis "Free"
+		-- (spike 19 Sep 2026 putaran 5b). Harga pasar tetap menang: resale-nya masih jalan.
+		local price = item.resalePrice
+		if price == nil and item.offSale ~= true then
+			price = item.price
+		end
+		local priceLabel = "Off Sale"
+		if price ~= nil then
+			priceLabel = if price <= 0 then "Free" else ROBUX .. " " .. tostring(price)
+		end
 		label({
 			Name = "RecPrice",
-			Text = if price == nil then "Off Sale" elseif price <= 0 then "Free" else ROBUX .. " " .. tostring(price),
+			Text = priceLabel,
 			TextSize = Tokens.TextSize.Caption,
 			TextColor3 = if price == nil then Tokens.Color.TextMuted else Tokens.Color.Robux,
 			TextWrapped = false,

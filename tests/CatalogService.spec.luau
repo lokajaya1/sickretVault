@@ -361,5 +361,150 @@ return function()
 	eq(sres.items[2].unitsLeft, nil, "item biasa tidak punya sisa stok")
 	eq(sres.items[2].totalQuantity, nil, "item biasa tidak punya stok awal")
 
+	-- 14. Panel "Search Options" (#17e): validasi angka harga & sakelar off-sale
+	assert(N({ categoryId = "hats", minPrice = -1 }) == nil, "minPrice negatif ditolak")
+	assert(N({ categoryId = "hats", minPrice = 1.5 }) == nil, "minPrice pecahan ditolak")
+	assert(N({ categoryId = "hats", minPrice = 0 / 0 }) == nil, "minPrice NaN ditolak")
+	assert(N({ categoryId = "hats", maxPrice = "100" }) == nil, "maxPrice string ditolak")
+	assert(N({ categoryId = "hats", maxPrice = 1000001 }) == nil, "maxPrice di atas batas ditolak")
+	assert(N({ categoryId = "hats", includeOffSale = "ya" }) == nil, "includeOffSale bukan boolean ditolak")
+	-- Rentang terbalik DITUKAR, bukan diteruskan: SearchCatalogAsync membalas HTTP 400
+	-- (spike 19 Sep 2026 tes 21).
+	local rp = N({ categoryId = "hats", minPrice = 200, maxPrice = 100 }) :: any
+	eq(rp.minPrice, 100, "rentang terbalik: min jadi yang kecil")
+	eq(rp.maxPrice, 200, "rentang terbalik: max jadi yang besar")
+	eq((N({ categoryId = "hats", minPrice = 0, maxPrice = 0 }) :: any).minPrice, 0, "minPrice 0 sah")
+
+	-- 14b. opsi diteruskan ke API, dan tiap kombinasi punya kunci cache sendiri
+	local optApi = fakeApi(1)
+	local optSvc = CatalogService.new({ api = optApi, toEnum = fakeEnum })
+	optSvc:search({ categoryId = "hats", minPrice = 100, maxPrice = 500, includeOffSale = true })
+	eq(optApi.lastOpts.minPrice, 100, "minPrice diteruskan ke API")
+	eq(optApi.lastOpts.maxPrice, 500, "maxPrice diteruskan ke API")
+	eq(optApi.lastOpts.includeOffSale, true, "includeOffSale diteruskan ke API")
+	local optBefore = optApi.search
+	optSvc:search({ categoryId = "hats", minPrice = 100, maxPrice = 500, includeOffSale = true })
+	eq(optApi.search, optBefore, "rentang yang sama dilayani cache")
+	optSvc:search({ categoryId = "hats", minPrice = 100, maxPrice = 400, includeOffSale = true })
+	eq(optApi.search, optBefore + 1, "rentang berbeda -> kunci cache berbeda")
+	optSvc:search({ categoryId = "hats", minPrice = 100, maxPrice = 500 })
+	eq(optApi.search, optBefore + 2, "off-sale berbeda -> kunci cache berbeda")
+	optSvc:search({ categoryId = "hats" })
+	eq(optApi.lastOpts.minPrice, nil, "tanpa rentang, API tidak dikirimi batas harga")
+
+	-- 14c. toDto: harga sentinel & penanda off-sale (spike 19 Sep 2026 putaran 5b)
+	local oddApi = fakeApi(1)
+	function oddApi.searchCatalog(self: any, opts: any)
+		self.search += 1
+		self.lastOpts = opts
+		return true,
+			{
+				items = {
+					{ Id = 1, Name = "Tak tersedia", ItemType = "Asset", AssetType = "Hat", Price = 999999999 },
+					{
+						Id = 2,
+						Name = "Ditarik",
+						ItemType = "Asset",
+						AssetType = "Hat",
+						Price = 0,
+						IsOffSale = true,
+						PriceStatus = "Off Sale",
+					},
+					{ Id = 3, Name = "Gratis sungguhan", ItemType = "Asset", AssetType = "Hat", Price = 0 },
+				},
+				isFinished = true,
+				pages = 1,
+			}
+	end
+	local oddSvc = CatalogService.new({ api = oddApi, toEnum = fakeEnum })
+	local ores = oddSvc:search({ categoryId = "hats" }) :: any
+	assert(ores.ok, "pencarian harga aneh ok")
+	eq(ores.items[1].price, nil, "999999999 bukan harga -> price nil")
+	eq(ores.items[2].price, 0, "off-sale: angka mentahnya tetap 0")
+	eq(ores.items[2].offSale, true, "IsOffSale -> offSale")
+	eq(ores.items[2].priceStatus, "Off Sale", "status harga ikut")
+	eq(ores.items[3].offSale, nil, "gratis sungguhan TIDAK ditandai off-sale")
+	eq(ores.items[3].price, 0, "gratis sungguhan tetap berharga 0")
+
+	-- 14d. Janji rentang ditegakkan DI SINI: MinPrice API meleset ~10% (minta 100, dapat 90)
+	local leakApi = fakeApi(1)
+	function leakApi.searchCatalog(self: any, opts: any)
+		self.search += 1
+		self.lastOpts = opts
+		return true,
+			{
+				items = {
+					{ Id = 1, Name = "Bocor 90", ItemType = "Asset", AssetType = "Hat", Price = 90 },
+					{ Id = 2, Name = "Pas 150", ItemType = "Asset", AssetType = "Hat", Price = 150 },
+					{ Id = 3, Name = "Terlalu mahal", ItemType = "Asset", AssetType = "Hat", Price = 900 },
+					{ Id = 4, Name = "Tak tersedia", ItemType = "Asset", AssetType = "Hat", Price = 999999999 },
+				},
+				isFinished = true,
+				pages = 1,
+			}
+	end
+	local leakSvc = CatalogService.new({ api = leakApi, toEnum = fakeEnum })
+	local lres = leakSvc:search({ categoryId = "hats", minPrice = 100, maxPrice = 500 }) :: any
+	assert(lres.ok, "pencarian rentang ok")
+	eq(#lres.items, 1, "yang di luar rentang dibuang di sini, bukan dipercayakan ke API")
+	eq(lres.items[1].id, 2, "hanya item 150 yang lolos")
+	local lall = leakSvc:search({ categoryId = "hats" }) :: any
+	eq(#lall.items, 4, "tanpa rentang, tidak ada yang disaring harga")
+
+	-- 14e. Halaman pertama yang habis tersaring BUKAN berarti "tidak ada hasil"
+	local lateApi = { search = 0, next = 0, lastOpts = nil :: any }
+	function lateApi.searchCatalog(self: any, opts: any)
+		self.search += 1
+		self.lastOpts = opts
+		return true,
+			{
+				items = { { Id = 1, Name = "Murah", ItemType = "Asset", AssetType = "Hat", Price = 5 } },
+				isFinished = false,
+				pages = 1,
+			}
+	end
+	function lateApi.nextPage(self: any, _prev: any)
+		self.next += 1
+		return true,
+			{
+				items = { { Id = 2, Name = "Pas", ItemType = "Asset", AssetType = "Hat", Price = 150 } },
+				isFinished = true,
+				pages = 2,
+			}
+	end
+	local lateSvc = CatalogService.new({ api = lateApi, toEnum = fakeEnum })
+	local late = lateSvc:search({ categoryId = "hats", minPrice = 100 }) :: any
+	assert(late.ok, "halaman 1 habis tersaring tetap ok")
+	eq(#late.items, 1, "hasil dari halaman berikutnya tetap sampai ke pemain")
+	eq(late.items[1].id, 2, "item 150 yang lolos")
+
+	-- 14f. Penjaga 429: saringan ketat tidak boleh merayapi katalog tanpa batas
+	local endlessApi = { search = 0, next = 0, lastOpts = nil :: any }
+	function endlessApi.searchCatalog(self: any, opts: any)
+		self.search += 1
+		self.lastOpts = opts
+		return true,
+			{
+				items = { { Id = 1, Name = "Murah", ItemType = "Asset", AssetType = "Hat", Price = 5 } },
+				isFinished = false,
+				pages = 1,
+			}
+	end
+	function endlessApi.nextPage(self: any, prev: any)
+		self.next += 1
+		return true,
+			{
+				items = { { Id = 99, Name = "Murah", ItemType = "Asset", AssetType = "Hat", Price = 5 } },
+				isFinished = false,
+				pages = prev.pages + 1,
+			}
+	end
+	local endlessSvc = CatalogService.new({ api = endlessApi, toEnum = fakeEnum })
+	local eres = endlessSvc:search({ categoryId = "hats", minPrice = 100 }) :: any
+	assert(eres.ok, "katalog yang selalu tersaring tetap menjawab")
+	eq(#eres.items, 0, "jujur: tidak ada yang cocok")
+	eq(eres.hasMore, false, "tidak menjanjikan halaman berikutnya")
+	eq(endlessApi.next, 2, "berhenti setelah 3 halaman kosong berturut-turut")
+
 	print("PASS CatalogService.spec")
 end

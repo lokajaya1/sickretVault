@@ -4,7 +4,8 @@
 -- supaya tidak terbaca seolah-olah latar itu dipakai seperti topi.
 -- Harga mengikuti data katalog (spike 18 Sep 2026, tests/ItemPrice.studio):
 --   resalePrice ada  -> harga pasar item limited (ada penjual ulang)
---   price 0          -> "Free"; price nil -> "Off Sale"
+--   offSale true     -> "Off Sale" (harganya datang sebagai 0 — spike 19 Sep 2026 putaran 5b)
+--   price 0          -> "Free"; price nil -> "Not for sale" (mis. bekas 999999999)
 --   priceStatus "No Resellers" tanpa resale -> "No Sellers" (tidak bisa dibeli sekarang)
 -- Tap kartu -> onActivated (CatalogPanel lalu memanggil setArmed(true)).
 -- Kartu "armed" menampilkan overlay di atas gambar: TRY/REMOVE, BUY, tombol ⓘ (detail),
@@ -27,6 +28,7 @@ export type Item = {
 	resalePrice: number?, -- harga pasar (limited dengan penjual ulang)
 	limited: boolean?, -- pita "LIMITED"
 	priceStatus: string?, -- mis. "Free", "No Resellers"
+	offSale: boolean?, -- ditarik dari penjualan; `price` 0 di sini BUKAN "gratis"
 	unitsLeft: number?, -- sisa stok limited (dipakai halaman detail)
 	assetType: string?,
 	bundleType: string?,
@@ -88,8 +90,14 @@ local function priceOf(item: Item): (string, Color3, boolean)
 	if item.resalePrice then
 		return ROBUX .. " " .. tostring(item.resalePrice), Tokens.Color.Accent, true -- harga pasar
 	end
-	if item.price == nil then
+	-- Item yang ditarik dari penjualan datang dengan harga 0, jadi pemeriksaan ini WAJIB berada
+	-- DI ATAS cabang `price <= 0`; kalau tidak, kartunya menulis "Free" (spike 19 Sep 2026 "5b").
+	if item.offSale then
 		return "Off Sale", Tokens.Color.TextMuted, false
+	end
+	if item.price == nil then
+		-- Harga 999999999 sudah dibuang CatalogService: bukan off-sale, tapi juga tidak bisa dibeli.
+		return "Not for sale", Tokens.Color.TextMuted, false
 	end
 	if item.price <= 0 then
 		if item.priceStatus == "No Resellers" then
@@ -390,11 +398,11 @@ function ItemCard.new(props: Props): ItemCard
 	hook(overlay, props.onDismiss)
 	hook(try, props.onTry)
 	hook(buy, props.onBuy, function()
-		return self.item.price ~= nil
+		return self.item.price ~= nil and not self.item.offSale
 	end)
 	hook(info, props.onInfo)
 	hook(cart, props.onCart, function()
-		return self.item.price ~= nil
+		return self.item.price ~= nil and not self.item.offSale
 	end)
 
 	self:setItem(props.item)

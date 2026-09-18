@@ -15,9 +15,10 @@ export type Detail = {
 	creatorName: string,
 	creatorType: string?, -- "User" | "Group"
 	creatorVerified: boolean,
-	price: number?, -- nil = tidak dijual
+	price: number?, -- nil = tidak dijual / harga tidak tersedia
 	lowestResalePrice: number?, -- limited/koleksi
 	isForSale: boolean,
+	offSale: boolean?, -- true = ditarik dari penjualan; `price` 0 di sini BUKAN "gratis"
 	favoriteCount: number?,
 	assetType: string?, -- aset: nama tipe, mis. "Hat"
 	bundleType: string?, -- bundle: mis. "BodyParts", "Animations"
@@ -31,6 +32,7 @@ local ItemDetail = {}
 
 ItemDetail.MAX_NAME = 100
 ItemDetail.MAX_DESCRIPTION = 1000
+ItemDetail.PRICE_UNAVAILABLE = 999999999
 
 local function isId(v: any): boolean
 	return type(v) == "number" and v > 0 and v % 1 == 0 and v <= 2 ^ 53
@@ -59,6 +61,17 @@ local function nonNegative(v: any): number?
 	return nil
 end
 
+-- Spike 19 Sep 2026 (tests/CatalogFilter.studio "5b"): 999999999 BUKAN harga — itu nilai isian
+-- Roblox untuk "harga tidak tersedia" (27 dari 30 item halaman pertama PriceHighToLow bernilai
+-- begitu). Panel tidak boleh mencetak angka itu, jadi diperlakukan sebagai tidak ada harga.
+local function priceValue(v: any): number?
+	local n = nonNegative(v)
+	if n ~= nil and n >= ItemDetail.PRICE_UNAVAILABLE then
+		return nil
+	end
+	return n
+end
+
 local function str(v: any): string?
 	return if type(v) == "string" and v ~= "" then v else nil
 end
@@ -73,8 +86,11 @@ function ItemDetail.fromRaw(raw: any, itemType: string): Detail?
 		return nil
 	end
 
-	local price = nonNegative(raw.Price)
-	local resale = nonNegative(raw.LowestResalePrice)
+	local price = priceValue(raw.Price)
+	local resale = priceValue(raw.LowestResalePrice)
+	-- Off-sale datang dengan Price = 0, jadi tanpa penanda ini panel menulis "Free" dan tombol
+	-- belinya menyala. Field IsOffSale ABSEN untuk item yang masih dijual, bukan false.
+	local offSale = raw.IsOffSale == true
 	local restrictions = raw.ItemRestrictions
 	local isLimited = false
 	if type(restrictions) == "table" then
@@ -106,13 +122,14 @@ function ItemDetail.fromRaw(raw: any, itemType: string): Detail?
 		creatorVerified = raw.CreatorHasVerifiedBadge == true,
 		price = price,
 		lowestResalePrice = resale,
-		isForSale = purchasable and (price ~= nil or resale ~= nil),
+		isForSale = not offSale and purchasable and (price ~= nil or resale ~= nil),
 		favoriteCount = nonNegative(raw.FavoriteCount),
 		assetType = if kind == "Asset" then Map.normalize(raw.AssetType) else nil,
 		bundleType = if kind == "Bundle" then str(raw.BundleType) else nil,
 		isLimited = isLimited,
 		unitsLeft = unitsLeft,
 		totalQuantity = totalQuantity,
+		offSale = if offSale then true else nil,
 		parts = nil,
 	}
 end
