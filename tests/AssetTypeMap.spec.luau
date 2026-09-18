@@ -9,9 +9,10 @@ local function eq(a: any, b: any, msg: string)
 end
 
 return function()
-	-- 1. hanya background yang tidak bisa dipasang ke avatar (latar preview, PR terpisah)
-	eq(AssetTypeMap.NotWearable.AvatarBackground, true, "background ditandai tidak bisa dipakai")
-	eq(AssetTypeMap.isWearable("AvatarBackground"), false, "background isWearable false")
+	-- 1. NotWearable sekarang KOSONG: makeup keluar di PR #18 (Decal di Head), AvatarBackground
+	--    keluar di PR avatar-background (tombolnya memasang LATAR area preview, bukan item di avatar)
+	eq(AssetTypeMap.NotWearable.AvatarBackground, nil, "background tidak lagi diblokir")
+	eq(AssetTypeMap.isWearable("AvatarBackground"), true, "background isWearable true")
 
 	-- 1b. makeup BISA dicoba sejak PR #18 (ditempel sebagai Decal, bukan lewat description)
 	for _, name in { "FaceMakeup", "LipMakeup", "EyeMakeup" } do
@@ -32,7 +33,10 @@ return function()
 	eq(makeupSlot, nil, "TANPA slot -> OutfitState.wear menolaknya")
 	eq((AssetTypeMap.classify("EyeMakeup")), "makeup", "eye makeup")
 	eq((AssetTypeMap.classify("LipMakeup")), "makeup", "lip makeup")
-	eq((AssetTypeMap.classify("AvatarBackground")), "unknown", "background tetap bukan apa-apa")
+	local bgKind, bgSlot = AssetTypeMap.classify("AvatarBackground")
+	eq(bgKind, "background", "background punya kind sendiri (kalau unknown, ItemInfoService membuangnya)")
+	eq(bgSlot, nil, "TANPA slot -> OutfitState.wear menolaknya, tidak pernah masuk description")
+	eq(AssetTypeMap.Background.AvatarBackground, true, "daftar Background berisi AvatarBackground")
 
 	print("PASS AssetTypeMap.spec")
 end
