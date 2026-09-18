@@ -150,6 +150,56 @@ return function()
 	res = svc:search({ categoryId = "hair", page = 2 }) :: any
 	assert(res.ok and res.items[1].id == 21, "halaman 2 berhasil diulang")
 
+	-- 7a2. field harga item limited diteruskan apa adanya (spike ItemPrice.studio)
+	local priceApi = { search = 0, next = 0, lastOpts = nil :: any }
+	function priceApi.searchCatalog(self: any, opts: any)
+		self.search += 1
+		self.lastOpts = opts
+		return true,
+			{
+				items = {
+					{
+						Id = 1,
+						Name = "Limited laku",
+						ItemType = "Asset",
+						AssetType = "Hat",
+						Price = 95,
+						LowestResalePrice = 105,
+						HasResellers = true,
+						ItemRestrictions = { "Collectible" },
+						UnitsAvailableForConsumption = 12,
+					},
+					{
+						Id = 2,
+						Name = "Limited tanpa penjual",
+						ItemType = "Asset",
+						AssetType = "Hat",
+						Price = 0,
+						LowestResalePrice = 700,
+						HasResellers = false,
+						ItemRestrictions = { "Collectible" },
+						PriceStatus = "No Resellers",
+					},
+					{ Id = 3, Name = "Biasa", ItemType = "Asset", AssetType = "Hat", Price = 50 },
+				},
+				isFinished = true,
+				pages = 1,
+			}
+	end
+	function priceApi.nextPage(_self: any, _prev: any)
+		return true, { items = {}, isFinished = true, pages = 2 }
+	end
+	local psvc = CatalogService.new({ api = priceApi, toEnum = fakeEnum })
+	local pres = psvc:search({ categoryId = "hats" }) :: any
+	assert(pres.ok, "search harga ok")
+	eq(pres.items[1].limited, true, "ItemRestrictions Collectible -> limited")
+	eq(pres.items[1].resalePrice, 105, "harga pasar dipakai bila ada penjual ulang")
+	eq(pres.items[1].unitsLeft, 12, "sisa stok limited")
+	eq(pres.items[2].resalePrice, nil, "tanpa penjual ulang -> harga pasar diabaikan")
+	eq(pres.items[2].priceStatus, "No Resellers", "status harga diteruskan apa adanya")
+	eq(pres.items[3].limited, nil, "item biasa tidak ditandai limited")
+	eq(pres.items[3].price, 50, "harga penerbit item biasa")
+
 	-- 7b. chip "all": semua tipe grup + sort MostFavorited (hasil spike: Relevance -> daftar gratis)
 	local capi = fakeApi(2)
 	local csvc = CatalogService.new({ api = capi, toEnum = fakeEnum })

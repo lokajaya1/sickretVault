@@ -227,26 +227,39 @@ function CatalogPanel.new(props: Props): CatalogPanel
 	})
 
 	-- Dua baris tab yang bisa digeser: grup (atas) & kategori dalam grup (bawah)
+	local conns: { RBXScriptConnection } = {}
+
+	-- CATATAN (18 Sep 2026): AutomaticCanvasSize dihitung ulang setiap properti anak berubah
+	-- (garis bawah tab aktif muncul/hilang) dan SELALU membuang posisi gulir. Karena itu canvas
+	-- dihitung sendiri dari UIListLayout: lebarnya hanya berubah saat isi tab benar-benar berganti.
 	local function tabStrip(name: string, top: number): ScrollingFrame
-		return make("ScrollingFrame", {
+		local layout = make("UIListLayout", {
+			FillDirection = Enum.FillDirection.Horizontal,
+			SortOrder = Enum.SortOrder.LayoutOrder,
+			Padding = UDim.new(0, Tokens.Space.XS + 2),
+		})
+		local bar: ScrollingFrame = make("ScrollingFrame", {
 			Name = name,
 			BackgroundTransparency = 1,
 			BorderSizePixel = 0,
 			Position = UDim2.fromOffset(0, top),
 			Size = UDim2.new(1, 0, 0, Tokens.Size.TabHeight + 6),
 			CanvasSize = UDim2.new(),
-			AutomaticCanvasSize = Enum.AutomaticSize.X,
+			AutomaticCanvasSize = Enum.AutomaticSize.None,
 			ScrollingDirection = Enum.ScrollingDirection.X,
 			ScrollBarThickness = 3,
 			ZIndex = Tokens.ZIndex.Panel,
 			Parent = root,
-		}, {
-			make("UIListLayout", {
-				FillDirection = Enum.FillDirection.Horizontal,
-				SortOrder = Enum.SortOrder.LayoutOrder,
-				Padding = UDim.new(0, Tokens.Space.XS + 2),
-			}),
-		})
+		}, { layout })
+		local function fit()
+			local w = layout.AbsoluteContentSize.X
+			if math.abs(bar.CanvasSize.X.Offset - w) > 0.5 then
+				bar.CanvasSize = UDim2.fromOffset(w, 0)
+			end
+		end
+		table.insert(conns, layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(fit))
+		fit()
+		return bar
 	end
 
 	local groupsTop = searchTop + Tokens.Size.SearchHeight + GAP
@@ -254,29 +267,10 @@ function CatalogPanel.new(props: Props): CatalogPanel
 
 	-- Tab kategori (geser horizontal)
 	local tabsTop = groupsTop + Tokens.Size.TabHeight + 6 + GAP
-	local tabBar: ScrollingFrame = make("ScrollingFrame", {
-		Name = "Tabs",
-		BackgroundTransparency = 1,
-		BorderSizePixel = 0,
-		Position = UDim2.fromOffset(0, tabsTop),
-		Size = UDim2.new(1, 0, 0, Tokens.Size.TabHeight + 6),
-		CanvasSize = UDim2.new(),
-		AutomaticCanvasSize = Enum.AutomaticSize.X,
-		ScrollingDirection = Enum.ScrollingDirection.X,
-		ScrollBarThickness = 3,
-		ZIndex = Tokens.ZIndex.Panel,
-		Parent = root,
-	}, {
-		make("UIListLayout", {
-			FillDirection = Enum.FillDirection.Horizontal,
-			SortOrder = Enum.SortOrder.LayoutOrder,
-			Padding = UDim.new(0, Tokens.Space.XS + 2),
-		}),
-	})
+	local tabBar: ScrollingFrame = tabStrip("Tabs", tabsTop)
 
 	local tabs: { [string]: TextButton } = {}
 	local groupTabs: { [string]: TextButton } = {}
-	local conns: { RBXScriptConnection } = {}
 	local self: CatalogPanel
 	local function stripTab(name: string, label: string, order: number, parent: Instance, bold: boolean): TextButton
 		local b = textButton(label, {
@@ -535,6 +529,13 @@ function CatalogPanel.new(props: Props): CatalogPanel
 			if x > 0 then
 				self._tabScroll = x
 			end
+		end)
+	)
+	-- Isi tab berubah -> Roblox menghitung ulang canvas DAN membuang posisi gulir; kembalikan.
+	table.insert(
+		conns,
+		tabBar:GetPropertyChangedSignal("AbsoluteCanvasSize"):Connect(function()
+			self:_restoreTabScroll()
 		end)
 	)
 
@@ -879,16 +880,23 @@ function CatalogPanel._applyPage(self: CatalogPanel)
 end
 
 -- Kembalikan posisi geser baris tab setelah tata letaknya dihitung ulang.
+-- Dicoba beberapa kali: ukuran canvas kadang baru selesai dihitung satu-dua frame kemudian,
+-- dan setiap perhitungan ulang membuang posisi gulir.
 function CatalogPanel._restoreTabScroll(self: CatalogPanel)
 	local want = self._tabScroll
 	if want <= 0 then
 		return
 	end
-	task.defer(function()
-		if self.instance.Parent and self._page == "list" then
-			self._tabBar.CanvasPosition = Vector2.new(want, 0)
+	local function put()
+		if self.instance.Parent and self._page == "list" and self._tabScroll == want then
+			local bar = self._tabBar
+			local maxX = math.max(0, bar.AbsoluteCanvasSize.X - bar.AbsoluteWindowSize.X)
+			bar.CanvasPosition = Vector2.new(math.min(want, maxX), 0)
 		end
-	end)
+	end
+	task.defer(put)
+	task.delay(0.05, put)
+	task.delay(0.15, put)
 end
 
 function CatalogPanel.setVisible(self: CatalogPanel, visible: boolean)

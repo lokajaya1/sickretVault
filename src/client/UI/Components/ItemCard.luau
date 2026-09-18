@@ -1,5 +1,9 @@
 --!strict
--- Kartu item katalog: thumbnail + nama + harga + pil "Worn". Ukuran diatur UIGridLayout induknya.
+-- Kartu item katalog: thumbnail + nama + harga + pil "Worn" + pita "LIMITED". Ukuran dari UIGridLayout.
+-- Harga mengikuti data katalog (spike 18 Sep 2026, tests/ItemPrice.studio):
+--   resalePrice ada  -> harga pasar item limited (ada penjual ulang)
+--   price 0          -> "Free"; price nil -> "Off Sale"
+--   priceStatus "No Resellers" tanpa resale -> "No Sellers" (tidak bisa dibeli sekarang)
 -- Tap kartu -> onActivated (CatalogPanel lalu memanggil setArmed(true)).
 -- Kartu "armed" menampilkan overlay di atas gambar: TRY/REMOVE, BUY, tombol ⓘ (detail),
 -- dan tombol keranjang 🛒 di kiri atas (bila props.onCart ada & item dijual).
@@ -16,7 +20,11 @@ export type Item = {
 	id: number,
 	itemType: string, -- "Asset" | "Bundle"
 	name: string,
-	price: number?,
+	price: number?, -- harga penerbit
+	resalePrice: number?, -- harga pasar (limited dengan penjual ulang)
+	limited: boolean?, -- pita "LIMITED"
+	priceStatus: string?, -- mis. "Free", "No Resellers"
+	unitsLeft: number?, -- sisa stok limited (dipakai halaman detail)
 	assetType: string?,
 	bundleType: string?,
 	creatorName: string?,
@@ -51,6 +59,7 @@ export type ItemCard = typeof(setmetatable(
 		_price: TextLabel,
 		_stroke: UIStroke,
 		_badge: TextLabel,
+		_limited: TextLabel,
 		_overlay: TextButton,
 		_try: TextButton,
 		_buy: TextButton,
@@ -68,13 +77,23 @@ local function thumbnail(item: Item): string
 	return ("rbxthumb://type=%s&id=%d&w=%d&h=%d"):format(kind, item.id, size, size)
 end
 
-local function priceText(price: number?): string
-	if price == nil then
-		return "Off Sale"
-	elseif price <= 0 then
-		return "Free"
+local ROBUX = utf8.char(0xE002) -- ikon Robux bawaan font Roblox
+
+-- Teks harga, warnanya, dan apakah tombol BUY aktif.
+local function priceOf(item: Item): (string, Color3, boolean)
+	if item.resalePrice then
+		return ROBUX .. " " .. tostring(item.resalePrice), Tokens.Color.Accent, true -- harga pasar
 	end
-	return utf8.char(0xE002) .. " " .. tostring(price) -- ikon Robux bawaan font Roblox
+	if item.price == nil then
+		return "Off Sale", Tokens.Color.TextMuted, false
+	end
+	if item.price <= 0 then
+		if item.priceStatus == "No Resellers" then
+			return "No Sellers", Tokens.Color.TextMuted, false -- limited habis, belum ada penjual ulang
+		end
+		return "Free", Tokens.Color.Text, true
+	end
+	return ROBUX .. " " .. tostring(item.price), Tokens.Color.Robux, true
 end
 
 local function label(name: string, parent: Instance, font: Font, size: number, color: Color3): TextLabel
@@ -166,6 +185,32 @@ function ItemCard.new(props: Props): ItemCard
 	price.Position = UDim2.new(0, pad, 1, -pad - 14)
 	price.Size = UDim2.new(1, -pad * 2, 0, 14)
 	price.ZIndex = Tokens.ZIndex.Panel
+
+	-- Pita "LIMITED" (item terbatas / ada penjual ulang) di kiri bawah gambar.
+	local limitedBand = Instance.new("TextLabel")
+	limitedBand.Name = "LimitedBand"
+	limitedBand.Text = "LIMITED"
+	limitedBand.FontFace = Tokens.Font.Bold
+	limitedBand.TextSize = 10
+	limitedBand.TextColor3 = Tokens.Color.AccentText
+	limitedBand.BackgroundColor3 = Tokens.Color.Accent
+	limitedBand.BorderSizePixel = 0
+	limitedBand.AutomaticSize = Enum.AutomaticSize.X
+	limitedBand.AnchorPoint = Vector2.new(0, 1)
+	limitedBand.Size = UDim2.fromOffset(0, 14)
+	limitedBand.Position = UDim2.new(0, pad, 1, -pad - TEXT_AREA)
+	limitedBand.ZIndex = Tokens.ZIndex.Panel + 1
+	limitedBand.Visible = false
+	limitedBand.Parent = button
+
+	local limitedCorner = Instance.new("UICorner")
+	limitedCorner.CornerRadius = Tokens.Radius.Small
+	limitedCorner.Parent = limitedBand
+
+	local limitedPad = Instance.new("UIPadding")
+	limitedPad.PaddingLeft = UDim.new(0, Tokens.Space.XS + 1)
+	limitedPad.PaddingRight = UDim.new(0, Tokens.Space.XS + 1)
+	limitedPad.Parent = limitedBand
 
 	-- Penanda "sedang dipakai": pil kecil di pojok kiri atas (bukan garis tepi penuh).
 	local badge = Instance.new("TextLabel")
@@ -290,6 +335,7 @@ function ItemCard.new(props: Props): ItemCard
 		_price = price,
 		_stroke = stroke,
 		_badge = badge,
+		_limited = limitedBand,
 		_overlay = overlay,
 		_try = try,
 		_buy = buy,
@@ -354,12 +400,13 @@ function ItemCard.setItem(self: ItemCard, item: Item)
 	self.instance.Name = "ItemCard_" .. tostring(item.id)
 	self._image.Image = thumbnail(item)
 	self._name.Text = item.name
-	self._price.Text = priceText(item.price)
-	self._price.TextColor3 = if item.price and item.price > 0 then Tokens.Color.Robux else Tokens.Color.TextMuted
+	local text, color, forSale = priceOf(item)
+	self._price.Text = text
+	self._price.TextColor3 = color
+	self._limited.Visible = item.limited == true
 	-- BUY: tidak dijual -> abu-abu & tidak bereaksi
-	local forSale = item.price ~= nil
 	self._buy.Text = if forSale then "BUY" else "OFF SALE"
-	self._buy.BackgroundColor3 = if forSale then Tokens.Color.Robux else Tokens.Color.PanelRaised
+	self._buy.BackgroundColor3 = if forSale then Tokens.Color.Accent else Tokens.Color.PanelRaised
 	self._buy.TextColor3 = if forSale then Tokens.Color.AccentText else Tokens.Color.TextMuted
 	self._buy.AutoButtonColor = forSale
 	self._cart.Visible = self._hasCart and forSale
