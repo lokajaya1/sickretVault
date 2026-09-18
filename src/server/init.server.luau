@@ -12,6 +12,7 @@ local RateLimiter = require(Shared.Util.RateLimiter)
 local Log = require(Shared.Util.Log)
 local Features = require(Shared.Config.Features)
 local PlayerData = require(Shared.Domain.PlayerData)
+local Makeup = require(Shared.Domain.Makeup)
 local IntentValidator = require(script.Validators.IntentValidator)
 local WardrobeValidator = require(script.Validators.WardrobeValidator)
 local RobloxApi = require(script.Gateways.RobloxApi)
@@ -61,29 +62,22 @@ if Features.PlayerData then
 	playerData = PlayerDataService.new({ store = store })
 end
 
--- Makeup TIDAK bisa lewat HumanoidDescription (spike #18) -> Decal di Head, service sendiri.
-local makeup: MakeupService.MakeupService
-makeup = MakeupService.new({
-	decals = assetDecals,
-	itemInfo = itemInfo,
-	onState = function(player: Player, dto)
-		if player.Parent == Players then
-			makeupChanged:FireClient(player, dto)
-		end
-		if playerData then
-			-- yang disimpan cuma assetId + slot; texture diambil ulang saat join
-			playerData:setLastMakeup(player, makeup:get(player))
-		end
-	end,
-})
+-- Makeup TIDAK bisa lewat HumanoidDescription (spike #18) -> Decal di Head.
+-- Sejak PR makeup-wardrobe service ini hanya RESOLVER + RENDERER: state look-nya milik AvatarService.
+local makeup = MakeupService.new({ decals = assetDecals, itemInfo = itemInfo })
+
+-- Dto makeup terakhir yang dikirim per pemain: StateChanged sering, makeup jarang berubah.
+local lastMakeupSent: { [Player]: any } = {}
 
 local avatar: AvatarService.AvatarService
 
--- Simpan outfit terakhir ke profil (di memori; ProfileStore yang menulis ke DataStore).
--- Sama dengan avatar asli -> hapus, supaya ganti avatar di website tetap terlihat saat join.
-local function saveOutfit(player: Player, state)
+-- Simpan LOOK terakhir (outfit + makeup) ke profil (di memori; ProfileStore yang menulis).
+-- Sama dengan avatar asli DAN tanpa makeup -> hapus, supaya ganti avatar di website tetap
+-- terlihat saat join.
+local function saveLook(player: Player, state, makeupState)
 	if playerData then
-		playerData:setLastOutfit(player, if avatar:isBaseline(player) then nil else state)
+		local keep = not avatar:isBaseline(player)
+		playerData:setLastOutfit(player, if keep then state else nil, if keep then makeupState else nil)
 	end
 end
 
@@ -92,16 +86,26 @@ avatar = AvatarService.new({
 	itemInfo = itemInfo,
 	rules = rules,
 	bundles = bundles,
-	onState = function(player: Player, state)
+	onState = function(player: Player, state, makeupState)
 		if player.Parent == Players then
 			stateChanged:FireClient(player, state)
+			-- makeup ikut look, tapi hanya dikirim kalau memang berubah (hemat redraw kartu)
+			local prev = lastMakeupSent[player]
+			if prev == nil or not Makeup.equals(prev, makeupState) then
+				lastMakeupSent[player] = makeupState
+				makeupChanged:FireClient(player, Makeup.toDto(makeupState))
+			end
 		end
-		saveOutfit(player, state)
+		saveLook(player, state, makeupState)
 	end,
 	onError = function(player: Player, code: string)
 		if player.Parent == Players then
 			notify:FireClient(player, { code = code })
 		end
+	end,
+	-- Bagian makeup dari look berubah -> tempel ulang decal (tanpa yield, template sudah di-cache).
+	applyMakeup = function(player: Player, makeupState)
+		makeup:apply(player, makeupState)
 	end,
 	-- Head bisa berganti saat respawn / apply berhasil -> decal makeup dipasang ulang.
 	onApplied = function(player: Player)
@@ -111,7 +115,12 @@ avatar = AvatarService.new({
 
 -- Wardrobe (slot outfit) butuh data pemain.
 local wardrobe = if playerData and Features.Wardrobe
-	then WardrobeService.new({ playerData = playerData, avatar = avatar, items = OutfitItemsService.new({ api = api }) })
+	then WardrobeService.new({
+		playerData = playerData,
+		avatar = avatar,
+		makeup = makeup, -- slot menyimpan look utuh: makeup di slot perlu di-resolve saat dipakai
+		items = OutfitItemsService.new({ api = api }),
+	})
 	else nil
 
 -- 3. Rate limiter per remote (preset dari Limits.Rate).
@@ -123,29 +132,20 @@ local detailLimiter = RateLimiter.fromLimits(RemoteNames.Functions.GetItemDetail
 local checkoutLimiter = RateLimiter.fromLimits(RemoteNames.Functions.Checkout)
 local wardrobeLimiter = RateLimiter.fromLimits(RemoteNames.Functions.Wardrobe)
 
--- 4a. Intent makeup dibelokkan ke MakeupService (tidak bisa lewat HumanoidDescription).
---     wear : dicoba ke makeup dulu; UNSUPPORTED_TYPE = bukan makeup -> diteruskan ke AvatarService.
---            (ItemInfoService punya cache, jadi pemeriksaan tipe dua kali tidak menambah request)
---     remove: hanya dibelokkan bila id itu memang sedang dipakai sebagai makeup.
---     reset : makeup dibersihkan, lalu outfit direset seperti biasa.
+-- 4a. Intent `wear` perlu tahu dulu item ini makeup atau bukan: cuma MakeupService yang bisa
+--     menerjemahkan id item -> slot + texture (InsertService, YIELD). UNSUPPORTED_TYPE = bukan
+--     makeup -> diteruskan ke AvatarService seperti biasa. (ItemInfoService punya cache, jadi
+--     pemeriksaan tipe tidak menambah request.)
+--     `remove` & `reset` TIDAK perlu dibelokkan lagi: AvatarService yang memegang state makeup.
 local function routeIntent(player: Player, intent: any): (boolean, string?)
-	local op = intent.op
-	if op == "wear" then
-		local ok, code = makeup:wear(player, intent.assetId)
-		if ok or code ~= "UNSUPPORTED_TYPE" then
-			return ok, code
+	if intent.op == "wear" then
+		local ok, res = makeup:resolve(intent.assetId) -- yield
+		if ok then
+			return avatar:wearMakeup(player, res)
 		end
-	elseif op == "remove" then
-		if makeup:isWorn(player, intent.assetId) then
-			return makeup:remove(player, intent.assetId)
+		if res ~= "UNSUPPORTED_TYPE" then
+			return false, res
 		end
-	elseif op == "reset" then
-		local okMakeup = makeup:clear(player)
-		local okAvatar, code = avatar:handle(player, intent)
-		if okMakeup and not okAvatar and code == "NOTHING" then
-			return true, nil -- makeup memang dibersihkan, walau outfit sudah sama dengan avatar asli
-		end
-		return okAvatar, code
 	end
 	return avatar:handle(player, intent)
 end
@@ -183,7 +183,7 @@ Remotes.func(RemoteNames.Functions.GetState).OnServerInvoke = function(player: P
 	if state == nil then
 		return { ok = false, code = "NOT_READY" }
 	end
-	return { ok = true, state = state, makeup = makeup:dto(player) }
+	return { ok = true, state = state, makeup = Makeup.toDto(avatar:getMakeup(player)) }
 end
 
 -- 5. CatalogSearch: rate limit -> CatalogService.search. Selalu mengembalikan tabel Response.
@@ -297,17 +297,19 @@ local function loadPlayerData(player: Player)
 		return
 	end
 	local settings = playerData:getSettings(player)
-	local saved = if settings and settings.restoreOutfit then playerData:getLastOutfit(player) else nil
-	-- makeup dipasang duluan: ia tidak ikut OutfitState, jadi tidak terpengaruh restore/apply di bawah
-	if settings and settings.restoreOutfit then
-		local okMakeup, codeMakeup = makeup:restore(player, playerData:getLastMakeup(player))
-		if okMakeup or codeMakeup ~= "NOTHING" then
-			log.info("restore makeup", okMakeup, codeMakeup, player.Name)
+	local wants = settings ~= nil and settings.restoreOutfit
+	local saved = if wants then playerData:getLastOutfit(player) else nil
+	-- baris makeup tersimpan -> texture & template diambil ulang (YIELD) supaya versi terbaru dipakai
+	local savedMakeup = nil
+	if wants then
+		local rows = playerData:getLastMakeup(player)
+		if #rows > 0 then
+			savedMakeup = makeup:resolveRows(rows)
 		end
 	end
-	if saved then
-		local ok, code = avatar:restore(player, saved)
-		log.info("restore outfit", ok, code, player.Name)
+	if saved or savedMakeup then
+		local ok, code = avatar:restore(player, saved, savedMakeup)
+		log.info("restore look", ok, code, player.Name)
 		if ok then
 			return -- onState sudah menyimpan
 		end
@@ -315,7 +317,7 @@ local function loadPlayerData(player: Player)
 	-- tidak di-restore (tidak ada / setting mati / pemain sudah mengubah): simpan yang sekarang
 	local current = avatar:getState(player)
 	if current then
-		saveOutfit(player, current)
+		saveLook(player, current, avatar:getMakeup(player))
 	end
 end
 
@@ -339,6 +341,7 @@ end
 Players.PlayerRemoving:Connect(function(player: Player)
 	avatar:detach(player)
 	makeup:detach(player)
+	lastMakeupSent[player] = nil
 	if playerData then
 		playerData:release(player) -- outfit terakhir sudah ada di profil (saveOutfit)
 	end
