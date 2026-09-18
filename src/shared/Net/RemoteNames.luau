@@ -8,6 +8,7 @@ return {
 		StateChanged = "StateChanged", -- server -> client: OutfitState terbaru
 		Notify = "Notify", -- server -> client: { code, message } untuk toast
 		MakeupChanged = "MakeupChanged", -- server -> client: daftar makeup terpasang (Makeup.toDto)
+		BackgroundChanged = "BackgroundChanged", -- server -> client: { assetId, image, color } | nil
 	},
 	-- RemoteFunction (client menunggu balasan)
 	Functions = {
