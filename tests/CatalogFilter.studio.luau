@@ -13,6 +13,21 @@
 --   7. Cari dengan CreatorName saja (tanpa tipe) -> ada hasil? nama ngawur -> kosong?
 --   8. Stok limited: UnitsAvailableForConsumption & TotalQuantity ada di GetItemDetailsAsync?
 --   9. AvatarEditorService:GetRecommendedAssetsAsync / GetRecommendedBundlesAsync -> ada & isinya apa?
+-- Putaran 5 (19 Sep 2026, PR #17e panel "Search Options") menjawab — dengan MENGISI propertinya,
+-- bukan cuma membaca (pelajaran #26 no. 2):
+--  10. MinPrice benar-benar dihormati (bukan cuma MaxPrice seperti yang sudah terbukti di #17b)?
+--  11. MinPrice + MaxPrice sekaligus -> hasilnya di dalam rentang?
+--  12. Rentang terbalik (min > max) -> error, atau 0 item?
+--  13. IncludeOffSale = true -> jumlahnya berubah? Apa PENANDA item off-sale di data mentah?
+--  14. PriceLowToHigh / PriceHighToLow -> benar terurut?
+--  15. Sort harga + BANYAK tipe aset -> masih kena penyakit item gratis bawaan (#17b), atau aman?
+--  16. minPrice/maxPrice digabung creatorName -> dua saringan sekaligus jalan?
+-- Putaran 5b (19 Sep 2026) — putaran 5 menjawab 21/22/23 dengan jelas tapi meninggalkan tiga
+-- tanda tanya; ini MENGUKURNYA, bukan menebak (pelajaran #25: jangan menebak dua kali):
+--  17. IncludeOffSale benar mengubah hasil? Putaran 5 tertipu JUMLAH yang sama -> bandingkan ID.
+--  18. minPrice=100 mengembalikan item berharga 90, tapi minPrice=50 patuh. Polanya apa?
+--  19. Price = 999999999 = sentinel off-sale, atau memang ada item semahal itu?
+--  20. 30 item gratis di sort harga: daftar bawaan Roblox (#17b), atau item wajar?
 
 local ServerScriptService = game:GetService("ServerScriptService")
 local Server = ServerScriptService:WaitForChild("Server")
@@ -86,6 +101,373 @@ local function run(api: any, label: string, opts: any)
 	)
 end
 
+-- ===== Putaran 5 (#17e panel "Search Options") =====
+-- Harga yang BENAR-BENAR dikembalikan: terendah, tertinggi, yang gratis, dan yang TIDAK punya harga
+-- (kandidat off-sale). `Price` nil dan `Price` 0 DIBEDAKAN di sini — `run` di atas menyamakan
+-- keduanya lewat `or 0`, padahal justru bedanya yang dicari putaran ini.
+local function pricesOf(items: { any }): (number?, number?, number, number)
+	local lo: number? = nil
+	local hi: number? = nil
+	local free, noPrice = 0, 0
+	for _, it in items do
+		local price = it.Price
+		if type(price) ~= "number" then
+			price = if type(it.LowestPrice) == "number" then it.LowestPrice else nil
+		end
+		if price == nil then
+			noPrice += 1
+		else
+			if price == 0 then
+				free += 1
+			end
+			if lo == nil or price < lo then
+				lo = price
+			end
+			if hi == nil or price > hi then
+				hi = price
+			end
+		end
+	end
+	return lo, hi, free, noPrice
+end
+
+-- Cetak semua field NON-tabel satu item: dipakai untuk mencari penanda off-sale.
+local function dumpFlat(label: string, t: any)
+	local out = {}
+	for k, v in pairs(t) do
+		if type(v) ~= "table" then
+			table.insert(out, ("%s=%s"):format(tostring(k), tostring(v)))
+		end
+	end
+	table.sort(out)
+	print(("%s %s: %s"):format(TAG, label, table.concat(out, " ")))
+end
+
+-- Satu pencarian: jumlah, rentang harga nyata, dan 5 harga PERTAMA (untuk memeriksa urutan).
+local function shot(api: any, label: string, opts: any): { any }
+	local okShot, pageShot = api:searchCatalog(opts)
+	if not okShot then
+		print(("%s %s -> GAGAL %s: %s"):format(TAG, label, tostring(pageShot.code), tostring(pageShot.message)))
+		return {}
+	end
+	local items = pageShot.items
+	local lo, hi, free, noPrice = pricesOf(items)
+	local seq = {}
+	for i, it in items do
+		if i > 5 then
+			break
+		end
+		table.insert(seq, tostring(it.Price))
+	end
+	print(
+		("%s %s -> %d item | termurah=%s termahal=%s gratis=%d tanpa-harga=%d | 5 pertama: %s"):format(
+			TAG,
+			label,
+			#items,
+			tostring(lo),
+			tostring(hi),
+			free,
+			noPrice,
+			table.concat(seq, ", ")
+		)
+	)
+	task.wait(0.25) -- jangan memberondong API (60+ request beruntun = HTTP 429, #17b)
+	return items
+end
+
+local function round17e(api: any)
+	local AT = Enum.AvatarAssetType
+	local lowHigh = enumItem("CatalogSortType", "PriceLowToHigh")
+	local highLow = enumItem("CatalogSortType", "PriceHighToLow")
+	print(("%s 18 PriceLowToHigh=%s PriceHighToLow=%s"):format(TAG, tostring(lowHigh), tostring(highLow)))
+
+	-- 18. Patokan tanpa saringan harga, diurut termurah: ujung bawah katalog yang wajar.
+	shot(api, "18 Hat lowToHigh", { assetTypes = { AT.Hat }, sortType = lowHigh, limit = 30 })
+
+	-- 19. MinPrice: kalau dihormati, TIDAK boleh ada harga di bawah 100.
+	shot(api, "19 Hat lowToHigh minPrice=100", {
+		assetTypes = { AT.Hat },
+		sortType = lowHigh,
+		minPrice = 100,
+		limit = 30,
+	})
+
+	-- 20. Rentang: semua harga harus 100..200.
+	shot(api, "20 Hat lowToHigh minPrice=100 maxPrice=200", {
+		assetTypes = { AT.Hat },
+		sortType = lowHigh,
+		minPrice = 100,
+		maxPrice = 200,
+		limit = 30,
+	})
+
+	-- 21. Rentang TERBALIK: error, atau 0 item? Menentukan apakah panel wajib menukar min/max sendiri.
+	shot(api, "21 Hat minPrice=200 maxPrice=100 (terbalik)", {
+		assetTypes = { AT.Hat },
+		sortType = lowHigh,
+		minPrice = 200,
+		maxPrice = 100,
+		limit = 30,
+	})
+
+	-- 22. Urutan menurun: harga pertama harus yang paling mahal.
+	shot(api, "22 Hat highToLow", { assetTypes = { AT.Hat }, sortType = highLow, limit = 30 })
+
+	-- 23. IncludeOffSale: jumlah & 'tanpa-harga' berubah? Lalu CARI PENANDANYA di data mentah.
+	local off = shot(api, "23 Hat lowToHigh includeOffSale=true", {
+		assetTypes = { AT.Hat },
+		sortType = lowHigh,
+		includeOffSale = true,
+		limit = 30,
+	})
+	local marked = false
+	for i, it in off do
+		local noSale = type(it.Price) ~= "number" or it.IsForSale == false
+		if noSale and not marked then
+			marked = true
+			dumpFlat(("23 off-sale #%d"):format(i), it)
+		end
+	end
+	if not marked and off[1] then
+		dumpFlat("23 tidak ada yang off-sale; #1 sebagai pembanding", off[1])
+	end
+
+	-- 24. Penyakit #17b: banyak tipe sekaligus. Sort harga aman, atau tetap item gratis bawaan?
+	shot(api, "24 3 tipe lowToHigh", {
+		assetTypes = { AT.Hat, AT.HairAccessory, AT.FaceAccessory },
+		sortType = lowHigh,
+		limit = 30,
+	})
+
+	-- 25. Apakah minPrice menyelamatkan pencarian multi-tipe?
+	shot(api, "25 3 tipe lowToHigh minPrice=100", {
+		assetTypes = { AT.Hat, AT.HairAccessory, AT.FaceAccessory },
+		sortType = lowHigh,
+		minPrice = 100,
+		limit = 30,
+	})
+
+	-- 26. Dua saringan sekaligus: creator + rentang harga (jalur yang dibuka #17d).
+	local seedRow = shot(api, "26 patokan Hat highToLow", {
+		assetTypes = { AT.Hat },
+		sortType = highLow,
+		limit = 30,
+	})
+	local who: string? = nil
+	for _, it in seedRow do
+		if type(it.CreatorName) == "string" and it.CreatorName ~= "" and it.CreatorName ~= "Roblox" then
+			who = it.CreatorName
+			break
+		end
+	end
+	if who then
+		shot(api, ("26b creatorName '%s' + minPrice=50"):format(who), {
+			creatorName = who,
+			sortType = lowHigh,
+			minPrice = 50,
+			limit = 30,
+		})
+	else
+		print(TAG .. " 26b tidak dapat nama creator dari hasil pencarian")
+	end
+end
+
+-- ===== Putaran 5b (#17e, mengukur sisa tanda tanya putaran 5) =====
+local SENTINEL17E = 999999999
+
+-- Sisi yang belum terukur putaran 5: berapa yang off-sale, berapa yang berharga sentinel, harga
+-- termurah yang NYATA (bukan sentinel, bukan off-sale), dan 5 ID pertama untuk membandingkan set.
+local function stat17e(items: { any }): (number, number, number?, string)
+	local nOff, nSentinel = 0, 0
+	local lo: number? = nil
+	local ids = {}
+	for i, it in items do
+		if it.IsOffSale == true then
+			nOff += 1
+		end
+		local price = it.Price
+		if type(price) == "number" then
+			if price >= SENTINEL17E then
+				nSentinel += 1
+			elseif it.IsOffSale ~= true then
+				if lo == nil or price < lo then
+					lo = price
+				end
+			end
+		end
+		if i <= 5 then
+			table.insert(ids, tostring(it.Id))
+		end
+	end
+	return nOff, nSentinel, lo, table.concat(ids, ",")
+end
+
+local function shot2(api: any, label: string, opts: any): { any }
+	local okS, pageS = api:searchCatalog(opts)
+	if not okS then
+		print(("%s %s -> GAGAL %s: %s"):format(TAG, label, tostring(pageS.code), tostring(pageS.message)))
+		return {}
+	end
+	local items = pageS.items
+	local nOff, nSentinel, lo, ids = stat17e(items)
+	print(
+		("%s %s -> %d item | offSale=%d sentinel=%d termurah-nyata=%s | 5 id: %s"):format(
+			TAG,
+			label,
+			#items,
+			nOff,
+			nSentinel,
+			tostring(lo),
+			ids
+		)
+	)
+	task.wait(0.25)
+	return items
+end
+
+local function idSet17e(items: { any }): { [number]: boolean }
+	local set = {}
+	for _, it in items do
+		if type(it.Id) == "number" then
+			set[it.Id] = true
+		end
+	end
+	return set
+end
+
+-- Berapa ID di `left` yang TIDAK ada di `right`.
+local function missing17e(left: { any }, right: { any }): number
+	local set = idSet17e(right)
+	local n = 0
+	for _, it in left do
+		if type(it.Id) == "number" and not set[it.Id] then
+			n += 1
+		end
+	end
+	return n
+end
+
+local function round17e2(api: any)
+	local AT2 = Enum.AvatarAssetType
+	local lowHigh2 = enumItem("CatalogSortType", "PriceLowToHigh")
+	local highLow2 = enumItem("CatalogSortType", "PriceHighToLow")
+
+	-- 27. IncludeOffSale tiga keadaan: tidak diset / true / false. Yang dibandingkan DAFTAR ID.
+	local unset = shot2(api, "27a Hat lowToHigh (includeOffSale tidak diset)", {
+		assetTypes = { AT2.Hat },
+		sortType = lowHigh2,
+		limit = 30,
+	})
+	local yes = shot2(api, "27b Hat lowToHigh includeOffSale=true", {
+		assetTypes = { AT2.Hat },
+		sortType = lowHigh2,
+		includeOffSale = true,
+		limit = 30,
+	})
+	local no = shot2(api, "27c Hat lowToHigh includeOffSale=false", {
+		assetTypes = { AT2.Hat },
+		sortType = lowHigh2,
+		includeOffSale = false,
+		limit = 30,
+	})
+	print(
+		("%s 27 ID baru di b(true): %d | hilang dari a: %d | c(false) beda dari a: %d"):format(
+			TAG,
+			missing17e(yes, unset),
+			missing17e(unset, yes),
+			missing17e(no, unset)
+		)
+	)
+
+	-- 28. Tangga minPrice: cetak SELISIH antara yang diminta dan yang benar-benar datang.
+	local ladder = { 100, 101, 150, 200, 1000 }
+	local at100: { any } = {}
+	for _, want in ladder do
+		local got = shot2(api, ("28 Hat lowToHigh minPrice=%d"):format(want), {
+			assetTypes = { AT2.Hat },
+			sortType = lowHigh2,
+			minPrice = want,
+			limit = 30,
+		})
+		local _, _, lo = stat17e(got)
+		print(
+			("%s 28 minta>=%d -> termurah-nyata=%s selisih=%s"):format(
+				TAG,
+				want,
+				tostring(lo),
+				if lo ~= nil then tostring(lo - want) else "-"
+			)
+		)
+		if want == 100 then
+			at100 = got
+		end
+	end
+
+	-- 29. Item yang LOLOS padahal di bawah minPrice: adakah field harga lain (diskon/harga asli)?
+	local naughty: any = nil
+	for _, it in at100 do
+		if type(it.Price) == "number" and it.Price < 100 and it.IsOffSale ~= true then
+			naughty = it
+			break
+		end
+	end
+	if naughty ~= nil then
+		dumpFlat("29 lolos minPrice=100 padahal Price=" .. tostring(naughty.Price), naughty)
+	else
+		print(TAG .. " 29 tidak ada item di bawah 100 -> MinPrice patuh di putaran ini")
+	end
+
+	-- 30. MaxPrice sama tepatnya, atau lebih patuh daripada MinPrice?
+	shot2(api, "30 Hat lowToHigh maxPrice=100", {
+		assetTypes = { AT2.Hat },
+		sortType = lowHigh2,
+		maxPrice = 100,
+		limit = 30,
+	})
+
+	-- 31. Sentinel 999999999: selalu item off-sale, atau harga sungguhan?
+	local high = shot2(api, "31 Hat highToLow", {
+		assetTypes = { AT2.Hat },
+		sortType = highLow2,
+		limit = 30,
+	})
+	local sentinelItem: any = nil
+	for _, it in high do
+		if type(it.Price) == "number" and it.Price >= SENTINEL17E then
+			sentinelItem = it
+			break
+		end
+	end
+	if sentinelItem ~= nil then
+		dumpFlat("31 item sentinel pertama", sentinelItem)
+	else
+		print(TAG .. " 31 tidak ada item berharga sentinel di halaman ini")
+	end
+
+	-- 32. 30 item gratis di sort harga: daftar bawaan Roblox (#17b), atau item wajar?
+	local many = shot2(api, "32 3 tipe lowToHigh", {
+		assetTypes = { AT2.Hat, AT2.HairAccessory, AT2.FaceAccessory },
+		sortType = lowHigh2,
+		limit = 30,
+	})
+	for i, it in many do
+		if i > 5 then
+			break
+		end
+		print(
+			("%s 32 #%d %s | %s | creator=%s | Price=%s offSale=%s"):format(
+				TAG,
+				i,
+				tostring(it.Name),
+				tostring(it.AssetType),
+				tostring(it.CreatorName),
+				tostring(it.Price),
+				tostring(it.IsOffSale)
+			)
+		)
+	end
+end
+
 return function(only: string?)
 	local api = RobloxApi.new()
 
@@ -96,6 +478,19 @@ return function(only: string?)
 
 	local A = Enum.AvatarAssetType
 	local B = Enum.BundleType
+
+	-- Putaran 5 dijalankan SENDIRI: require(...)("5")
+	if only == "5" then
+		round17e(api)
+		print(TAG .. " SELESAI (putaran 5 saja)")
+		return
+	end
+
+	if only == "5b" then
+		round17e2(api)
+		print(TAG .. " SELESAI (putaran 5b saja)")
+		return
+	end
 
 	-- ===== Putaran 4 (19 Sep 2026, #17d halaman detail item) =====
 	-- Ringkas satu item: persis field yang dibutuhkan halaman detail.

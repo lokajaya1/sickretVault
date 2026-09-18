@@ -14,6 +14,11 @@
 -- Kotak cari juga menerima link/ID item: Enter -> props.onLink(id, kind) (bukan pencarian).
 -- Tap kartu -> overlay TRY / BUY / ⓘ / 🛒 di kartu itu (satu kartu saja); gulir / tutup panel -> overlay hilang.
 -- Header punya tombol keranjang "🛒 n" (bila props.onOpenCart ada) di kiri tombol tutup: panel:setCartCount(n).
+-- Di ujung kanan kotak cari ada tombol "Search Options" (#17e): popover melayang berisi sort,
+-- rentang harga, creator, dan sakelar off-sale. Ikonnya digambar dari Frame, bukan glyph font
+-- (pelajaran #25 no. 3). Klik di luar popover = tutup.
+
+local TweenService = game:GetService("TweenService")
 
 local Shared = game:GetService("ReplicatedStorage"):WaitForChild("Shared")
 local Categories = require(Shared.Config.Categories)
@@ -34,6 +39,13 @@ local STATUS_H_COMPACT = 20
 local CART_BTN_W = 60
 local BACK_W = 36
 local TAB_HOLD_SECONDS = 0.5 -- lama posisi geser baris tab dijaga setelah isi berubah
+local OPT_W = 260 -- lebar popover "Search Options"
+local OPT_HEAD_H = 26 -- judul di dalam popover
+local OPT_FOOT_H = 34 -- baris tombol Reset / Apply
+local OPT_SLIDE = 8 -- jarak melorot popover saat dibuka (piksel)
+-- Tipe pencipta yang bisa dipilih di popover. "All" = properti CreatorType TIDAK diset:
+-- Enum.CreatorTypeFilter tidak punya anggota yang berarti "semua" (spike 19 Sep 2026 tes 14).
+local CREATOR_KINDS = { { label = "All" }, { label = "User", kind = "User" }, { label = "Group", kind = "Group" } }
 
 export type Props = {
 	controller: any, -- CatalogController
@@ -50,6 +62,17 @@ export type Props = {
 	getWearing: (() -> { any })?, -- daftar item terpakai untuk tab Wearing (nil = tab tidak ditampilkan)
 	-- link/ID ditempel di kotak cari lalu Enter; id = nil bila teks mirip link tapi tidak valid
 	onLink: ((id: number?, kind: ("Asset" | "Bundle")?) -> ())?,
+}
+
+-- Keadaan popover yang BELUM diterapkan. Dipisah dari state controller supaya mengetik di kotak
+-- Min tidak langsung memicu pencarian (tiga ketikan = tiga pencarian beruntun = HTTP 429, #17b).
+type OptionsDraft = {
+	sort: string,
+	minPrice: number?,
+	maxPrice: number?,
+	includeOffSale: boolean,
+	creatorName: string?,
+	creatorType: string?,
 }
 
 local CatalogPanel = {}
@@ -81,6 +104,20 @@ export type CatalogPanel = typeof(setmetatable(
 		_status: TextLabel,
 		_retry: TextButton,
 		_search: TextBox,
+		_optButton: TextButton, -- pemicu popover "Search Options"
+		_optPanel: Frame,
+		_optBody: ScrollingFrame, -- isi popover (diisi langkah 7b)
+		_optScrim: TextButton, -- penangkap klik di luar popover
+		_optOpen: boolean,
+		_optSortRows: { [string]: TextButton },
+		_optMin: TextBox,
+		_optMax: TextBox,
+		_optPresets: { TextButton },
+		_optOffSale: TextButton,
+		_optCreator: TextBox,
+		_optCreatorChips: { TextButton },
+		_optPos: UDim2, -- posisi akhir popover (dihitung applyLayout); animasi berangkat dari atasnya
+		_draft: OptionsDraft,
 		_cartButton: TextButton,
 		_tabs: { [string]: TextButton },
 		_cards: { ItemCard.ItemCard },
@@ -144,6 +181,24 @@ end
 -- Jalankan fungsi controller di thread baru (remote akan yield).
 local function spawnCall(fn: (...any) -> ...any, ...: any)
 	task.spawn(fn, ...)
+end
+
+-- Chip cepat rentang harga: di ponsel mengetik angka itu repot, jadi yang sering dipakai disiapkan.
+-- `max` nil = tanpa batas atas, `min` nil = tanpa batas bawah.
+local PRICE_PRESETS = {
+	{ label = "Free", min = 0, max = 0 },
+	{ label = "<100", max = 99 },
+	{ label = "100-500", min = 100, max = 500 },
+	{ label = "500+", min = 500 },
+}
+
+-- Angka dari kotak Min/Max: kosong / ngawur / negatif -> tidak ada batas.
+local function draftPrice(text: string): number?
+	local n = tonumber(text)
+	if n == nil or n ~= n or n < 0 then
+		return nil
+	end
+	return math.floor(n)
 end
 
 function CatalogPanel.new(props: Props): CatalogPanel
@@ -231,6 +286,285 @@ function CatalogPanel.new(props: Props): CatalogPanel
 		corner(Tokens.Radius.Medium),
 		make("UIPadding", { PaddingLeft = UDim.new(0, Tokens.Space.M), PaddingRight = UDim.new(0, Tokens.Space.M) }),
 	})
+
+	-- Tombol "Search Options" di ujung kanan kotak cari (#17e).
+	local optButton: TextButton = make("TextButton", {
+		Name = "OptButton",
+		Text = "",
+		AutoButtonColor = true,
+		BackgroundColor3 = Tokens.Color.PanelRaised,
+		BackgroundTransparency = Tokens.Transparency.PanelRaised,
+		BorderSizePixel = 0,
+		Position = UDim2.new(1, -Tokens.Size.SearchHeight, 0, searchTop),
+		Size = UDim2.fromOffset(Tokens.Size.SearchHeight, Tokens.Size.SearchHeight),
+		Visible = false,
+		ZIndex = Tokens.ZIndex.Panel,
+		Parent = root,
+	}, { corner(Tokens.Radius.Medium) })
+
+	-- Ikon tiga garis bergeser ("sliders"), DIGAMBAR: BuilderSans tidak punya glyph yang cocok dan
+	-- assetId ikon belum diverifikasi (pelajaran #25 no. 3). Warnanya diubah saat saringan aktif.
+	local lineW = { 15, 11, 15 }
+	local knobX = { 8, 2, 4 }
+	for i = 1, 3 do
+		local y = 11 + (i - 1) * 7
+		make("Frame", {
+			Name = "OptLine" .. tostring(i),
+			BackgroundColor3 = Tokens.Color.Text,
+			BorderSizePixel = 0,
+			Position = UDim2.fromOffset(11, y),
+			Size = UDim2.fromOffset(lineW[i], 2),
+			ZIndex = Tokens.ZIndex.Panel + 1,
+			Parent = optButton,
+		}, { corner(Tokens.Radius.Pill) })
+		make("Frame", {
+			Name = "OptKnob" .. tostring(i),
+			BackgroundColor3 = Tokens.Color.Text,
+			BorderSizePixel = 0,
+			Position = UDim2.fromOffset(11 + knobX[i], y - 2),
+			Size = UDim2.fromOffset(6, 6),
+			ZIndex = Tokens.ZIndex.Panel + 2,
+			Parent = optButton,
+		}, { corner(Tokens.Radius.Pill) })
+	end
+
+	-- Penangkap klik di luar popover. `Active = true` menyedot drag supaya tidak diteruskan ke grid
+	-- maupun kamera dunia di belakang panel (pelajaran #25 no. 1).
+	local optScrim: TextButton = make("TextButton", {
+		Name = "OptScrim",
+		Text = "",
+		AutoButtonColor = false,
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		Active = true,
+		Visible = false,
+		Size = UDim2.fromScale(1, 1),
+		ZIndex = Tokens.ZIndex.Popup - 1,
+		Parent = root,
+	})
+
+	local optPanel: Frame = make("Frame", {
+		Name = "OptPanel",
+		Active = true,
+		-- Uji Studio 19 Sep 2026: ZIndex-nya SEHAT (Z=20 vs Grid/Tabs Z=10, ZIndexBehavior Sibling;
+		-- dipaksa merah pekat lewat Command Bar -> menutupi kartu & tab sepenuhnya). Yang salah
+		-- KONTRAS: Color.Panel di atas panel katalog yang juga Color.Panel = batasnya hilang, dan
+		-- kartu di sekelilingnya terbaca seolah menembus. Jadi permukaannya dibuat LEBIH GELAP dari
+		-- panel, pekat penuh, dan yang memisahkan adalah tepi emasnya.
+		BackgroundColor3 = Tokens.Color.Background,
+		BackgroundTransparency = 0,
+		BorderSizePixel = 0,
+		Visible = false,
+		Size = UDim2.fromOffset(OPT_W, 200),
+		ZIndex = Tokens.ZIndex.Popup,
+		Parent = root,
+	}, {
+		corner(Tokens.Radius.Medium),
+		make("UIStroke", {
+			Color = Tokens.Color.Stroke,
+			Thickness = 1,
+			Transparency = 0.35, -- lebih tegas dari Transparency.Stroke (0.85): ini satu-satunya batas
+		}),
+	})
+
+	make("TextLabel", {
+		Name = "OptTitle",
+		Text = "Search Options",
+		FontFace = Tokens.Font.Bold,
+		TextSize = Tokens.TextSize.Body,
+		TextColor3 = Tokens.Color.Text,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		BackgroundTransparency = 1,
+		Position = UDim2.fromOffset(Tokens.Space.M, 0),
+		Size = UDim2.new(1, -Tokens.Space.M * 2, 0, OPT_HEAD_H),
+		ZIndex = Tokens.ZIndex.Popup + 1,
+		Parent = optPanel,
+	})
+
+	-- Isi popover digulir: di landscape ponsel tinggi panel bisa lebih pendek daripada isinya.
+	local optBody: ScrollingFrame = make("ScrollingFrame", {
+		Name = "OptBody",
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		ScrollBarThickness = 3,
+		ScrollBarImageColor3 = Tokens.Color.TextMuted,
+		CanvasSize = UDim2.fromOffset(0, 0),
+		-- Isinya lebih tinggi daripada popover di landscape ponsel. Posisi gulir TIDAK perlu dijaga
+		-- di sini (beda dengan baris tab, catatan 18 Sep 2026), jadi AutomaticCanvasSize aman.
+		AutomaticCanvasSize = Enum.AutomaticSize.Y,
+		Position = UDim2.fromOffset(Tokens.Space.M, OPT_HEAD_H),
+		Size = UDim2.new(1, -Tokens.Space.M * 2, 1, -(OPT_HEAD_H + OPT_FOOT_H)),
+		ZIndex = Tokens.ZIndex.Popup + 1,
+		Parent = optPanel,
+	}, {
+		make("UIListLayout", {
+			FillDirection = Enum.FillDirection.Vertical,
+			SortOrder = Enum.SortOrder.LayoutOrder,
+			Padding = UDim.new(0, Tokens.Space.XS),
+		}),
+	})
+
+	local optReset = textButton("Reset", {
+		Name = "OptReset",
+		TextSize = Tokens.TextSize.Caption,
+		Position = UDim2.new(0, Tokens.Space.M, 1, -OPT_FOOT_H + 2),
+		Size = UDim2.new(0.4, -Tokens.Space.M, 0, OPT_FOOT_H - 8),
+		ZIndex = Tokens.ZIndex.Popup + 1,
+		Parent = optPanel,
+	})
+	local optApply = textButton("Apply", {
+		Name = "OptApply",
+		TextSize = Tokens.TextSize.Caption,
+		BackgroundColor3 = Tokens.Color.Accent,
+		BackgroundTransparency = 0,
+		TextColor3 = Tokens.Color.AccentText,
+		Position = UDim2.new(0.42, 0, 1, -OPT_FOOT_H + 2),
+		Size = UDim2.new(0.58, -Tokens.Space.M, 0, OPT_FOOT_H - 8),
+		ZIndex = Tokens.ZIndex.Popup + 1,
+		Parent = optPanel,
+	})
+
+	-- Isi popover (#17e). Kontrolnya hanya menulis ke draft; `self` belum ada di sini, jadi
+	-- sambungannya dipasang di bawah bersama tombol Apply.
+	local function optLabel(text: string, order: number)
+		make("TextLabel", {
+			Name = "OptLabel" .. tostring(order),
+			Text = text,
+			FontFace = Tokens.Font.Bold,
+			TextSize = Tokens.TextSize.Caption,
+			TextColor3 = Tokens.Color.TextMuted,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			BackgroundTransparency = 1,
+			LayoutOrder = order,
+			Size = UDim2.new(1, 0, 0, 16),
+			ZIndex = Tokens.ZIndex.Popup + 1,
+			Parent = optBody,
+		})
+	end
+
+	local function optRow(name: string, order: number, height: number): Frame
+		return make("Frame", {
+			Name = name,
+			BackgroundTransparency = 1,
+			BorderSizePixel = 0,
+			LayoutOrder = order,
+			Size = UDim2.new(1, 0, 0, height),
+			ZIndex = Tokens.ZIndex.Popup + 1,
+			Parent = optBody,
+		})
+	end
+
+	local function optBox(name: string, placeholder: string, holder: Instance): TextBox
+		return make("TextBox", {
+			Name = name,
+			PlaceholderText = placeholder,
+			PlaceholderColor3 = Tokens.Color.TextMuted,
+			Text = "",
+			ClearTextOnFocus = false,
+			FontFace = Tokens.Font.Regular,
+			TextSize = Tokens.TextSize.Caption,
+			TextColor3 = Tokens.Color.Text,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			BackgroundColor3 = Tokens.Color.PanelRaised,
+			BackgroundTransparency = Tokens.Transparency.PanelRaised,
+			BorderSizePixel = 0,
+			ZIndex = Tokens.ZIndex.Popup + 1,
+			Parent = holder,
+		}, {
+			corner(Tokens.Radius.Small),
+			make("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }),
+		})
+	end
+
+	optLabel("Sort by", 1)
+	local optSortRows: { [string]: TextButton } = {}
+	local sortList: { any } = if type(ctl.SORT_OPTIONS) == "table" then ctl.SORT_OPTIONS else {}
+	for i, entry in sortList do
+		optSortRows[entry.key] = make("TextButton", {
+			Name = "OptSort_" .. tostring(entry.key),
+			Text = entry.label,
+			FontFace = Tokens.Font.Regular,
+			TextSize = Tokens.TextSize.Caption,
+			TextColor3 = Tokens.Color.TextMuted,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			BackgroundTransparency = 1,
+			AutoButtonColor = true,
+			LayoutOrder = 1 + i,
+			Size = UDim2.new(1, 0, 0, 20),
+			ZIndex = Tokens.ZIndex.Popup + 1,
+			Parent = optBody,
+		}, { make("UIPadding", { PaddingLeft = UDim.new(0, 8) }) })
+	end
+
+	optLabel("Price (R$)", 7)
+	local moneyRow = optRow("OptPriceRow", 8, 26)
+	local optMin = optBox("OptMin", "Min", moneyRow)
+	optMin.Position = UDim2.fromScale(0, 0)
+	optMin.Size = UDim2.new(0.5, -3, 1, 0)
+	local optMax = optBox("OptMax", "Max", moneyRow)
+	optMax.Position = UDim2.new(0.5, 3, 0, 0)
+	optMax.Size = UDim2.new(0.5, -3, 1, 0)
+
+	local presetRow = optRow("OptPricePresets", 9, 22)
+	local optPresets: { TextButton } = {}
+	local presetW = 1 / #PRICE_PRESETS
+	for i, preset in PRICE_PRESETS do
+		optPresets[i] = textButton(preset.label, {
+			Name = "OptPreset" .. tostring(i),
+			TextSize = Tokens.TextSize.Caption,
+			TextColor3 = Tokens.Color.TextMuted,
+			Position = UDim2.new(presetW * (i - 1), 2, 0, 0),
+			Size = UDim2.new(presetW, -4, 1, 0),
+			ZIndex = Tokens.ZIndex.Popup + 1,
+			Parent = presetRow,
+		})
+	end
+
+	local offRow = optRow("OptOffSaleRow", 10, 26)
+	make("TextLabel", {
+		Name = "OptOffSaleLabel",
+		Text = "Include off sale",
+		FontFace = Tokens.Font.Regular,
+		TextSize = Tokens.TextSize.Caption,
+		TextColor3 = Tokens.Color.Text,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1, -60, 1, 0),
+		ZIndex = Tokens.ZIndex.Popup + 1,
+		Parent = offRow,
+	})
+	local optOffSale = textButton("OFF", {
+		Name = "OptOffSale",
+		TextSize = Tokens.TextSize.Caption,
+		TextColor3 = Tokens.Color.TextMuted,
+		Position = UDim2.new(1, -56, 0, 1),
+		Size = UDim2.fromOffset(56, 24),
+		ZIndex = Tokens.ZIndex.Popup + 1,
+		Parent = offRow,
+	})
+
+	-- Creator: nama + tipe. Mengisinya melepas kategori & grup (mode creator #26) supaya SEMUA tipe
+	-- karyanya muncul; nama ngawur memberi 0 item, bukan daftar item gratis bawaan (spike tes 15e).
+	optLabel("Creator", 11)
+	local creatorRow = optRow("OptCreatorRow", 12, 26)
+	local optCreator = optBox("OptCreator", "Creator name", creatorRow)
+	optCreator.Position = UDim2.fromScale(0, 0)
+	optCreator.Size = UDim2.fromScale(1, 1)
+
+	local kindRow = optRow("OptCreatorKinds", 13, 22)
+	local optCreatorChips: { TextButton } = {}
+	local kindW = 1 / #CREATOR_KINDS
+	for i, kind in CREATOR_KINDS do
+		optCreatorChips[i] = textButton(kind.label, {
+			Name = "OptKind" .. tostring(i),
+			TextSize = Tokens.TextSize.Caption,
+			TextColor3 = Tokens.Color.TextMuted,
+			Position = UDim2.new(kindW * (i - 1), 2, 0, 0),
+			Size = UDim2.new(kindW, -4, 1, 0),
+			ZIndex = Tokens.ZIndex.Popup + 1,
+			Parent = kindRow,
+		})
+	end
 
 	-- Dua baris tab yang bisa digeser: grup (atas) & kategori dalam grup (bawah)
 	local conns: { RBXScriptConnection } = {}
@@ -442,6 +776,20 @@ function CatalogPanel.new(props: Props): CatalogPanel
 		_status = status,
 		_retry = retry,
 		_search = search,
+		_optButton = optButton,
+		_optPanel = optPanel,
+		_optBody = optBody,
+		_optScrim = optScrim,
+		_optOpen = false,
+		_optSortRows = optSortRows,
+		_optMin = optMin,
+		_optMax = optMax,
+		_optPresets = optPresets,
+		_optOffSale = optOffSale,
+		_optCreator = optCreator,
+		_optCreatorChips = optCreatorChips,
+		_optPos = UDim2.fromOffset(0, 0),
+		_draft = { sort = "Relevance", includeOffSale = false },
 		_cartButton = cartButton,
 		_tabs = tabs,
 		_cards = {},
@@ -599,7 +947,21 @@ function CatalogPanel.new(props: Props): CatalogPanel
 		search.Position = UDim2.fromOffset(leftW, sTop)
 		-- compact: cari + (keranjang) + tutup satu baris
 		local rightW = sh + GAP + (if hasCart then CART_BTN_W + GAP else 0)
-		search.Size = if c then UDim2.new(1, -(rightW + leftW), 0, sh) else UDim2.new(1, -leftW, 0, sh)
+		-- Tombol opsi menempel di ujung kanan BARIS KOTAK CARI; di compact baris itu juga berisi
+		-- keranjang & tutup, jadi ia bergeser ke kiri sebanyak rightW.
+		local optRight = if c then rightW else 0
+		optButton.Position = UDim2.new(1, -(optRight + sh), 0, sTop)
+		optButton.Size = UDim2.fromOffset(sh, sh)
+		local searchRight = leftW + optRight + sh + GAP
+		search.Size = UDim2.new(1, -searchRight, 0, sh)
+		-- Popover menggantung di bawah tombolnya, rata kanan. Lebar & tinggi DIJEPIT ke ukuran panel:
+		-- di landscape ponsel panelnya bisa lebih sempit/pendek daripada popover bawaan.
+		local optTop = sTop + sh + 4
+		local optW = math.min(OPT_W, math.max(160, L.w - Tokens.Space.M * 2))
+		local optH = math.max(90, math.min(240, L.h - optTop - GAP))
+		optPanel.Position = UDim2.new(1, -(optRight + optW), 0, optTop)
+		optPanel.Size = UDim2.fromOffset(optW, optH)
+		self._optPos = optPanel.Position -- titik akhir animasi; layar bisa berubah ukuran kapan saja
 		local grTop = sTop + sh + (if c then 6 else GAP)
 		groupBar.Position = UDim2.fromOffset(0, grTop)
 		local tTop = grTop + Tokens.Size.TabHeight + 6 + (if c then 2 else 4)
@@ -620,6 +982,96 @@ function CatalogPanel.new(props: Props): CatalogPanel
 	end
 	applyLayout()
 	table.insert(conns, host:GetPropertyChangedSignal("AbsoluteSize"):Connect(applyLayout))
+
+	table.insert(
+		conns,
+		optButton.Activated:Connect(function()
+			self:_setOptionsOpen(not self._optOpen)
+		end)
+	)
+	table.insert(
+		conns,
+		optScrim.Activated:Connect(function()
+			self:_setOptionsOpen(false)
+		end)
+	)
+	table.insert(
+		conns,
+		optReset.Activated:Connect(function()
+			self:_setOptionsOpen(false)
+			spawnCall(ctl.clearOptions, ctl)
+		end)
+	)
+	for key, row in optSortRows do
+		local pick = key
+		table.insert(
+			conns,
+			row.Activated:Connect(function()
+				self._draft.sort = pick
+				self:_syncOptionsDraft()
+			end)
+		)
+	end
+	table.insert(
+		conns,
+		optMin.FocusLost:Connect(function()
+			self._draft.minPrice = draftPrice(optMin.Text)
+			self:_syncOptionsDraft()
+		end)
+	)
+	table.insert(
+		conns,
+		optMax.FocusLost:Connect(function()
+			self._draft.maxPrice = draftPrice(optMax.Text)
+			self:_syncOptionsDraft()
+		end)
+	)
+	for i, chip in optPresets do
+		local preset = PRICE_PRESETS[i]
+		table.insert(
+			conns,
+			chip.Activated:Connect(function()
+				self._draft.minPrice = preset.min
+				self._draft.maxPrice = preset.max
+				self:_syncOptionsDraft()
+			end)
+		)
+	end
+	table.insert(
+		conns,
+		optCreator.FocusLost:Connect(function()
+			local name = string.match(optCreator.Text, "^%s*(.-)%s*$") or ""
+			self._draft.creatorName = if name ~= "" then name else nil
+			if self._draft.creatorName == nil then
+				self._draft.creatorType = nil -- tipe tanpa nama ditolak server (BAD_ARG)
+			end
+			self:_syncOptionsDraft()
+		end)
+	)
+	for i, chip in optCreatorChips do
+		local kind = CREATOR_KINDS[i].kind
+		table.insert(
+			conns,
+			chip.Activated:Connect(function()
+				self._draft.creatorType = kind
+				self:_syncOptionsDraft()
+			end)
+		)
+	end
+	table.insert(
+		conns,
+		optOffSale.Activated:Connect(function()
+			self._draft.includeOffSale = not self._draft.includeOffSale
+			self:_syncOptionsDraft()
+		end)
+	)
+	table.insert(
+		conns,
+		optApply.Activated:Connect(function()
+			self:_setOptionsOpen(false)
+			self:_applyOptions()
+		end)
+	)
 
 	self._unsubscribe = ctl:onChanged(function(state)
 		self:_render(state)
@@ -704,6 +1156,98 @@ function CatalogPanel._newCard(self: CatalogPanel, item: any, order: number): It
 end
 
 -- Kartu: pakai ulang yang ada, buat bila kurang, hapus kelebihan
+-- Buka/tutup popover "Search Options". Scrim ikut supaya klik di luar menutupnya.
+function CatalogPanel._setOptionsOpen(self: CatalogPanel, open: boolean)
+	if open then
+		self:_seedDraft() -- popover selalu terbuka menampilkan saringan yang sedang berlaku
+	end
+	self._optOpen = open
+	self._optScrim.Visible = open
+	if not open then
+		-- Menutup TANPA tween: popover yang masih terlihat 0,12 detik sesudah pemain klik di luar
+		-- terasa lambat, bukan halus.
+		self._optPanel.Visible = false
+		return
+	end
+	-- Melorot dari 8px di atas titik akhirnya. Yang ditween POSITION, bukan Size: Size memaksa
+	-- UIListLayout + AutomaticCanvasSize menghitung ulang isi popover tiap frame.
+	local target = self._optPos
+	self._optPanel.Position = target + UDim2.fromOffset(0, -OPT_SLIDE)
+	self._optPanel.Visible = true
+	TweenService:Create(self._optPanel, Tokens.Tween.Fast, { Position = target }):Play()
+end
+
+-- Tombol pemicu jadi emas selama ada saringan yang aktif, supaya pemain tahu hasilnya disaring
+-- walaupun popovernya tertutup.
+function CatalogPanel._syncOptionsMark(self: CatalogPanel)
+	local ctl = self._props.controller
+	local active = type(ctl.hasOptions) == "function" and ctl:hasOptions()
+	local tint = if active then Tokens.Color.Accent else Tokens.Color.Text
+	for _, part in self._optButton:GetChildren() do
+		if part:IsA("Frame") then
+			part.BackgroundColor3 = tint
+		end
+	end
+end
+
+-- Kirim isi popover ke controller sebagai SATU pencarian. Langkah 7b mengisi tabelnya dari
+-- kontrol di dalam popover; sekarang masih memakai keadaan yang ada.
+-- Salin saringan yang sedang berlaku ke draft (dipanggil tiap popover dibuka).
+function CatalogPanel._seedDraft(self: CatalogPanel)
+	local s = self._props.controller:getState()
+	self._draft = {
+		sort = s.sort,
+		minPrice = s.minPrice,
+		maxPrice = s.maxPrice,
+		includeOffSale = s.includeOffSale == true,
+		creatorName = s.creatorName,
+		creatorType = s.creatorType,
+	}
+	self:_syncOptionsDraft()
+end
+
+-- Gambar ulang kontrol popover dari draft.
+function CatalogPanel._syncOptionsDraft(self: CatalogPanel)
+	local d = self._draft
+	for key, row in self._optSortRows do
+		local on = key == d.sort
+		row.TextColor3 = if on then Tokens.Color.Accent else Tokens.Color.TextMuted
+		row.FontFace = if on then Tokens.Font.Bold else Tokens.Font.Regular
+	end
+	self._optMin.Text = if d.minPrice ~= nil then tostring(d.minPrice) else ""
+	self._optMax.Text = if d.maxPrice ~= nil then tostring(d.maxPrice) else ""
+	for i, chip in self._optPresets do
+		local preset = PRICE_PRESETS[i]
+		local on = d.minPrice == preset.min and d.maxPrice == preset.max
+		chip.BackgroundColor3 = if on then Tokens.Color.Accent else Tokens.Color.PanelRaised
+		chip.TextColor3 = if on then Tokens.Color.AccentText else Tokens.Color.TextMuted
+	end
+	self._optCreator.Text = d.creatorName or ""
+	for i, chip in self._optCreatorChips do
+		-- "All" (kind nil) menyala juga selama pemain belum memilih User/Group.
+		local on = CREATOR_KINDS[i].kind == d.creatorType
+		chip.BackgroundColor3 = if on then Tokens.Color.Accent else Tokens.Color.PanelRaised
+		chip.TextColor3 = if on then Tokens.Color.AccentText else Tokens.Color.TextMuted
+	end
+	self._optOffSale.Text = if d.includeOffSale then "ON" else "OFF"
+	self._optOffSale.BackgroundColor3 = if d.includeOffSale then Tokens.Color.Accent else Tokens.Color.PanelRaised
+	self._optOffSale.TextColor3 = if d.includeOffSale then Tokens.Color.AccentText else Tokens.Color.TextMuted
+end
+
+-- Apply: seluruh draft dikirim SEKALI (setOptions melakukan satu pencarian, bukan satu per kontrol).
+function CatalogPanel._applyOptions(self: CatalogPanel)
+	local ctl = self._props.controller
+	local d = self._draft
+	spawnCall(ctl.setOptions, ctl, {
+		sort = d.sort,
+		minPrice = d.minPrice,
+		maxPrice = d.maxPrice,
+		includeOffSale = d.includeOffSale,
+		creatorName = d.creatorName,
+		creatorType = d.creatorType,
+	})
+end
+
 function CatalogPanel._renderCards(self: CatalogPanel, items: { any })
 	local cards = self._cards
 	for i, item in items do
@@ -728,6 +1272,7 @@ function CatalogPanel._render(self: CatalogPanel, state: any)
 	if self._page == "menu" then
 		return -- halaman mozaik: tidak ada grid yang perlu digambar
 	end
+	self:_syncOptionsMark()
 	-- Tab aktif
 	local active: string? = if self._wearing then WEARING else self._props.controller:activeChip()
 	for id, b in self._tabs do
@@ -877,6 +1422,10 @@ function CatalogPanel._applyPage(self: CatalogPanel)
 	local group = self._group
 	self._menu:setVisible(isMenu)
 	self._search.Visible = not isMenu
+	self._optButton.Visible = not isMenu
+	if isMenu then
+		self:_setOptionsOpen(false)
+	end
 	self._back.Visible = not isMenu
 	self._tabBar.Visible = not isMenu
 	self._groupBar.Visible = not isMenu

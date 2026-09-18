@@ -8,6 +8,8 @@
 --   catalog:loadMore()               -- halaman berikutnya (abaikan jika sedang memuat / habis)
 --   catalog:setCreator("94E", "Group") -- nama creator diklik di halaman detail (#17d)
 --   catalog:clearCreator()           -- chip "94E x" di header: kembali ke kategori sebelumnya
+--   catalog:setOptions({ sort = "PriceLowToHigh", minPrice = 100 }) -- panel "Search Options" (#17e)
+--   catalog:clearOptions()           -- tombol Reset di panel itu
 -- `invoke` bisa diganti saat test (tanpa remote).
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -18,6 +20,34 @@ local CatalogMenu = require(Shared.Config.CatalogMenu)
 local Log = require(Shared.Util.Log)
 
 local log = Log.new("CatalogController")
+
+-- Cermin MAX_PRICE_INPUT di CatalogService: kalau beda, server yang menolak dan pemain melihat error.
+local MAX_PRICE = 1000000
+
+-- Urutan pilihan sort di panel "Search Options". Kuncinya nama Enum.CatalogSortType yang diterima
+-- CatalogService.SORTS. Ditaruh di sini, bukan di Config baru, supaya tidak menambah file;
+-- dibuka ke panel lewat CatalogController.SORT_OPTIONS.
+local SORT_OPTIONS = {
+	{ key = "Relevance", label = "Relevance" },
+	{ key = "MostFavorited", label = "Most Favorited" },
+	{ key = "RecentlyCreated", label = "Recently Created" },
+	{ key = "PriceLowToHigh", label = "Price: Low to High" },
+	{ key = "PriceHighToLow", label = "Price: High to Low" },
+}
+
+local SORTS: { [string]: boolean } = {}
+for _, opt in SORT_OPTIONS do
+	SORTS[opt.key] = true
+end
+
+-- Angka dari kotak teks panel: kosong/ngawur -> nil; sisanya dibulatkan & dijepit ke 0..MAX_PRICE.
+local function priceInput(v: any): number?
+	local n = if type(v) == "number" then v else tonumber(v)
+	if n == nil or n ~= n or n < 0 then
+		return nil
+	end
+	return math.min(math.floor(n), MAX_PRICE)
+end
 
 export type Item = {
 	id: number,
@@ -38,6 +68,9 @@ export type State = {
 	creatorType: string?, -- "User" | "Group"
 	keyword: string,
 	sort: string,
+	minPrice: number?, -- panel "Search Options"; bertahan saat pindah kategori
+	maxPrice: number?,
+	includeOffSale: boolean?,
 	items: { Item },
 	page: number, -- halaman terakhir yang sudah dimuat (0 = belum ada)
 	hasMore: boolean,
@@ -49,6 +82,7 @@ export type Invoke = (request: { [string]: any }) -> any
 
 local CatalogController = {}
 CatalogController.__index = CatalogController
+CatalogController.SORT_OPTIONS = SORT_OPTIONS
 
 export type CatalogController = typeof(setmetatable(
 	{} :: {
@@ -80,6 +114,9 @@ function CatalogController.new(invoke: Invoke?): CatalogController
 			creatorType = nil,
 			keyword = "",
 			sort = "Relevance",
+			minPrice = nil,
+			maxPrice = nil,
+			includeOffSale = nil,
 			items = {},
 			page = 0,
 			hasMore = true,
@@ -148,6 +185,9 @@ function CatalogController._fetch(self: CatalogController)
 		creatorType = s.creatorType,
 		keyword = s.keyword,
 		sort = s.sort,
+		minPrice = s.minPrice,
+		maxPrice = s.maxPrice,
+		includeOffSale = s.includeOffSale,
 		page = page,
 	})
 
@@ -237,12 +277,9 @@ function CatalogController.setCreator(self: CatalogController, creatorName: stri
 	self:_fetch()
 end
 
--- Chip "<nama> x" di header: kembali ke kategori/chip yang aktif sebelum masuk mode creator.
-function CatalogController.clearCreator(self: CatalogController)
+-- Kembali ke kategori/chip sebelum mode creator, TANPA memuat ulang (pemanggil yang memuat).
+function CatalogController._restoreBefore(self: CatalogController)
 	local s = self._state
-	if s.creatorName == nil then
-		return
-	end
 	local before = self._before or { categoryId = Categories.list[1].id }
 	self:_forgetCreator()
 	s.categoryId = before.categoryId
@@ -251,6 +288,14 @@ function CatalogController.clearCreator(self: CatalogController)
 	if s.categoryId == nil and s.groupId == nil then
 		s.categoryId = Categories.list[1].id
 	end
+end
+
+-- Chip "<nama> x" di header: kembali ke kategori/chip yang aktif sebelum masuk mode creator.
+function CatalogController.clearCreator(self: CatalogController)
+	if self._state.creatorName == nil then
+		return
+	end
+	self:_restoreBefore()
 	self:_reset()
 	self:_fetch()
 end
@@ -280,6 +325,86 @@ function CatalogController.setSort(self: CatalogController, sort: string)
 	self._state.sort = sort
 	self:_reset()
 	self:_fetch()
+end
+
+export type Options = {
+	sort: string?,
+	minPrice: number?,
+	maxPrice: number?,
+	includeOffSale: boolean?,
+	creatorName: string?,
+	creatorType: string?, -- "User" | "Group"; nil = semua pencipta
+}
+
+-- Tombol Apply di panel "Search Options": SEMUA pilihan dipasang sekaligus lalu SATU pencarian.
+-- Memanggil setSort/setCreator satu per satu akan menembak beberapa pencarian beruntun (HTTP 429
+-- sudah kejadian di #17b). Field yang TIDAK disebut dianggap dikosongkan: panel selalu mengirim
+-- keadaan lengkapnya, jadi `clearOptions` cukup memanggil ini dengan tabel kosong.
+function CatalogController.setOptions(self: CatalogController, opts: Options)
+	local s = self._state
+	local sort = if type(opts.sort) == "string" and SORTS[opts.sort] then opts.sort else "Relevance"
+	local minPrice = priceInput(opts.minPrice)
+	local maxPrice = priceInput(opts.maxPrice)
+	-- Ditukar di sini juga supaya kotak di panel menampilkan yang benar; server menukarnya lagi
+	-- karena API mentah membalas HTTP 400 untuk rentang terbalik (spike 19 Sep 2026 tes 21).
+	if minPrice ~= nil and maxPrice ~= nil and minPrice > maxPrice then
+		minPrice, maxPrice = maxPrice, minPrice
+	end
+	local offSale = opts.includeOffSale == true
+	local creatorName: string? = nil
+	if type(opts.creatorName) == "string" and opts.creatorName ~= "" then
+		creatorName = opts.creatorName
+	end
+	local creatorType: string? = nil
+	if creatorName ~= nil and (opts.creatorType == "User" or opts.creatorType == "Group") then
+		creatorType = opts.creatorType
+	end
+
+	local same = sort == s.sort
+		and minPrice == s.minPrice
+		and maxPrice == s.maxPrice
+		and offSale == (s.includeOffSale == true)
+		and creatorName == s.creatorName
+		and creatorType == s.creatorType
+	if same and s.page > 0 then
+		return -- Apply ditekan tanpa mengubah apa pun: jangan buang satu pencarian
+	end
+
+	if creatorName ~= nil and s.creatorName == nil then
+		self._before = { categoryId = s.categoryId, groupId = s.groupId, filter = s.filter }
+	end
+	s.sort = sort
+	s.minPrice = minPrice
+	s.maxPrice = maxPrice
+	s.includeOffSale = if offSale then true else nil
+	if creatorName ~= nil then
+		-- Mode creator melepas kategori & grup supaya SEMUA tipe karyanya muncul (#17d).
+		s.creatorName = creatorName
+		s.creatorType = creatorType
+		s.categoryId = nil
+		s.groupId = nil
+		s.filter = nil
+		s.keyword = ""
+	elseif s.creatorName ~= nil then
+		self:_restoreBefore()
+	end
+	self:_reset()
+	self:_fetch()
+end
+
+-- Tombol Reset di panel: semua pilihan kembali ke bawaan, termasuk keluar dari mode creator.
+function CatalogController.clearOptions(self: CatalogController)
+	self:setOptions({})
+end
+
+-- Panel memakai ini untuk menyalakan ikon pemicu selama ada saringan yang aktif.
+function CatalogController.hasOptions(self: CatalogController): boolean
+	local s = self._state
+	return s.sort ~= "Relevance"
+		or s.minPrice ~= nil
+		or s.maxPrice ~= nil
+		or s.includeOffSale == true
+		or s.creatorName ~= nil
 end
 
 function CatalogController.loadMore(self: CatalogController)

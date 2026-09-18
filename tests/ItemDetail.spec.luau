@@ -108,5 +108,54 @@ return function()
 	eq(biasa.unitsLeft, nil, "item biasa tidak punya sisa stok")
 	eq(biasa.totalQuantity, nil, "item biasa tidak punya stok awal")
 
+	-- 6. Harga jujur (#17e, spike 19 Sep 2026 putaran 5b)
+	local ditarik = ItemDetail.fromRaw({
+		Id = 10,
+		Name = "Ditarik dari penjualan",
+		AssetType = "Hat",
+		Price = 0,
+		IsOffSale = true,
+		PriceStatus = "Off Sale",
+		IsPurchasable = true,
+	}, "Asset")
+	assert(ditarik, "item off-sale terbaca")
+	eq(ditarik.offSale, true, "IsOffSale -> offSale")
+	eq(ditarik.isForSale, false, "off-sale tidak bisa dibeli walau IsPurchasable true")
+	eq(ditarik.price, 0, "angka mentahnya tetap 0")
+
+	local takAda = ItemDetail.fromRaw({
+		Id = 11,
+		Name = "Harga tidak tersedia",
+		AssetType = "Hat",
+		Price = 999999999,
+		IsPurchasable = true,
+	}, "Asset")
+	assert(takAda, "item berharga sentinel terbaca")
+	eq(takAda.price, nil, "999999999 bukan harga")
+	eq(takAda.isForSale, false, "tanpa harga -> tidak dijual")
+	eq(takAda.offSale, nil, "sentinel BUKAN off-sale: ia tidak punya IsOffSale")
+
+	local resaleAneh = ItemDetail.fromRaw({
+		Id = 12,
+		AssetType = "Hat",
+		ItemRestrictions = { "Collectible" },
+		LowestResalePrice = 999999999,
+		IsPurchasable = true,
+	}, "Asset")
+	assert(resaleAneh, "limited dengan resale sentinel terbaca")
+	eq(resaleAneh.lowestResalePrice, nil, "harga resale sentinel ikut dibuang")
+	eq(resaleAneh.isForSale, false, "tanpa harga apa pun -> tidak dijual")
+
+	local gratis = ItemDetail.fromRaw({
+		Id = 13,
+		Name = "Gratis sungguhan",
+		AssetType = "Hat",
+		Price = 0,
+		IsPurchasable = true,
+	}, "Asset")
+	assert(gratis, "item gratis terbaca")
+	eq(gratis.offSale, nil, "gratis sungguhan tidak ditandai off-sale")
+	eq(gratis.isForSale, true, "gratis tetap bisa diambil")
+
 	print("PASS ItemDetail.spec")
 end

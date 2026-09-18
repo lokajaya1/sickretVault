@@ -5,6 +5,7 @@
 --   local res = catalog:search({ categoryId = "hats", keyword = "", sort = "Relevance", page = 1 })
 --   local res = catalog:search({ groupId = "clothing", filter = "free", page = 1 })  -- chip baris kedua
 --   local res = catalog:search({ creatorName = "94E", creatorType = "Group" })       -- klik nama creator
+--   local res = catalog:search({ categoryId = "hats", minPrice = 100, maxPrice = 500 }) -- Search Options
 -- Pencarian creator boleh TANPA kategori/grup (semua tipe); spike 19 Sep 2026: nama ngawur -> 0 item,
 -- bukan daftar item gratis bawaan seperti penyakit multi-tipe + Relevance di #17b.
 -- Chip grup (Config/CatalogMenu.FILTERS): "all" (semua tipe grup), "free" (MaxPrice 0),
@@ -41,6 +42,16 @@ local LIMITED_RESTRICTIONS: { [string]: boolean } = {
 	Limited = true,
 	LimitedUnique = true,
 }
+-- Spike 19 Sep 2026 (tests/CatalogFilter.studio "5b"): `Price` 999999999 BUKAN harga — itu nilai
+-- isian Roblox untuk "harga tidak tersedia", dan 27 dari 30 item halaman pertama PriceHighToLow
+-- bernilai begitu. Item semacam ini TIDAK punya field IsOffSale, jadi ia bukan off-sale.
+local PRICE_UNAVAILABLE = 999999999
+-- Batas angka yang boleh diketik pemain di kotak Min/Max panel "Search Options".
+local MAX_PRICE_INPUT = 1000000
+-- Halaman penuh yang habis tersaring berturut-turut sebelum katalog dianggap habis. Saringan harga
+-- yang ketat bisa mengosongkan banyak halaman; tanpa penjaga ini satu permintaan client bisa
+-- menembak puluhan pencarian beruntun = HTTP 429 (sudah kejadian di #17b).
+local MAX_EMPTY_PAGES = 3
 
 -- Urutan yang diizinkan (nama Enum.CatalogSortType).
 local SORTS: { [string]: boolean } = {
@@ -59,6 +70,9 @@ export type Request = {
 	sort: string?,
 	creatorName: string?, -- pencarian per pencipta (nama creator diklik)
 	creatorType: string?, -- "User" | "Group"; butuh creatorName
+	minPrice: number?, -- panel "Search Options"; rentang DITEGAKKAN ULANG di sini, lihat inRange
+	maxPrice: number?,
+	includeOffSale: boolean?, -- true = item yang sudah ditarik dari penjualan ikut ditampilkan
 	page: number?,
 }
 
@@ -84,6 +98,7 @@ export type ItemDto = {
 	priceStatus: string?, -- mis. "Free", "No Resellers" (apa adanya dari Roblox)
 	unitsLeft: number?, -- sisa stok limited; 0 = habis terjual
 	totalQuantity: number?, -- stok awal limited
+	offSale: boolean?, -- true = ditarik dari penjualan; `price` 0 di sini BUKAN "gratis"
 }
 
 export type Response = {
@@ -156,6 +171,14 @@ local function toDto(raw: any): ItemDto?
 	if type(price) ~= "number" then
 		price = if type(raw.LowestPrice) == "number" then raw.LowestPrice else nil
 	end
+	-- 999999999 bukan harga (spike 19 Sep 2026): kartu tidak boleh mencetak angka itu, dan tombol
+	-- BUY/cart di ItemCard sudah mati sendiri kalau `price` nil.
+	if type(price) == "number" and price >= PRICE_UNAVAILABLE then
+		price = nil
+	end
+	-- Off-sale datang dengan Price = 0, jadi tanpa penanda ini kartu akan menulis "Free".
+	-- Field IsOffSale ABSEN untuk item yang masih dijual, bukan false.
+	local offSale = raw.IsOffSale == true
 
 	local limited = false
 	if type(raw.ItemRestrictions) == "table" then
@@ -199,14 +222,47 @@ local function toDto(raw: any): ItemDto?
 		priceStatus = if type(raw.PriceStatus) == "string" then raw.PriceStatus else nil,
 		unitsLeft = units,
 		totalQuantity = total,
+		offSale = if offSale then true else nil,
 	}
 end
 
-local function toDtos(items: { any }): { ItemDto }
+-- Angka harga dari client: bulat, 0..MAX_PRICE_INPUT. (nil, nil) = tidak dikirim.
+local function priceArg(v: any, name: string): (number?, string?)
+	if v == nil then
+		return nil, nil
+	end
+	if type(v) ~= "number" or v ~= v or v % 1 ~= 0 or v < 0 or v > MAX_PRICE_INPUT then
+		return nil, name .. " tidak valid"
+	end
+	return v, nil
+end
+
+-- Spike 19 Sep 2026: MinPrice API meleset ~10% ke bawah (minta 100 -> dapat 90; 150 -> 135;
+-- 200 -> 180) dan MENYERAH total di angka tinggi (minta 1000 -> dapat 89). Jadi min/max tetap
+-- dikirim ke API sebagai penyaring kasar yang murah, TAPI janji ke pemain ditegakkan di sini.
+-- Harga yang tidak tersedia (`price` nil) tidak bisa dijamin masuk rentang -> dibuang.
+local function inRange(dto: ItemDto, req: Request): boolean
+	if req.minPrice == nil and req.maxPrice == nil then
+		return true
+	end
+	local price = dto.price
+	if price == nil then
+		return false
+	end
+	if req.minPrice ~= nil and price < req.minPrice then
+		return false
+	end
+	if req.maxPrice ~= nil and price > req.maxPrice then
+		return false
+	end
+	return true
+end
+
+local function toDtos(items: { any }, req: Request?): { ItemDto }
 	local out = {}
 	for _, raw in items do
 		local dto = toDto(raw)
-		if dto then
+		if dto and (req == nil or inRange(dto, req)) then
 			table.insert(out, dto)
 		end
 	end
@@ -238,6 +294,23 @@ function CatalogService.normalize(raw: any): (Request?, string?)
 		if creatorType ~= "User" and creatorType ~= "Group" then
 			return nil, "creatorType tidak dikenal"
 		end
+	end
+	local minPrice, minErr = priceArg(raw.minPrice, "minPrice")
+	if minErr ~= nil then
+		return nil, minErr
+	end
+	local maxPrice, maxErr = priceArg(raw.maxPrice, "maxPrice")
+	if maxErr ~= nil then
+		return nil, maxErr
+	end
+	-- Rentang terbalik membuat SearchCatalogAsync melempar HTTP 400 (spike 19 Sep 2026 tes 21),
+	-- jadi ditukar di sini; jangan sampai diteruskan ke API.
+	if minPrice ~= nil and maxPrice ~= nil and minPrice > maxPrice then
+		minPrice, maxPrice = maxPrice, minPrice
+	end
+	local includeOffSale = raw.includeOffSale
+	if includeOffSale ~= nil and type(includeOffSale) ~= "boolean" then
+		return nil, "includeOffSale harus boolean"
 	end
 	local categoryId, groupId, filter = raw.categoryId, raw.groupId, raw.filter
 	if filter ~= nil then
@@ -290,6 +363,9 @@ function CatalogService.normalize(raw: any): (Request?, string?)
 		sort = sort,
 		creatorName = creatorName,
 		creatorType = creatorType,
+		minPrice = minPrice,
+		maxPrice = maxPrice,
+		includeOffSale = includeOffSale,
 		page = page,
 	},
 		nil
@@ -302,7 +378,13 @@ local function cacheKey(req: Request): string
 	local creator = if req.creatorName
 		then ("|%s:%s"):format(string.lower(req.creatorName), req.creatorType or "*")
 		else ""
-	return ("%s|%s|%s%s"):format(what, string.lower(req.keyword or ""), req.sort or "Relevance", creator)
+	-- Rentang harga & off-sale IKUT kunci: hasilnya beda, jadi tidak boleh menumpang cache tetangga.
+	local money = ("|%s-%s%s"):format(
+		tostring(req.minPrice or ""),
+		tostring(req.maxPrice or ""),
+		if req.includeOffSale then "+off" else ""
+	)
+	return ("%s|%s|%s%s%s"):format(what, string.lower(req.keyword or ""), req.sort or "Relevance", creator, money)
 end
 
 local function enumList(self: CatalogService, enumName: string, names: { string }?): ({ any }?, string?)
@@ -387,6 +469,17 @@ local function firstPage(self: CatalogService, req: Request): (boolean, any)
 			end
 		end
 	end
+	-- Penyaring kasar di sisi API. Rentang dari panel MENGGANTI batas chip "free" (maxPrice 0) kalau
+	-- keduanya dikirim; yang menegakkan janji ke pemain tetap `inRange` di atas.
+	if req.minPrice ~= nil then
+		opts.minPrice = req.minPrice
+	end
+	if req.maxPrice ~= nil then
+		opts.maxPrice = req.maxPrice
+	end
+	if req.includeOffSale then
+		opts.includeOffSale = true
+	end
 	-- Banyak tipe sekaligus + Relevance -> daftar item gratis bawaan Roblox (spike 18 Sep 2026).
 	-- Berlaku untuk chip grup MAUPUN kategori bertipe banyak (mis. "Layered").
 	local typeCount = #(opts.assetTypes or {}) + #(opts.bundleTypes or {})
@@ -405,6 +498,7 @@ end
 
 -- Pastikan entry memuat halaman sampai `target` (atau katalog habis).
 local function fill(self: CatalogService, entry: Entry, req: Request, target: number): (boolean, any)
+	local emptyRuns = 0
 	while #entry.pages < target and not entry.finished do
 		local ok, page
 		if entry.cursor == nil then
@@ -418,13 +512,24 @@ local function fill(self: CatalogService, entry: Entry, req: Request, target: nu
 		entry.cursor = page
 		entry.finished = page.isFinished == true
 		local rawItems = page.items or {}
-		local dtos = toDtos(rawItems)
-		if #dtos == 0 and #entry.pages > 0 then
-			-- Halaman benar-benar kosong = katalog habis; kosong karena tersaring (mis. Gear) = lanjut.
+		local dtos = toDtos(rawItems, req)
+		if #dtos == 0 then
+			-- Halaman benar-benar kosong = katalog habis; kosong karena tersaring (mis. Gear atau
+			-- rentang harga) = lanjut, tapi hanya sampai MAX_EMPTY_PAGES supaya tidak kena 429.
+			-- Halaman PERTAMA ikut boleh dilewati: kalau 30 item pertama semuanya di bawah minPrice,
+			-- jawaban yang benar bukan "tidak ada hasil" melainkan "lihat halaman berikutnya".
+			-- Kalau sampai habis tidak ada yang lolos, `pages` tetap kosong -> search() menjawab
+			-- daftar kosong dengan jujur.
 			if #rawItems == 0 then
 				entry.finished = true
+			else
+				emptyRuns += 1
+				if emptyRuns >= MAX_EMPTY_PAGES then
+					entry.finished = true
+				end
 			end
 		else
+			emptyRuns = 0
 			table.insert(entry.pages, dtos)
 		end
 	end
