@@ -69,7 +69,7 @@ return function()
 	assert(a ~= b, "categoryIds mengembalikan tabel baru")
 	table.remove(a)
 	eq(#b, #CatalogMenu.byId.clothing.categories, "tabel asli tidak ikut berubah")
-	eq(CatalogMenu.firstCategory("clothing"), "tops", "clothing: tab awal tops")
+	eq(CatalogMenu.firstCategory("clothing"), "layered", "clothing: tab awal Layered")
 
 	-- 6. grup asing / kategori asing
 	eq(#CatalogMenu.categoryIds("tidak_ada"), #Categories.list, "grup asing -> semua kategori")
@@ -77,13 +77,61 @@ return function()
 
 	-- 7. kategori -> grup pemilik (dipakai tombol kembali & sorotan tab)
 	eq((CatalogMenu.groupOf("hair") :: any).id, "hair", "hair -> HAIR")
-	eq((CatalogMenu.groupOf("tops") :: any).id, "clothing", "tops -> CLOTHING")
+	eq((CatalogMenu.groupOf("layered") :: any).id, "clothing", "layered -> CLOTHING")
+	eq((CatalogMenu.groupOf("classic_pants") :: any).id, "clothing", "celana klasik -> CLOTHING")
 	eq((CatalogMenu.groupOf("emotes") :: any).id, "animations", "emotes -> ANIMATION PACKS")
 	eq((CatalogMenu.groupOf("shoes") :: any).id, "accessories", "shoes -> ACCESSORIES")
 	eq((CatalogMenu.groupOf("heads") :: any).id, "faces", "heads -> FACES")
+	eq((CatalogMenu.groupOf("bodies") :: any).id, "characters", "bundle badan -> CHARACTERS")
+	eq(Categories.byId.moods, nil, "MoodAnimation tidak dijual di katalog -> bukan kategori")
+	eq(Categories.byId.shoes_layered, nil, "sepatu layered dijual sebagai bundle -> bukan kategori")
 	eq((CatalogMenu.groupOf("face_acc") :: any).id, "faces", "aksesori wajah -> FACES")
 	eq(CatalogMenu.firstCategory("faces"), "face_acc", "FACES: tab awal aksesori wajah (ada isinya)")
 	eq(Categories.byId.faces, nil, "classic face sudah off-sale -> tidak jadi tab")
+	eq((CatalogMenu.groupOf("eye_makeup") :: any).id, "makeup", "riasan mata -> MAKEUP")
+	eq((CatalogMenu.groupOf("emotes") :: any).id, "animations", "emote -> ANIMATION PACKS")
+	eq((CatalogMenu.groupOf("shoes") :: any).id, "accessories", "sepatu -> ACCESSORIES")
+	eq((CatalogMenu.groupOf("backgrounds") :: any).id, "backgrounds", "latar -> BACKGROUNDS")
+
+	-- 8. baris kedua = chip filter (All, Free, Limited) lalu kategori grup
+	local chips = CatalogMenu.chips("clothing")
+	eq(#chips, 3 + 11, "CLOTHING: 3 filter + 11 kategori (satu chip per tipe)")
+	eq(chips[1].id, "all", "chip pertama All")
+	eq(chips[2].id, "free", "chip kedua Free")
+	eq(chips[3].id, "limited", "chip ketiga Limited")
+	assert(chips[1].isFilter and chips[2].isFilter and chips[3].isFilter, "tiga chip pertama = filter")
+	eq(chips[4].id, "layered", "kategori pertama CLOTHING")
+	eq(chips[4].label, Categories.byId.layered.label, "label kategori dari Config/Categories")
+	eq(chips[4].isFilter, false, "kategori bukan filter")
+	eq(#CatalogMenu.chips("featured"), 3 + #Categories.list, "FEATURED: filter + semua kategori")
+	assert(CatalogMenu.isFilter("all") and CatalogMenu.isFilter("limited"), "id filter dikenali")
+	eq(CatalogMenu.isFilter("tops"), false, "id kategori bukan filter")
+
+	-- 9. searchTypes: gabungan tipe grup, TANPA duplikat, aset & bundle tidak dicampur
+	local clothA, clothB = CatalogMenu.searchTypes("clothing")
+	eq(#clothB, 0, "CLOTHING tidak punya bundle")
+	eq(#clothA, 10, "CLOTHING: 7 tipe layered + 3 klasik, tanpa duplikat")
+	eq(clothA[1], "TShirtAccessory", "urutan mengikuti kategori")
+	local accA, accB = CatalogMenu.searchTypes("accessories")
+	eq(#accB, 0, "grup campuran: bundle dilepas, aset yang dipakai")
+	eq(#accA, 6, "ACCESSORIES: 6 tipe aset (bundle Shoes dilepas)")
+	local seenType: { [string]: boolean } = {}
+	for _, t in accA do
+		assert(not seenType[t], "tipe ganda: " .. t)
+		seenType[t] = true
+	end
+	local mkA = CatalogMenu.searchTypes("makeup")
+	eq(#mkA, 5, "MAKEUP: eye/lip/face makeup + eyelash + eyebrow")
+
+	-- 9b. grup "Soon" (BODY): tidak punya kategori & tidak punya chip
+	local body = CatalogMenu.byId.body
+	eq(body.soon, true, "BODY ditandai Soon")
+	eq(#CatalogMenu.categoryIds("body"), 0, "grup Soon tanpa kategori")
+	eq(#CatalogMenu.chips("body"), 0, "grup Soon tanpa chip")
+
+	-- 10. FEATURED punya CategoryFilter sendiri; grup lain tidak
+	eq(CatalogMenu.byId.featured.categoryFilter, "Featured", "FEATURED pakai CategoryFilter.Featured")
+	eq(CatalogMenu.byId.clothing.categoryFilter, nil, "grup biasa tanpa CategoryFilter")
 
 	print("PASS CatalogMenu.spec")
 end

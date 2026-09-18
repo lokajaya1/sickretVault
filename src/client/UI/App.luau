@@ -7,6 +7,8 @@
 -- Kartu: tap -> overlay TRY / BUY / ⓘ / 🛒. ⓘ & paste link -> panel detail. 🛒 di header -> panel keranjang.
 --   app:toggleCatalog()   app:openDetail(id, "Asset")   app:openCart()   app:checkout()
 --   app:openWardrobe()    app:closeWardrobe()
+-- Saved Outfits dibuka dari kolom samping (katalog tertutup) -> menutupnya kembali ke layar utama,
+-- bukan ke halaman menu katalog.
 -- Panel keranjang & wardrobe menutupi isi katalog; hanya satu yang terbuka.
 --   app.toast:show("Hello", "info")   app:destroy()
 
@@ -148,6 +150,7 @@ export type App = typeof(setmetatable(
 		strip: WornStrip.WornStrip,
 		camera: TryOnCamera.TryOnCamera,
 		_catalogButton: TextButton,
+		_wardrobeAlone: boolean, -- wardrobe dibuka dari kolom samping (katalog tadinya tertutup)
 		_topBar: Frame,
 		_conns: { RBXScriptConnection },
 	},
@@ -335,7 +338,7 @@ function App.mount(opts: Options?): App
 		end,
 		onItem = function(item)
 			wardrobeReturn = true
-			self:closeWardrobe()
+			self.wardrobePanel:setOpen(false) -- panel katalog tetap terbuka untuk halaman detail
 			self:openDetail(item.id, "Asset")
 		end,
 		onBack = function()
@@ -443,6 +446,7 @@ function App.mount(opts: Options?): App
 		strip = strip,
 		camera = camera,
 		_catalogButton = catalogButton,
+		_wardrobeAlone = false,
 		_topBar = bar,
 		_conns = {},
 	}, App)
@@ -523,6 +527,7 @@ end
 function App._refreshButtons(self: App)
 	local open = self.panel:isVisible()
 	if not open then
+		self._wardrobeAlone = false
 		self.detail:close() -- katalog ditutup (X / tombol / C) -> detail & keranjang ikut tertutup
 		self.cartPanel:setOpen(false)
 		if self.wardrobePanel:isOpen() then
@@ -586,6 +591,7 @@ end
 -- Tombol Saved Outfits: buka katalog + panel outfit tersimpan (detail & keranjang ditutup).
 function App.openWardrobe(self: App)
 	if not self.panel:isVisible() then
+		self._wardrobeAlone = true -- dibuka dari kolom samping: tutup panel lagi saat wardrobe ditutup
 		self.panel:setVisible(true)
 		self:_refreshButtons()
 	end
@@ -596,9 +602,14 @@ function App.openWardrobe(self: App)
 	end
 end
 
--- Back di panel outfit: kembali ke katalog.
+-- Back di panel outfit: kembali ke katalog, atau ke layar utama bila dibuka dari kolom samping.
 function App.closeWardrobe(self: App)
 	self.wardrobePanel:setOpen(false)
+	if self._wardrobeAlone then
+		self._wardrobeAlone = false
+		self.panel:setVisible(false)
+		self:_refreshButtons()
+	end
 end
 
 -- Hasil aksi wardrobe -> toast. Sukses setting tidak perlu toast (switch sudah berubah).

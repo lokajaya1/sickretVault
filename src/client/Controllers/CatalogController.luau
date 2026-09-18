@@ -3,7 +3,8 @@
 -- Memanggil remote CatalogSearch; UI cukup membaca :getState() dan mendengarkan :onChanged().
 --   local catalog = CatalogController.new()
 --   catalog:onChanged(function(state) ... end)
---   catalog:setCategory("hats")      -- muat halaman 1
+--   catalog:setCategory("hats")      -- muat halaman 1 (kategori tunggal)
+--   catalog:setFilter("clothing", "free") -- chip baris kedua: all | free | limited satu grup
 --   catalog:loadMore()               -- halaman berikutnya (abaikan jika sedang memuat / habis)
 -- `invoke` bisa diganti saat test (tanpa remote).
 
@@ -11,6 +12,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Categories = require(Shared.Config.Categories)
+local CatalogMenu = require(Shared.Config.CatalogMenu)
 local Log = require(Shared.Util.Log)
 
 local log = Log.new("CatalogController")
@@ -26,7 +28,9 @@ export type Item = {
 }
 
 export type State = {
-	categoryId: string,
+	categoryId: string?, -- kategori tunggal yang aktif (nil saat chip filter dipakai)
+	groupId: string?, -- grup mozaik untuk chip filter
+	filter: string?, -- "all" | "free" | "limited" (nil = memakai categoryId)
 	keyword: string,
 	sort: string,
 	items: { Item },
@@ -64,6 +68,8 @@ function CatalogController.new(invoke: Invoke?): CatalogController
 		_invoke = invoke or defaultInvoke,
 		_state = {
 			categoryId = first.id,
+			groupId = nil,
+			filter = nil,
 			keyword = "",
 			sort = "Relevance",
 			items = {},
@@ -126,7 +132,9 @@ function CatalogController._fetch(self: CatalogController)
 	self:_emit()
 
 	local ok, res = pcall(self._invoke, {
-		categoryId = s.categoryId,
+		categoryId = if s.filter then nil else s.categoryId,
+		groupId = s.groupId,
+		filter = s.filter,
 		keyword = s.keyword,
 		sort = s.sort,
 		page = page,
@@ -161,8 +169,32 @@ function CatalogController.setCategory(self: CatalogController, categoryId: stri
 		return
 	end
 	self._state.categoryId = categoryId
+	self._state.groupId = nil
+	self._state.filter = nil
 	self:_reset()
 	self:_fetch()
+end
+
+-- Chip filter satu grup (All / Free / Limited). Kategori tunggal dilepas.
+function CatalogController.setFilter(self: CatalogController, groupId: string, filter: string)
+	if CatalogMenu.byId[groupId] == nil then
+		log.warn("grup tidak dikenal", groupId)
+		return
+	end
+	if not CatalogMenu.isFilter(filter) then
+		log.warn("filter tidak dikenal", filter)
+		return
+	end
+	self._state.groupId = groupId
+	self._state.filter = filter
+	self._state.categoryId = nil
+	self:_reset()
+	self:_fetch()
+end
+
+-- Id chip yang sedang aktif di baris kedua ("all"/"free"/"limited" atau id kategori).
+function CatalogController.activeChip(self: CatalogController): string?
+	return self._state.filter or self._state.categoryId
 end
 
 function CatalogController.setKeyword(self: CatalogController, keyword: string)

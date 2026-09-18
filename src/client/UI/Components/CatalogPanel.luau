@@ -2,7 +2,8 @@
 -- Panel katalog DUA TINGKAT (lihat claude/Pedoman_Layout_CAC.md "Layar KATALOG"):
 --   1) halaman MENU kategori (mozaik CategoryMenu) -> tampil pertama saat katalog dibuka;
 --   2) halaman DAFTAR ITEM: kotak cari + DUA baris tab bergaris bawah (baris 1 = grup mozaik,
---      baris 2 = kategori di dalam grup aktif) + grid ItemCard, plus tombol kembali ke menu.
+--      baris 2 = chip All / Free / Limited lalu kategori grup aktif) + grid ItemCard,
+--      plus tombol kembali ke menu. Chip filter -> controller:setFilter(grup, chip).
 --   panel:showMenu()   panel:openGroup(group)   panel:page() -- "menu" | "list"
 -- Posisi & ukuran dari Shared/Util/PanelLayout: layar lebar -> panel di kanan; ponsel tegak -> panel dari bawah.
 -- Hanya MENAMPILKAN state CatalogController dan meneruskan aksi pemain ke controller.
@@ -63,6 +64,8 @@ export type CatalogPanel = typeof(setmetatable(
 		_tabBar: ScrollingFrame,
 		_groupBar: ScrollingFrame,
 		_groupTabs: { [string]: TextButton },
+		_filterTabs: { [string]: TextButton },
+		_tabScroll: number, -- posisi geser baris kedua (dipulihkan setelah render ulang)
 		_page: "menu" | "list",
 		_group: CatalogMenu.Group?,
 		_hasError: boolean,
@@ -309,6 +312,19 @@ function CatalogPanel.new(props: Props): CatalogPanel
 		tabs[id] = b
 		return b
 	end
+	-- Baris 2, paling kiri: chip filter se-grup (All / Free / Limited).
+	local filterTabs: { [string]: TextButton } = {}
+	for i, f in CatalogMenu.FILTERS do
+		local b = stripTab("Flt_" .. f.id, f.label, i - #CatalogMenu.FILTERS - 1, tabBar, false)
+		filterTabs[f.id] = b
+		table.insert(
+			conns,
+			b.Activated:Connect(function()
+				self:_setFilter(f.id)
+			end)
+		)
+	end
+
 	-- Baris 1: grup mozaik; selalu lengkap supaya bisa pindah grup tanpa kembali ke menu.
 	for i, group in CatalogMenu.list do
 		local b = stripTab("Group_" .. group.id, group.label, i, groupBar, true)
@@ -410,6 +426,8 @@ function CatalogPanel.new(props: Props): CatalogPanel
 		_tabBar = tabBar,
 		_groupBar = groupBar,
 		_groupTabs = groupTabs,
+		_filterTabs = filterTabs,
+		_tabScroll = 0,
 		_page = "menu",
 		_group = nil,
 		_hasError = false,
@@ -506,6 +524,17 @@ function CatalogPanel.new(props: Props): CatalogPanel
 					submitSearch()
 				end
 			end)
+		end)
+	)
+
+	-- Baris tab digeser pemain -> ingat posisinya (Roblox mengembalikan ke 0 saat isi berubah).
+	table.insert(
+		conns,
+		tabBar:GetPropertyChangedSignal("CanvasPosition"):Connect(function()
+			local x = tabBar.CanvasPosition.X
+			if x > 0 then
+				self._tabScroll = x
+			end
 		end)
 	)
 
@@ -678,8 +707,12 @@ function CatalogPanel._render(self: CatalogPanel, state: any)
 		return -- halaman mozaik: tidak ada grid yang perlu digambar
 	end
 	-- Tab aktif
+	local active: string? = if self._wearing then WEARING else self._props.controller:activeChip()
 	for id, b in self._tabs do
-		setTabActive(b, if self._wearing then id == WEARING else id == state.categoryId)
+		setTabActive(b, id == active)
+	end
+	for id, b in self._filterTabs do
+		setTabActive(b, id == active)
 	end
 
 	if self._wearing then
@@ -770,16 +803,33 @@ end
 
 -- Buka halaman daftar item sebuah grup mozaik; tab = kategori milik grup itu.
 function CatalogPanel.openGroup(self: CatalogPanel, group: CatalogMenu.Group)
+	if group.soon then
+		return -- grup belum punya isi (kartu mozaik hanya berkedip "Soon")
+	end
 	self:disarm()
 	self._page = "list"
 	self._group = group
 	self._wearing = false
 	self._lastCount = 0
 	self._grid.CanvasPosition = Vector2.zero
+	self._tabScroll = 0 -- grup baru: baris kedua mulai dari kiri lagi
 	self._tabBar.CanvasPosition = Vector2.zero
 	self._groupBar.CanvasPosition = Vector2.zero
 	self:_applyPage()
-	spawnCall(self._props.controller.setCategory, self._props.controller, CatalogMenu.firstCategory(group))
+	spawnCall(self._props.controller.setFilter, self._props.controller, group.id, "all")
+end
+
+-- Chip All / Free / Limited pada grup yang sedang dibuka.
+function CatalogPanel._setFilter(self: CatalogPanel, filterId: string)
+	local group = self._group
+	if group == nil then
+		return
+	end
+	self:disarm()
+	self._wearing = false
+	self._lastCount = 0
+	self._grid.CanvasPosition = Vector2.zero
+	spawnCall(self._props.controller.setFilter, self._props.controller, group.id, filterId)
 end
 
 -- Tampilkan bagian yang sesuai halaman aktif (dipanggil applyLayout & saat halaman berganti).
@@ -804,6 +854,11 @@ function CatalogPanel._applyPage(self: CatalogPanel)
 		return
 	end
 
+	-- Chip filter berlaku di semua grup -> selalu tampil di halaman daftar item.
+	for _, b in self._filterTabs do
+		b.Visible = true
+	end
+
 	-- Tab: hanya kategori milik grup ini (Wearing tetap di paling kiri bila ada).
 	local order: { [string]: number } = {}
 	for i, id in CatalogMenu.categoryIds(group :: CatalogMenu.Group) do
@@ -820,6 +875,20 @@ function CatalogPanel._applyPage(self: CatalogPanel)
 		end
 	end
 	self:_render(self._props.controller:getState())
+	self:_restoreTabScroll()
+end
+
+-- Kembalikan posisi geser baris tab setelah tata letaknya dihitung ulang.
+function CatalogPanel._restoreTabScroll(self: CatalogPanel)
+	local want = self._tabScroll
+	if want <= 0 then
+		return
+	end
+	task.defer(function()
+		if self.instance.Parent and self._page == "list" then
+			self._tabBar.CanvasPosition = Vector2.new(want, 0)
+		end
+	end)
 end
 
 function CatalogPanel.setVisible(self: CatalogPanel, visible: boolean)

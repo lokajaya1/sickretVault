@@ -3,12 +3,17 @@
 -- cache hasil per halaman (dibagi antar pemain), ringkas item jadi DTO kecil.
 --   local catalog = CatalogService.new({ api = api })
 --   local res = catalog:search({ categoryId = "hats", keyword = "", sort = "Relevance", page = 1 })
+--   local res = catalog:search({ groupId = "clothing", filter = "free", page = 1 })  -- chip baris kedua
+-- Chip grup (Config/CatalogMenu.FILTERS): "all" (semua tipe grup), "free" (MaxPrice 0),
+-- "limited" (SalesTypeFilter.Collectibles). Grup dengan categoryFilter (FEATURED) memakai
+-- CatalogCategoryFilter dan TIDAK mengirim daftar tipe.
 --   res = { ok = true, items = { ItemDto }, page = 1, hasMore = true }
 --       | { ok = false, code = "BAD_ARG" | "FAILED", message = string }
 -- Tidak memanggil API Roblox langsung (lewat `api`). `toEnum` bisa diganti saat test (Lune tanpa Enum).
 
 local Shared = game:GetService("ReplicatedStorage"):WaitForChild("Shared")
 local Categories = require(Shared.Config.Categories)
+local CatalogMenu = require(Shared.Config.CatalogMenu)
 local Limits = require(Shared.Config.Limits)
 local Cache = require(Shared.Util.Cache)
 local Log = require(Shared.Util.Log)
@@ -20,6 +25,12 @@ local MAX_PAGE = 20 -- cegah client merayapi katalog terlalu dalam
 local MAX_KEYWORD = 50
 local CACHE_SIZE = 300 -- jumlah kombinasi (kategori+keyword+sort) yang disimpan
 local BUSY_TIMEOUT = 15 -- detik menunggu permintaan lain pada kunci yang sama
+-- Spike Studio 18 Sep 2026 (tests/CatalogFilter.studio): SearchCatalogAsync dengan BANYAK AssetTypes
+-- + sort Relevance/Bestselling mengembalikan daftar item gratis bawaan Roblox. MostFavorited &
+-- RecentlyCreated tetap memberi hasil wajar -> chip grup memakai MostFavorited.
+local FILTER_SORT = "MostFavorited"
+-- Item yang tidak bisa dipakai di avatar (muncul di CategoryFilter.Featured).
+local BLOCKED_ASSET_TYPES: { [string]: boolean } = { Gear = true }
 
 -- Urutan yang diizinkan (nama Enum.CatalogSortType).
 local SORTS: { [string]: boolean } = {
@@ -31,7 +42,9 @@ local SORTS: { [string]: boolean } = {
 }
 
 export type Request = {
-	categoryId: string,
+	categoryId: string?, -- salah satu: kategori tunggal ...
+	groupId: string?, -- ... atau grup mozaik + chip filter
+	filter: string?, -- "all" | "free" | "limited" (butuh groupId)
 	keyword: string?,
 	sort: string?,
 	page: number?,
@@ -117,6 +130,9 @@ local function toDto(raw: any): ItemDto?
 	if type(price) ~= "number" then
 		price = if type(raw.LowestPrice) == "number" then raw.LowestPrice else nil
 	end
+	if type(raw.AssetType) == "string" and BLOCKED_ASSET_TYPES[raw.AssetType] then
+		return nil -- mis. Gear dari CategoryFilter.Featured: tidak bisa dipakai avatar
+	end
 	return {
 		id = raw.Id,
 		itemType = if type(raw.ItemType) == "string" then raw.ItemType else "Asset",
@@ -145,8 +161,20 @@ function CatalogService.normalize(raw: any): (Request?, string?)
 	if type(raw) ~= "table" then
 		return nil, "permintaan harus tabel"
 	end
-	if type(raw.categoryId) ~= "string" or Categories.byId[raw.categoryId] == nil then
-		return nil, "kategori tidak dikenal"
+	local categoryId, groupId, filter = raw.categoryId, raw.groupId, raw.filter
+	if filter ~= nil then
+		if type(filter) ~= "string" or not CatalogMenu.isFilter(filter) then
+			return nil, "filter tidak dikenal"
+		end
+		if type(groupId) ~= "string" or CatalogMenu.byId[groupId] == nil then
+			return nil, "grup tidak dikenal"
+		end
+		categoryId = nil
+	else
+		groupId = nil
+		if type(categoryId) ~= "string" or Categories.byId[categoryId] == nil then
+			return nil, "kategori tidak dikenal"
+		end
 	end
 	local keyword = raw.keyword
 	if keyword == nil then
@@ -174,11 +202,22 @@ function CatalogService.normalize(raw: any): (Request?, string?)
 	if type(page) ~= "number" or page ~= page or page % 1 ~= 0 or page < 1 or page > MAX_PAGE then
 		return nil, "page tidak valid"
 	end
-	return { categoryId = raw.categoryId, keyword = keyword, sort = sort, page = page }, nil
+	return {
+		categoryId = categoryId,
+		groupId = groupId,
+		filter = filter,
+		keyword = keyword,
+		sort = sort,
+		page = page,
+	},
+		nil
 end
 
 local function cacheKey(req: Request): string
-	return ("%s|%s|%s"):format(req.categoryId, string.lower(req.keyword or ""), req.sort or "Relevance")
+	local what = if req.filter
+		then ("g:%s:%s"):format(req.groupId or "?", req.filter)
+		else ("c:%s"):format(req.categoryId or "?")
+	return ("%s|%s|%s"):format(what, string.lower(req.keyword or ""), req.sort or "Relevance")
 end
 
 local function enumList(self: CatalogService, enumName: string, names: { string }?): ({ any }?, string?)
@@ -196,25 +235,71 @@ local function enumList(self: CatalogService, enumName: string, names: { string 
 	return out, nil
 end
 
--- Halaman pertama: bangun opsi dari Categories lalu panggil api.searchCatalog.
+-- Opsi pencarian untuk chip filter satu grup (all / free / limited).
+local function groupOptions(self: CatalogService, req: Request): (any?, string?)
+	local group = CatalogMenu.byId[req.groupId :: string]
+	local opts: any = { limit = PAGE_LIMIT }
+	if group.categoryFilter then
+		-- FEATURED: biar Roblox yang memilih; daftar tipe TIDAK dikirim (semua kategori = hasil buruk).
+		local cf = self._toEnum("CatalogCategoryFilter", group.categoryFilter)
+		if cf == nil then
+			return nil, "CatalogCategoryFilter." .. group.categoryFilter .. " tidak ada"
+		end
+		opts.categoryFilter = cf
+	else
+		local assetNames, bundleNames = CatalogMenu.searchTypes(group)
+		local assetTypes, e1 = enumList(self, "AvatarAssetType", if #assetNames > 0 then assetNames else nil)
+		local bundleTypes, e2 = enumList(self, "BundleType", if #bundleNames > 0 then bundleNames else nil)
+		if e1 or e2 then
+			return nil, e1 or e2
+		end
+		opts.assetTypes = assetTypes
+		opts.bundleTypes = bundleTypes
+	end
+	if req.filter == "free" then
+		opts.maxPrice = 0
+	elseif req.filter == "limited" then
+		local sales = self._toEnum("SalesTypeFilter", "Collectibles")
+		if sales == nil then
+			return nil, "SalesTypeFilter.Collectibles tidak ada"
+		end
+		opts.salesTypeFilter = sales
+	end
+	return opts, nil
+end
+
+-- Halaman pertama: bangun opsi dari Categories (kategori) atau CatalogMenu (chip grup).
 local function firstPage(self: CatalogService, req: Request): (boolean, any)
-	local cat = Categories.byId[req.categoryId]
-	local assetTypes, e1 = enumList(self, "AvatarAssetType", cat.assetTypes)
-	local bundleTypes, e2 = enumList(self, "BundleType", cat.bundleTypes)
-	if e1 or e2 then
-		return false, { code = "FAILED", message = e1 or e2 }
+	local opts: any
+	if req.filter then
+		local built, err = groupOptions(self, req)
+		if built == nil then
+			return false, { code = "FAILED", message = err or "opsi grup gagal" }
+		end
+		opts = built
+	else
+		local cat = Categories.byId[req.categoryId :: string]
+		local assetTypes, e1 = enumList(self, "AvatarAssetType", cat.assetTypes)
+		local bundleTypes, e2 = enumList(self, "BundleType", cat.bundleTypes)
+		if e1 or e2 then
+			return false, { code = "FAILED", message = e1 or e2 }
+		end
+		opts = { limit = PAGE_LIMIT, assetTypes = assetTypes, bundleTypes = bundleTypes }
 	end
-	local sortType = self._toEnum("CatalogSortType", req.sort or "Relevance")
+	-- Banyak tipe sekaligus + Relevance -> daftar item gratis bawaan Roblox (spike 18 Sep 2026).
+	-- Berlaku untuk chip grup MAUPUN kategori bertipe banyak (mis. "Layered").
+	local typeCount = #(opts.assetTypes or {}) + #(opts.bundleTypes or {})
+	local sortName = req.sort or "Relevance"
+	if sortName == "Relevance" and (req.filter ~= nil or typeCount > 1) then
+		sortName = FILTER_SORT
+	end
+	local sortType = self._toEnum("CatalogSortType", sortName)
 	if sortType == nil then
-		return false, { code = "FAILED", message = "CatalogSortType." .. tostring(req.sort) .. " tidak ada" }
+		return false, { code = "FAILED", message = "CatalogSortType." .. sortName .. " tidak ada" }
 	end
-	return self._api:searchCatalog({
-		keyword = if req.keyword ~= "" then req.keyword else nil,
-		assetTypes = assetTypes,
-		bundleTypes = bundleTypes,
-		sortType = sortType,
-		limit = PAGE_LIMIT,
-	})
+	opts.sortType = sortType
+	opts.keyword = if req.keyword ~= "" then req.keyword else nil
+	return self._api:searchCatalog(opts)
 end
 
 -- Pastikan entry memuat halaman sampai `target` (atau katalog habis).
@@ -231,9 +316,13 @@ local function fill(self: CatalogService, entry: Entry, req: Request, target: nu
 		end
 		entry.cursor = page
 		entry.finished = page.isFinished == true
-		local dtos = toDtos(page.items or {})
+		local rawItems = page.items or {}
+		local dtos = toDtos(rawItems)
 		if #dtos == 0 and #entry.pages > 0 then
-			entry.finished = true -- halaman kosong: anggap habis
+			-- Halaman benar-benar kosong = katalog habis; kosong karena tersaring (mis. Gear) = lanjut.
+			if #rawItems == 0 then
+				entry.finished = true
+			end
 		else
 			table.insert(entry.pages, dtos)
 		end
