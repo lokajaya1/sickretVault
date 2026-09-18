@@ -17,12 +17,22 @@ local function eq(a: any, b: any, msg: string)
 	assert(a == b, ("%s: expected %s, got %s"):format(msg, tostring(b), tostring(a)))
 end
 
+-- Decal palsu: cukup punya Texture, Clone, Destroy (yang dipakai gateway).
+local function fakeDecal(texture: string): any
+	local decal: any = { Texture = texture }
+	function decal.Clone(_self: any): any
+		return fakeDecal(texture)
+	end
+	function decal.Destroy(_self: any) end
+	return decal
+end
+
 -- Model palsu: hanya menyediakan dua method yang dipakai gateway.
 local function fakeModel(texture: string?, destroyed: { n: number }): any
 	local model = {}
 	function model.FindFirstChildWhichIsA(_self: any, className: string, _recursive: boolean?): any
 		if className == "Decal" and texture ~= nil then
-			return { Texture = texture }
+			return fakeDecal(texture)
 		end
 		return nil
 	end
@@ -78,16 +88,18 @@ return function()
 
 	-- 1. jalur normal: texture didapat, model hasil LoadAsset dibuang
 	local api = newApi()
-	local ok, texture = api:getMakeupTexture(ID_OK)
+	local ok, info = api:getMakeup(ID_OK)
 	eq(ok, true, "LoadAsset berhasil")
-	eq(texture, TEX, "texture id dikembalikan")
+	eq(info.textureId, TEX, "texture id dikembalikan")
+	eq(info.template ~= nil, true, "template Decal ikut dikembalikan (bawa WrapTextureTransfer)")
 	eq(calls.load, 1, "LoadAsset dipanggil sekali")
 	eq(destroyed.n, 1, "model dibuang setelah dibaca")
 
 	-- 2. cache: id yang sama tidak memanggil LoadAsset lagi (~0,5 detik per panggilan)
-	local ok2, texture2 = api:getMakeupTexture(ID_OK)
+	local ok2, info2 = api:getMakeup(ID_OK)
 	eq(ok2, true, "hit cache tetap sukses")
-	eq(texture2, TEX, "texture sama")
+	eq(info2.textureId, TEX, "texture sama")
+	eq(info2.template ~= nil, true, "template dari cache")
 	eq(calls.load, 1, "tidak ada LoadAsset kedua")
 
 	-- 3. id cacat ditolak sebelum menyentuh InsertService
@@ -113,9 +125,9 @@ return function()
 	-- 5. gagal sementara: diulang, lalu berhasil
 	api = newApi()
 	flakyLeft = 2
-	local okFlaky, texFlaky = api:getMakeupTexture(ID_FLAKY)
+	local okFlaky, infoFlaky = api:getMakeup(ID_FLAKY)
 	eq(okFlaky, true, "berhasil setelah diulang")
-	eq(texFlaky, TEX, "texture dari percobaan terakhir")
+	eq(infoFlaky.textureId, TEX, "texture dari percobaan terakhir")
 	eq(calls.load, 3, "tiga kali percobaan")
 
 	-- 6. gagal sementara sampai habis: TIDAK di-cache, boleh dicoba lagi nanti
@@ -148,12 +160,12 @@ return function()
 		released += 1
 		if released >= 2 then
 			api._inflight[ID_OK] = nil
-			api._textures:set(ID_OK, { texture = TEX })
+			api._textures:set(ID_OK, { textureId = TEX, template = fakeDecal(TEX) })
 		end
 	end
-	local okWait, texWait = api:getMakeupTexture(ID_OK)
+	local okWait, infoWait = api:getMakeup(ID_OK)
 	eq(okWait, true, "penunggu dapat hasil")
-	eq(texWait, TEX, "texture dari permintaan yang sedang berjalan")
+	eq(infoWait.textureId, TEX, "texture dari permintaan yang sedang berjalan")
 	eq(calls.load, 0, "penunggu tidak memanggil LoadAsset")
 
 	-- 9. clear membuang cache

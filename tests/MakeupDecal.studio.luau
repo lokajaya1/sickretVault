@@ -1,22 +1,30 @@
 --!strict
--- SPIKE makeup sebagai Decal (PR #18) — HANYA di Studio.
--- Jalankan BAGIAN SERVER: Play -> tab Server -> Command Bar:
---   require(game.ReplicatedStorage.Tests["MakeupDecal.studio"]).server()
--- Lalu BAGIAN CLIENT: tab Client -> Command Bar:
---   require(game.ReplicatedStorage.Tests["MakeupDecal.studio"]).client()
+-- SPIKE makeup / background (PR #18) — HANYA di Studio, dijalankan dari SERVER.
+-- Play -> tab Server -> Command Bar:
+--   local S = require(game.ReplicatedStorage.Tests["MakeupDecal.studio"])
+--   S.parts(133520807586498)   -- isi aset: Decal, texture id, anak-anaknya
+--   S.head()                   -- Head pemain: jenis, WrapTarget, decal yang menempel
+--   S.background(121199209890990) -- AvatarBackground: ImageId + Color
+--   S.wear("A")                -- pasang varian, DIBIARKAN sampai S.off()
+--   S.wear("B") / S.wear("C") / S.wear("D")
+--   S.off()                    -- lepas semua pasangan spike
 --
--- Yang harus terjawab SEBELUM kode produksi ditulis:
---   1. InsertService:LoadAsset(<id makeup>) menghasilkan apa persisnya? (class anak, properti Decal)
---   2. Bisakah Decal dibuat SENDIRI dari `rbxassetid://<id makeup>` tanpa LoadAsset? (hemat besar)
---      Kalau tidak, apakah `Decal.Texture` hasil LoadAsset bisa dipakai ulang di Decal baru?
---   3. Menempel ke Head: tampil di atas wajah? Face mana? Head Part vs MeshPart (dynamic head)?
---   4. Dua makeup bertumpuk: apakah ZIndex Decal menentukan urutan lapis?
---   5. Apakah decal selamat / hilang setelah ApplyDescriptionAsync (ganti outfit)?
---   6. Lepas decal: bersih? decal wajah bawaan ("face") ikut kehapus atau tidak?
---   7. LoadAsset bisa dipanggil dari CLIENT atau server saja? Berapa lama satu panggilan (untuk cache)?
---   8. AvatarBackground: LoadAsset menghasilkan apa? Texture-nya bisa dipakai di ImageLabel?
+-- ===== TEMUAN YANG SUDAH TETAP (jangan diulang) =====
+-- 1. Makeup TIDAK bisa lewat HumanoidDescription (spike #17c): SetAccessories + Apply
+--    mengembalikan true tapi item tidak pernah muncul di GetAppliedDescription.
+-- 2. InsertService:LoadAsset(<id makeup>) -> Model > Decal (+ anak WrapTextureTransfer,
+--    Configuration). Id item BUKAN id texture: 133520807586498 -> rbxassetid://98880692903650.
+-- 3. LoadAsset DITOLAK dari client ("cannot be used to load assets from the client") -> server saja.
+--    Satu panggilan ~0,4-0,6 detik -> wajib di-cache.
+-- 4. ApplyDescriptionAsync yang MENGGANTI Head menghancurkan decal (3/3 hilang, tidak ada
+--    yang menggantung) -> makeup wajib dipasang ULANG setiap Head baru.
+-- 5. ZIndex Decal tidak terbukti berpengaruh -> 1 item per slot, urutan tempel face->eye->lip.
+-- 6. AvatarBackground -> Model > Folder 'AvatarBackground' > IntValue ImageId + Color3Value Color.
+--    Bukan barang yang dipakai avatar; jadi latar area preview (PR #19).
+-- 7. BELUM TERJAWAB: varian mana yang PRESISI di wajah (lihat S.wear di bawah).
 
 local TAG = "[SPIKE18]"
+local PREFIX = "SPIKE_"
 
 local M = {}
 
@@ -24,272 +32,324 @@ local function say(fmt: string, ...: any)
 	print(TAG .. " " .. string.format(fmt, ...))
 end
 
--- Ringkas satu Instance: class + properti yang menarik untuk kita.
-local function describe(inst: Instance): string
-	local parts = { inst.ClassName .. " '" .. inst.Name .. "'" }
-	if inst:IsA("Decal") then
-		local d = inst :: Decal
-		table.insert(
-			parts,
-			("Texture=%s Face=%s ZIndex=%d Transparency=%.2f Color3=%s"):format(
-				tostring(d.Texture),
-				tostring(d.Face),
-				d.ZIndex,
-				d.Transparency,
-				tostring(d.Color3)
-			)
-		)
-	elseif inst:IsA("Texture") then
-		local t = inst :: Texture
-		table.insert(parts, ("Texture=%s Face=%s"):format(tostring(t.Texture), tostring(t.Face)))
-	elseif inst:IsA("BasePart") then
-		table.insert(parts, ("Size=%s"):format(tostring((inst :: BasePart).Size)))
-	end
-	return table.concat(parts, " | ")
-end
+-- Properti yang mungkin ada; dibaca dengan pcall supaya kelas apa pun aman.
+local PROBE_PROPS = {
+	"Texture",
+	"TextureId",
+	"Face",
+	"ZIndex",
+	"Transparency",
+	"Color3",
+	"Value",
+	"Enabled",
+	"Order",
+	"CageMeshId",
+	"CageOrigin",
+	"ImportOrigin",
+	"Stiffness",
+}
 
--- Cetak seluruh isi model hasil LoadAsset (maks 2 tingkat, cukup untuk aset tunggal).
-local function dumpTree(label: string, root: Instance)
-	say("%s root: %s", label, describe(root))
-	for _, child in root:GetChildren() do
-		say("%s   - %s", label, describe(child))
-		for _, sub in child:GetChildren() do
-			say("%s       - %s", label, describe(sub))
+local function describe(inst: Instance): string
+	local out = {}
+	for _, prop in PROBE_PROPS do
+		local ok, value = pcall(function()
+			return (inst :: any)[prop]
+		end)
+		if ok and value ~= nil then
+			table.insert(out, ("%s=%s"):format(prop, tostring(value)))
 		end
 	end
+	return ("%s '%s' [%s]"):format(inst.ClassName, inst.Name, table.concat(out, " "))
 end
 
--- LoadAsset + ukur waktunya. Mengembalikan (model, detik) atau (nil, pesan error).
-local function loadAsset(id: number): (Instance?, any)
+local function dumpTree(label: string, root: Instance, depth: number)
+	say("%s%s%s", label, string.rep("  ", depth + 1), describe(root))
+	for _, child in root:GetChildren() do
+		dumpTree(label, child, depth + 1)
+	end
+end
+
+local function loadAsset(id: number): Instance?
 	local InsertService = game:GetService("InsertService")
 	local t0 = os.clock()
 	local ok, res = pcall(function()
 		return InsertService:LoadAsset(id)
 	end)
-	local dt = os.clock() - t0
 	if not ok then
-		return nil, tostring(res)
+		say("LoadAsset(%d) GAGAL: %s", id, tostring(res))
+		return nil
 	end
-	return res :: Instance, dt
+	say("LoadAsset(%d) OK dalam %.2f detik", id, os.clock() - t0)
+	return res :: Instance
 end
 
--- Cari Decal pertama di dalam model hasil LoadAsset.
-local function findDecal(root: Instance): Decal?
-	if root:IsA("Decal") then
-		return root :: Decal
+local function playerHead(): BasePart?
+	local Players = game:GetService("Players")
+	local player = Players:GetPlayers()[1]
+	local char = if player then player.Character else nil
+	local head = if char then char:FindFirstChild("Head") else nil
+	if head == nil then
+		say("TIDAK ada Head (pemain belum spawn). Play ulang lalu coba lagi.")
+		return nil
 	end
+	return head :: BasePart
+end
+
+local function findDecal(root: Instance): Decal?
 	local found = root:FindFirstChildWhichIsA("Decal", true)
 	return if found then found :: Decal else nil
 end
 
---------------------------------------------------------------------------------
--- BAGIAN SERVER
---------------------------------------------------------------------------------
-function M.server()
-	local ServerScriptService = game:GetService("ServerScriptService")
-	local Players = game:GetService("Players")
-	local RobloxApi = require(ServerScriptService:WaitForChild("Server").Gateways.RobloxApi) :: any
+-- ===== Pemeriksaan =====
 
-	local api = RobloxApi.new()
-	local A = Enum.AvatarAssetType
-
-	-- 0. Karakter pemain: Head jenis apa, decal apa saja yang SUDAH ada di sana.
-	local player = Players:GetPlayers()[1]
-	local char = if player then player.Character else nil
-	local headFound = if char then char:FindFirstChild("Head") else nil
-	if char == nil or headFound == nil then
-		say("0 TIDAK ada Head (pemain belum spawn). Hentikan, Play ulang lalu jalankan lagi.")
+-- Isi satu aset makeup apa adanya.
+function M.parts(assetId: number)
+	local root = loadAsset(assetId)
+	if root == nil then
 		return
 	end
-	local character = char :: Instance
-	local head = headFound :: BasePart
-	say("0 Head: %s", describe(head))
-	for _, child in head:GetChildren() do
-		say("0 Head anak: %s", describe(child))
-	end
-
-	-- 1. Ambil contoh item tiap tipe makeup + satu background.
-	local samples: { { label: string, id: number, name: string } } = {}
-	for _, probe in
-		{
-			{ label = "FaceMakeup", assetType = A.FaceMakeup },
-			{ label = "EyeMakeup", assetType = A.EyeMakeup },
-			{ label = "LipMakeup", assetType = A.LipMakeup },
-			{ label = "AvatarBackground", assetType = A.AvatarBackground },
-		}
-	do
-		local label = probe.label
-		local okSearch, page = api:searchCatalog({ assetTypes = { probe.assetType }, limit = 10 })
-		if okSearch and page.items[1] then
-			local it = page.items[1]
-			table.insert(samples, { label = label, id = it.Id, name = tostring(it.Name) })
-			say("1 %s contoh: %s (%d)", label, tostring(it.Name), it.Id)
-		else
-			say("1 %s TIDAK dapat contoh", label)
-		end
-		task.wait(0.3)
-	end
-
-	-- 2. LoadAsset tiap contoh: isinya apa, berapa lama.
-	local textures: { [string]: string } = {}
-	for _, s in samples do
-		local root, info = loadAsset(s.id)
-		if not root then
-			say("2 %s LoadAsset(%d) GAGAL: %s", s.label, s.id, tostring(info))
-		else
-			say("2 %s LoadAsset(%d) OK dalam %.2f detik", s.label, s.id, info :: number)
-			dumpTree("2 " .. s.label, root)
-			local decal = findDecal(root)
-			if decal then
-				textures[s.label] = decal.Texture
-			end
-			root:Destroy()
-		end
-		task.wait(0.3)
-	end
-
-	-- 3. Apakah LoadAsset bisa DILEWATI? Bandingkan "rbxassetid://<id item>" dengan Texture aslinya.
-	--    Kalau id item langsung bisa dipakai, tidak perlu InsertService sama sekali.
-	for _, s in samples do
-		local fromLoad = textures[s.label]
-		say("3 %s id=%d -> Texture hasil LoadAsset = %s", s.label, s.id, tostring(fromLoad))
-		if fromLoad then
-			local num = tostring(fromLoad):match("%d+")
-			say(
-				"3 %s id item %s angka di Texture (%s) -> %s",
-				s.label,
-				tostring(s.id),
-				tostring(num),
-				if tostring(num) == tostring(s.id) then "SAMA (LoadAsset bisa dilewati)" else "BEDA (LoadAsset wajib)"
-			)
-		end
-	end
-
-	-- 4. Tempel satu makeup ke Head sebagai Decal buatan sendiri (bukan hasil LoadAsset).
-	local makeupLabels = { "FaceMakeup", "EyeMakeup", "LipMakeup" }
-	local applied: { Decal } = {}
-	for i, label in makeupLabels do
-		local tex = textures[label]
-		if tex then
-			local d = Instance.new("Decal")
-			d.Name = "SV_Makeup_" .. label
-			d.Texture = tex
-			d.Face = Enum.NormalId.Front
-			d.ZIndex = i -- uji nomor 5: apakah urutan lapis menurut ZIndex?
-			d.Parent = head
-			table.insert(applied, d)
-			say("4 tempel %s -> %s", label, describe(d))
-		end
-	end
-	say("4 total decal terpasang: %d — LIHAT KEPALA AVATAR SEKARANG (makeup terlihat? menutupi wajah?)", #applied)
-	task.wait(3)
-
-	-- 5. Urutan lapis: balik ZIndex-nya, lihat apakah tampilannya berubah.
-	for i, d in applied do
-		d.ZIndex = #applied - i + 1
-	end
-	say("5 ZIndex DIBALIK (%d decal). Lihat apakah lapisan bertukar.", #applied)
-	task.wait(3)
-
-	-- 6. Bertahan tidak saat outfit diganti (ApplyDescriptionAsync)?
-	local humanoid = character:FindFirstChildOfClass("Humanoid") :: Humanoid?
-	if humanoid then
-		local desc = humanoid:GetAppliedDescription()
-		local okApply, errApply = pcall(function()
-			humanoid:ApplyDescriptionAsync(desc)
-		end)
-		task.wait(1)
-		local newHead = character:FindFirstChild("Head")
-		local stillThere = 0
-		for _, d in applied do
-			if d.Parent ~= nil then
-				stillThere += 1
-			end
-		end
-		say(
-			"6 ApplyDescriptionAsync ok=%s err=%s | Head sama? %s | decal tersisa %d/%d",
-			tostring(okApply),
-			tostring(errApply),
-			tostring(newHead == head),
-			stillThere,
-			#applied
-		)
-	else
-		say("6 tidak ada Humanoid, lewati")
-	end
-
-	-- 7. Lepas: hapus hanya decal kita, cek decal wajah bawaan tetap ada.
-	for _, d in applied do
-		if d.Parent then
-			d:Destroy()
-		end
-	end
-	task.wait(0.5)
-	local leftover = {}
-	local liveHead = character:FindFirstChild("Head")
-	if liveHead then
-		for _, child in liveHead:GetChildren() do
-			if child:IsA("Decal") or child:IsA("Texture") then
-				table.insert(leftover, child.Name)
-			end
-		end
-	end
-	say(
-		"7 setelah dilepas, sisa decal di Head: [%s] (harus ada 'face' bawaan, tanpa SV_Makeup_*)",
-		table.concat(leftover, ", ")
-	)
-
-	-- 8. Background: Texture-nya dicetak supaya bisa dicoba di ImageLabel pada bagian client.
-	say("8 AvatarBackground Texture = %s (pakai ini di ImageLabel bagian client)", tostring(textures.AvatarBackground))
-	local bgId: number? = nil
-	for _, s in samples do
-		if s.label == "AvatarBackground" then
-			bgId = s.id
-		end
-	end
-	say("8 AvatarBackground id item = %s", tostring(bgId))
-	say("SELESAI bagian server. Sekarang jalankan .client() di tab Client.")
+	dumpTree("parts", root, 0)
+	local decal = findDecal(root)
+	say("parts texture id = %s (id item %d -> BEDA, LoadAsset wajib)", tostring(decal and decal.Texture), assetId)
+	root:Destroy()
 end
 
---------------------------------------------------------------------------------
--- BAGIAN CLIENT — apakah semuanya bisa dikerjakan tanpa server?
---------------------------------------------------------------------------------
-function M.client()
-	local Players = game:GetService("Players")
-	local player = Players.LocalPlayer
-	local char = if player then player.Character else nil
-	local head = if char then char:FindFirstChild("Head") else nil
+-- Head pemain sekarang: jenis, WrapTarget, dan apa saja yang menempel.
+function M.head()
+	local head = playerHead()
+	if head == nil then
+		return
+	end
+	say("head %s", describe(head))
+	for _, child in head:GetChildren() do
+		say("head anak: %s", describe(child))
+	end
+end
 
-	-- 9. Bisakah CLIENT memanggil InsertService:LoadAsset?
-	--    Ganti angka di bawah dengan id makeup yang dicetak bagian server nomor 1.
-	local ID_MAKEUP = 0
-	if ID_MAKEUP == 0 then
-		say("9 isi dulu ID_MAKEUP di file ini dengan id dari cetakan server nomor 1, lalu jalankan lagi.")
+-- AvatarBackground: bukan Decal, tapi ImageId + Color di dalam Folder (untuk PR #19).
+function M.background(assetId: number)
+	local root = loadAsset(assetId)
+	if root == nil then
+		return
+	end
+	local folder = root:FindFirstChild("AvatarBackground", true)
+	if folder then
+		local imageId = folder:FindFirstChild("ImageId")
+		local color = folder:FindFirstChild("Color")
+		say(
+			"background ImageId=%s Color=%s",
+			if imageId then tostring((imageId :: IntValue).Value) else "nil",
+			if color then tostring((color :: Color3Value).Value) else "nil"
+		)
 	else
-		local root, info = loadAsset(ID_MAKEUP)
-		if root then
-			say("9 CLIENT LoadAsset BERHASIL dalam %.2f detik", info :: number)
-			dumpTree("9 client", root)
-			root:Destroy()
-		else
-			say("9 CLIENT LoadAsset DITOLAK: %s -> jalur makeup harus lewat server", tostring(info))
+		dumpTree("background", root, 0)
+	end
+	root:Destroy()
+end
+
+-- ===== Uji presisi: pasang satu varian, BIARKAN, nilai dengan tenang, lalu S.off() =====
+--   A = Decal BARU, hanya texture id (cara MakeupService sekarang)
+--   B = Decal ASLI di-Clone apa adanya (ikut WrapTextureTransfer + Configuration)
+--   C = seluruh isi Model hasil LoadAsset dipindah ke Head
+--   D = Decal BARU + WrapTextureTransfer BUATAN SENDIRI (kalau sama presisinya dengan B,
+--       kita cukup menyimpan texture id, tidak perlu menyimpan Instance di cache server)
+function M.wear(variant: string, assetId: number?)
+	local id = assetId or 123316458229208 -- Cute Light Blush
+	local head = playerHead()
+	if head == nil then
+		return
+	end
+	M.off()
+
+	local root = loadAsset(id)
+	if root == nil then
+		return
+	end
+	local decal = findDecal(root)
+	if decal == nil then
+		say("aset %d tidak berisi Decal", id)
+		root:Destroy()
+		return
+	end
+
+	local v = string.upper(variant)
+	if v == "A" or v == "D" then
+		local d = Instance.new("Decal")
+		d.Name = PREFIX .. v
+		d.Texture = decal.Texture
+		d.Face = Enum.NormalId.Front
+		if v == "D" then
+			local okWrap, wrap = pcall(function()
+				return Instance.new("WrapTextureTransfer" :: any)
+			end)
+			if okWrap then
+				(wrap :: Instance).Parent = d
+				say("D WrapTextureTransfer buatan sendiri berhasil dibuat")
+			else
+				say("D Instance.new('WrapTextureTransfer') DITOLAK: %s -> varian D tidak mungkin", tostring(wrap))
+			end
+		end
+		d.Parent = head
+	elseif v == "B" then
+		local b = decal:Clone()
+		b.Name = PREFIX .. "B"
+		b.Parent = head
+		say("B anak ikut: %d", #b:GetChildren())
+	elseif v == "C" then
+		for _, child in root:GetChildren() do
+			local c = child:Clone()
+			c.Name = PREFIX .. "C_" .. child.Name
+			c.Parent = head
+		end
+	else
+		say("varian tidak dikenal: %s (pakai A, B, C, atau D)", variant)
+		root:Destroy()
+		return
+	end
+
+	root:Destroy()
+	say("varian %s TERPASANG di Head — nilai dengan tenang, lalu S.off()", v)
+end
+
+-- Lepas semua pasangan spike (decal bawaan & makeup asli tidak disentuh).
+function M.off()
+	local head = playerHead()
+	if head == nil then
+		return
+	end
+	local n = 0
+	for _, child in head:GetChildren() do
+		if string.sub(child.Name, 1, #PREFIX) == PREFIX then
+			child:Destroy()
+			n += 1
 		end
 	end
+	say("off: %d pasangan spike dilepas", n)
+end
 
-	-- 10. Decal buatan client di Head: kelihatan oleh pemain ini? (cukup untuk preview lokal)
-	if head and ID_MAKEUP ~= 0 then
-		local d = Instance.new("Decal")
-		d.Name = "SV_MakeupClientTest"
-		d.Texture = "rbxassetid://" .. tostring(ID_MAKEUP)
-		d.Face = Enum.NormalId.Front
-		d.Parent = head
-		say("10 decal client dipasang di Head — terlihat? (hilang otomatis 5 detik)")
-		task.wait(5)
-		d:Destroy()
-		say("10 decal client dilepas")
-	else
-		say("10 dilewati (Head tidak ada atau ID_MAKEUP belum diisi)")
+-- ===== Bandingkan A / B / D BERSAMAAN pada tiga boneka kembar =====
+-- Tiga salinan avatar pemain berdiri berjajar di depanmu, masing-masing memakai satu varian.
+-- Satu layar, satu screenshot, sudut kamera sama -> tidak ada lagi tebak-tebakan.
+--   S.compare(106390919006817)  -- default: Cute Light Blush
+--   S.clear()                   -- hapus bonekanya
+local DUMMY_PREFIX = "SPIKE_DUMMY_"
+
+local function labelOf(model: Instance, text: string)
+	local head = model:FindFirstChild("Head")
+	if head == nil then
+		return
 	end
+	local gui = Instance.new("BillboardGui")
+	gui.Name = "SPIKE_LABEL"
+	gui.Size = UDim2.fromScale(4, 1.5)
+	gui.StudsOffset = Vector3.new(0, 2.5, 0)
+	gui.AlwaysOnTop = true
+	local label = Instance.new("TextLabel")
+	label.Size = UDim2.fromScale(1, 1)
+	label.BackgroundTransparency = 1
+	label.Text = text
+	label.TextScaled = true
+	label.TextColor3 = Color3.fromRGB(255, 255, 255)
+	label.TextStrokeTransparency = 0
+	label.Parent = gui
+	gui.Parent = head
+end
+
+-- Pasang satu varian ke Head sebuah model (dipakai untuk boneka maupun pemain).
+local function attachVariant(head: BasePart, variant: string, decal: Decal, root: Instance)
+	if variant == "B" then
+		local b = decal:Clone()
+		b.Name = PREFIX .. "B"
+		b.Parent = head
+	elseif variant == "C" then
+		for _, child in root:GetChildren() do
+			local c = child:Clone()
+			c.Name = PREFIX .. "C_" .. child.Name
+			c.Parent = head
+		end
+	else
+		local d = Instance.new("Decal")
+		d.Name = PREFIX .. variant
+		d.Texture = decal.Texture
+		d.Face = Enum.NormalId.Front
+		if variant == "D" then
+			local okWrap, wrap = pcall(function()
+				return Instance.new("WrapTextureTransfer" :: any)
+			end)
+			if okWrap then
+				(wrap :: Instance).Parent = d
+			end
+		end
+		d.Parent = head
+	end
+end
+
+function M.clear()
+	for _, obj in workspace:GetChildren() do
+		if string.sub(obj.Name, 1, #DUMMY_PREFIX) == DUMMY_PREFIX then
+			obj:Destroy()
+		end
+	end
+	say("clear: boneka spike dihapus")
+end
+
+function M.compare(assetId: number?)
+	local Players = game:GetService("Players")
+	local id = assetId or 123316458229208
+	local player = Players:GetPlayers()[1]
+	local char = if player then player.Character else nil
+	local humanoid = if char then char:FindFirstChildOfClass("Humanoid") else nil
+	local rootPart = if char then char:FindFirstChild("HumanoidRootPart") else nil
+	if humanoid == nil or rootPart == nil then
+		say("TIDAK ada karakter. Play ulang lalu coba lagi.")
+		return
+	end
+
+	M.clear()
+	local root = loadAsset(id)
+	if root == nil then
+		return
+	end
+	local decal = findDecal(root)
+	if decal == nil then
+		say("aset %d tidak berisi Decal", id)
+		root:Destroy()
+		return
+	end
+
+	local desc = humanoid:GetAppliedDescription()
+	local variants = { "A", "B", "D" }
+	local base = (rootPart :: BasePart).CFrame
+	for i, variant in variants do
+		local okModel, model = pcall(function()
+			return Players:CreateHumanoidModelFromDescriptionAsync(desc, Enum.HumanoidRigType.R15)
+		end)
+		if not okModel then
+			say("boneka %s gagal dibuat: %s", variant, tostring(model))
+		else
+			local dummy = model :: Model
+			dummy.Name = DUMMY_PREFIX .. variant
+			local head = dummy:FindFirstChild("Head")
+			if head then
+				attachVariant(head :: BasePart, variant, decal, root)
+			end
+			labelOf(dummy, variant)
+			-- berjajar 4 stud, 8 stud di depan pemain, menghadap pemain
+			dummy:PivotTo(base * CFrame.new((i - 2) * 4, 0, -8) * CFrame.Angles(0, math.pi, 0))
+			local dummyRoot = dummy:FindFirstChild("HumanoidRootPart")
+			if dummyRoot then
+				(dummyRoot :: BasePart).Anchored = true -- hanya root (anchor semua part merusak rakitan)
+			end
+			local dummyHumanoid = dummy:FindFirstChildOfClass("Humanoid")
+			if dummyHumanoid then
+				(dummyHumanoid :: Humanoid).DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
+			end
+			dummy.Parent = workspace
+			say("boneka %s siap", variant)
+		end
+	end
+	root:Destroy()
+	say("compare: A / B / D berjajar di depanmu — satu screenshot cukup. Hapus dengan S.clear()")
 end
 
 return M

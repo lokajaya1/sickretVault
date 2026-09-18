@@ -10,6 +10,9 @@
 --   - Makeup TIDAK bisa lewat HumanoidDescription, jadi tidak boleh masuk DescriptionBuilder.
 --   - ApplyDescriptionAsync yang mengganti Head MENGHANCURKAN decal (terbukti: decal hidup 0/3),
 --     jadi makeup harus dipasang ULANG setiap Head baru -> :reapply().
+-- Decal yang dipasang adalah CLONE dari template asli hasil LoadAsset (bukan Decal buatan
+-- sendiri): template membawa anak `WrapTextureTransfer` yang memetakan tekstur mengikuti bentuk
+-- kepala. Template disimpan per sesi supaya :reapply() tidak perlu menyentuh gateway (tanpa yield).
 -- Semua akses engine lewat `deps` supaya bisa dites di Lune.
 
 local Shared = game:GetService("ReplicatedStorage"):WaitForChild("Shared")
@@ -23,16 +26,16 @@ local DECAL_PREFIX = "SV_Makeup_"
 export type Code = "NOT_READY" | "NOT_FOUND" | "FAILED" | "UNSUPPORTED_TYPE" | "NOTHING" | "NO_HEAD"
 
 export type Deps = {
-	decals: any, -- AssetDecal (getMakeupTexture)
+	decals: any, -- AssetDecal (getMakeup)
 	itemInfo: any, -- ItemInfoService (get -> assetType)
 	onState: ((player: any, dto: { any }) -> ())?, -- kirim MakeupChanged
 	-- engine (default Roblox; diganti saat test)
 	getHead: ((player: any) -> any)?,
-	newDecal: (() -> any)?,
 	face: any?, -- default Enum.NormalId.Front
 }
 
-type Session = { makeup: Makeup.State }
+-- templates[slot] = Decal template (milik gateway; SELALU di-Clone sebelum dipasang)
+type Session = { makeup: Makeup.State, templates: { [string]: any } }
 
 local MakeupService = {}
 MakeupService.__index = MakeupService
@@ -43,7 +46,6 @@ export type MakeupService = typeof(setmetatable(
 		_itemInfo: any,
 		_onState: (any, { any }) -> (),
 		_getHead: (any) -> any,
-		_newDecal: () -> any,
 		_face: any,
 		_sessions: { [any]: Session },
 	},
@@ -65,9 +67,6 @@ function MakeupService.new(deps: Deps): MakeupService
 		_itemInfo = deps.itemInfo,
 		_onState = deps.onState or function() end,
 		_getHead = deps.getHead or defaultGetHead,
-		_newDecal = deps.newDecal or function()
-			return Instance.new("Decal")
-		end,
 		_face = if deps.face ~= nil then deps.face else Enum.NormalId.Front,
 		_sessions = {},
 	}, MakeupService)
@@ -75,7 +74,7 @@ end
 
 function MakeupService.attach(self: MakeupService, player: any)
 	if self._sessions[player] == nil then
-		self._sessions[player] = { makeup = Makeup.empty() }
+		self._sessions[player] = { makeup = Makeup.empty(), templates = {} }
 	end
 end
 
@@ -114,9 +113,13 @@ function MakeupService.reapply(self: MakeupService, player: any): boolean
 	stripDecals(head)
 	-- Urutan list = face -> eye -> lip (ZIndex tidak terbukti berpengaruh, jadi urutan tempel yang dipakai).
 	for _, entry in Makeup.list(session.makeup) do
-		local decal = self._newDecal()
+		local template = session.templates[entry.slot]
+		if template == nil then
+			log.warn("template makeup hilang", entry.assetId, entry.slot)
+			continue
+		end
+		local decal = template:Clone() -- WAJIB clone: template dipakai bersama semua pemain
 		decal.Name = DECAL_PREFIX .. entry.slot
-		decal.Texture = entry.textureId
 		decal.Face = self._face
 		decal.Parent = head
 	end
@@ -152,20 +155,20 @@ function MakeupService.wear(self: MakeupService, player: any, assetId: number): 
 		return false, "NOTHING" -- sudah dipakai di slot itu
 	end
 
-	local okTex, texture = self._decals:getMakeupTexture(info.assetId) -- yield
+	local okDecal, decalInfo = self._decals:getMakeup(info.assetId) -- yield
 	if self._sessions[player] ~= session then
 		return false, "NOT_READY"
 	end
-	if not okTex then
-		local code = if texture and texture.code == "FAILED" then "FAILED" else "NOT_FOUND"
-		log.warn("texture makeup gagal", info.assetId, texture and texture.code)
+	if not okDecal then
+		local code = if decalInfo and decalInfo.code == "FAILED" then "FAILED" else "NOT_FOUND"
+		log.warn("decal makeup gagal", info.assetId, decalInfo and decalInfo.code)
 		return false, code :: Code
 	end
 
 	local nextState, err = Makeup.set(session.makeup, {
 		assetId = info.assetId,
 		slot = slot,
-		textureId = texture,
+		textureId = decalInfo.textureId,
 	})
 	if nextState == nil then
 		log.warn("state makeup ditolak", info.assetId, err)
@@ -173,6 +176,7 @@ function MakeupService.wear(self: MakeupService, player: any, assetId: number): 
 	end
 
 	session.makeup = nextState
+	session.templates[slot] = decalInfo.template
 	self:reapply(player)
 	self:_publish(player)
 	return true, nil
@@ -186,6 +190,11 @@ function MakeupService.remove(self: MakeupService, player: any, assetId: number)
 	end
 	if not Makeup.hasAsset(session.makeup, assetId) then
 		return false, "NOTHING"
+	end
+	for _, entry in Makeup.list(session.makeup) do
+		if entry.assetId == assetId then
+			session.templates[entry.slot] = nil
+		end
 	end
 	session.makeup = Makeup.removeAsset(session.makeup, assetId)
 	self:reapply(player)
@@ -203,6 +212,7 @@ function MakeupService.clear(self: MakeupService, player: any): (boolean, Code?)
 		return false, "NOTHING"
 	end
 	session.makeup = Makeup.empty()
+	session.templates = {}
 	self:reapply(player)
 	self:_publish(player)
 	return true, nil

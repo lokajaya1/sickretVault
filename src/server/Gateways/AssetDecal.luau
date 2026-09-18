@@ -3,7 +3,7 @@
 --
 --   local AssetDecal = require(ServerScriptService.Server.Gateways.AssetDecal)
 --   local decals = AssetDecal.new()
---   local ok, textureId = decals:getMakeupTexture(133520807586498)
+--   local ok, info = decals:getMakeup(133520807586498)   -- info = { textureId, template }
 --
 -- Kenapa gateway sendiri (spike 18 Sep 2026, tests/MakeupDecal*.studio):
 --   1. Makeup TIDAK bisa dipakai lewat HumanoidDescription; jalurnya Decal yang ditempel ke Head.
@@ -12,6 +12,11 @@
 --   3. CLIENT DITOLAK: "InsertService cannot be used to load assets from the client" -> server saja.
 --   4. Satu LoadAsset ~0,4-0,6 detik -> hasilnya di-cache, dan permintaan id yang sama yang
 --      datang bersamaan menunggu hasil yang sedang berjalan (tidak memanggil LoadAsset dua kali).
+--   5. Yang disimpan bukan cuma texture id, tapi TEMPLATE Decal-nya (Parent nil, di memori server).
+--      Decal asli membawa anak `WrapTextureTransfer` — itulah yang memetakan tekstur mengikuti
+--      bentuk kepala (HeadWrapTarget). Decal buatan sendiri tanpa anak itu hanya proyeksi datar
+--      ke bidang depan kotak pembatas Head, jadi makeup melenceng di kepala non-standar.
+--      textureId tetap disimpan karena dikirim ke client untuk penanda "sedang dipakai".
 --
 -- Semua fungsi return (true, data) atau (false, DecalError). Tidak pernah error().
 
@@ -57,7 +62,7 @@ export type AssetDecal = typeof(setmetatable(
 		_insert: any,
 		_retry: Retry.Options,
 		_sleep: (number) -> (),
-		_textures: Cache.Cache,
+		_textures: Cache.Cache, -- assetId -> { textureId, template } | { code, message }
 		_inflight: { [number]: boolean },
 	},
 	AssetDecal
@@ -104,13 +109,18 @@ function AssetDecal.new(deps: Deps?): AssetDecal
 	}, AssetDecal)
 end
 
--- Ambil texture id dari model hasil LoadAsset. Model selalu dibuang setelah dibaca.
-local function readTexture(model: any): string?
-	local decal = model:FindFirstChildWhichIsA("Decal", true)
-	local texture = if decal then decal.Texture else nil
+-- Ambil TEMPLATE Decal (beserta anak WrapTextureTransfer) dari model hasil LoadAsset.
+-- Model selalu dibuang; template hidup tanpa Parent selama masih ada di cache.
+local function readDecal(model: any): any
+	local found = model:FindFirstChildWhichIsA("Decal", true)
+	local template = if found then found:Clone() else nil
+	local texture = if template then template.Texture else nil
 	model:Destroy()
-	if Makeup.isValidTexture(texture) then
-		return texture
+	if template ~= nil and Makeup.isValidTexture(texture) then
+		return { textureId = texture, template = template }
+	end
+	if template then
+		template:Destroy()
 	end
 	return nil
 end
@@ -125,9 +135,11 @@ function AssetDecal._waitInflight(self: AssetDecal, assetId: number): any
 	return self._textures:get(assetId)
 end
 
--- Texture untuk satu item makeup. (true, "rbxassetid://...") atau (false, DecalError).
+-- Template Decal + texture id untuk satu item makeup.
+-- (true, { textureId = "rbxassetid://...", template = Decal }) atau (false, DecalError).
+-- Penelepon WAJIB meng-Clone template, bukan memakainya langsung (satu template dipakai bersama).
 -- Hasil gagal permanen ikut disimpan supaya tidak dicoba berulang kali.
-function AssetDecal.getMakeupTexture(self: AssetDecal, assetId: number): (boolean, any)
+function AssetDecal.getMakeup(self: AssetDecal, assetId: number): (boolean, any)
 	if not isId(assetId) then
 		return false, makeError(0, "BAD_ARG", "assetId harus angka bulat positif")
 	end
@@ -137,8 +149,8 @@ function AssetDecal.getMakeupTexture(self: AssetDecal, assetId: number): (boolea
 		hit = self:_waitInflight(assetId)
 	end
 	if hit ~= nil then
-		if hit.texture then
-			return true, hit.texture
+		if hit.template then
+			return true, hit
 		end
 		return false, makeError(assetId, hit.code or "FAILED", hit.message or "gagal sebelumnya")
 	end
@@ -152,24 +164,24 @@ function AssetDecal.getMakeupTexture(self: AssetDecal, assetId: number): (boolea
 		local message = tostring(result)
 		local code: ErrorCode = if AssetDecal.isPermanentError(result) then "NOT_FOUND" else "FAILED"
 		if code == "NOT_FOUND" then
-			self._textures:set(assetId, { texture = nil, code = code, message = message })
+			self._textures:set(assetId, { template = nil, code = code, message = message })
 		end
 		self._inflight[assetId] = nil
 		log.warn("LoadAsset gagal", assetId, code, message)
 		return false, makeError(assetId, code, message)
 	end
 
-	local texture = readTexture(result)
-	if texture == nil then
-		self._textures:set(assetId, { texture = nil, code = "NO_DECAL", message = "aset tidak berisi Decal" })
+	local entry = readDecal(result)
+	if entry == nil then
+		self._textures:set(assetId, { template = nil, code = "NO_DECAL", message = "aset tidak berisi Decal" })
 		self._inflight[assetId] = nil
 		log.warn("aset tanpa Decal", assetId)
 		return false, makeError(assetId, "NO_DECAL", "aset tidak berisi Decal")
 	end
 
-	self._textures:set(assetId, { texture = texture })
+	self._textures:set(assetId, entry)
 	self._inflight[assetId] = nil
-	return true, texture
+	return true, entry
 end
 
 function AssetDecal.clear(self: AssetDecal)

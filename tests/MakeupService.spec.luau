@@ -47,9 +47,9 @@ local function makeNative(head: any, name: string): any
 end
 
 -- Decal palsu: menyetel .Parent ikut mendaftarkan diri ke head (seperti Instance sungguhan).
-local function makeDecal(counts: { created: number, destroyed: number }): any
+local function makeDecal(counts: { created: number, destroyed: number }, texture: string?): any
 	counts.created += 1
-	local raw: any = { Name = "", Texture = "", Face = nil, Parent = nil }
+	local raw: any = { Name = "", Texture = texture or "", Face = nil, Parent = nil }
 	local proxy: any
 	raw.Destroy = function(_self: any)
 		local parent = raw.Parent
@@ -112,18 +112,27 @@ return function()
 		return true, { assetId = id, assetType = assetType }
 	end
 
+	-- Template palsu: Clone menghasilkan decal baru yang bisa di-parent ke head palsu.
+	local function template(texture: string): any
+		local t: any = { Texture = texture, Name = "", Face = nil, Parent = nil }
+		function t.Clone(_self: any): any
+			return makeDecal(counts, texture)
+		end
+		return t
+	end
+
 	local fakeDecals = {}
-	function fakeDecals.getMakeupTexture(_self: any, id: number): (boolean, any)
+	function fakeDecals.getMakeup(_self: any, id: number): (boolean, any)
 		calls.texture += 1
 		if id == ID_BROKEN then
 			return false, { code = "FAILED", message = "HTTP 429" }
 		end
 		if id == ID_EYE then
-			return true, TEX_EYE
+			return true, { textureId = TEX_EYE, template = template(TEX_EYE) }
 		elseif id == ID_LIP then
-			return true, TEX_LIP
+			return true, { textureId = TEX_LIP, template = template(TEX_LIP) }
 		end
-		return true, TEX_FACE
+		return true, { textureId = TEX_FACE, template = template(TEX_FACE) }
 	end
 
 	local svc = MakeupService.new({
@@ -131,9 +140,6 @@ return function()
 		itemInfo = fakeItemInfo,
 		getHead = function()
 			return head
-		end,
-		newDecal = function()
-			return makeDecal(counts)
 		end,
 		face = "Front", -- pengganti Enum.NormalId.Front
 		onState = function(_p: any, dto: any)
