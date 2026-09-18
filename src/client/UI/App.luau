@@ -143,6 +143,9 @@ export type App = typeof(setmetatable(
 		wardrobe: WardrobeController.WardrobeController,
 		wardrobePanel: WardrobePanel.WardrobePanel,
 		previews: OutfitPreview.OutfitPreview,
+		_previewCard: Frame, -- kartu avatar SEKARANG (kolom kiri); hanya saat latar dipakai
+		_hasBackground: boolean,
+		_live: OutfitPreview.Handle,
 		leftRail: SideRail.SideRail,
 		rightRail: SideRail.SideRail,
 		toast: Toast.Toast,
@@ -326,6 +329,45 @@ function App.mount(opts: Options?): App
 
 	-- Panel outfit tersimpan (kartu render avatar 3D): setingkat panel keranjang.
 	local previews = OutfitPreview.new()
+
+	-- Kartu avatar SEKARANG (kolom kiri gaya CAC). Kartunya menutupi PERSIS area tempat karakter
+	-- dunia berdiri (anchor kamera try-on), jadi tidak pernah ada dua avatar terlihat sekaligus --
+	-- tanpa perlu mengutak-atik transparansi karakter asli. Isinya clone karakter (OutfitPreview.
+	-- mountCurrent), dan latar AvatarBackground akhirnya punya tempat: `{ background = true }`.
+	local previewCard = Instance.new("Frame")
+	previewCard.Name = "AvatarPreview"
+	previewCard.BackgroundColor3 = Tokens.Color.Panel
+	previewCard.BackgroundTransparency = 0 -- WAJIB pekat: kartu inilah yang menutupi avatar dunia
+	previewCard.BorderSizePixel = 0
+	previewCard.Visible = false
+	previewCard.ZIndex = Tokens.ZIndex.Hud
+	previewCard.Parent = gui
+
+	local previewCorner = Instance.new("UICorner")
+	previewCorner.CornerRadius = Tokens.Radius.Large
+	previewCorner.Parent = previewCard
+
+	local previewStroke = Instance.new("UIStroke")
+	previewStroke.Color = Tokens.Color.Stroke
+	previewStroke.Transparency = Tokens.Transparency.Stroke
+	previewStroke.Parent = previewCard
+
+	local previewPort = Instance.new("ViewportFrame")
+	previewPort.Name = "Preview"
+	previewPort.BackgroundColor3 = Tokens.Color.Background
+	previewPort.BackgroundTransparency = 0
+	previewPort.Ambient = Color3.fromRGB(120, 120, 134)
+	previewPort.LightColor = Color3.fromRGB(236, 236, 245)
+	previewPort.LightDirection = Vector3.new(-0.4, -1, -0.65)
+	previewPort.Size = UDim2.fromScale(1, 1)
+	previewPort.ZIndex = Tokens.ZIndex.Hud + 1
+	previewPort.Parent = previewCard
+
+	local portCorner = Instance.new("UICorner")
+	portCorner.CornerRadius = Tokens.Radius.Large
+	portCorner.Parent = previewPort
+
+	local livePreview = previews:mountCurrent(previewPort, { background = true })
 	-- true = panel detail item dibuka dari Saved Outfits -> Back kembali ke sana, bukan ke katalog.
 	local wardrobeReturn = false
 
@@ -439,6 +481,9 @@ function App.mount(opts: Options?): App
 		wardrobe = wardrobe,
 		wardrobePanel = wardrobePanel,
 		previews = previews,
+		_previewCard = previewCard,
+		_hasBackground = false,
+		_live = livePreview,
 		leftRail = leftRail,
 		rightRail = rightRail,
 		toast = toast,
@@ -501,12 +546,23 @@ function App.mount(opts: Options?): App
 		panel:refreshSelection()
 		detailPanel:refreshWorn()
 		refreshStrip()
+		local refresh = livePreview.refresh
+		if refresh and previewCard.Visible then
+			refresh() -- clone ulang karakter (0,005 detik; makeup ikut sendiri)
+		end
 	end)
 	table.insert(self._conns, { Disconnect = unsubscribe } :: any)
 
 	-- Latar area preview (AvatarBackground) -> SEMUA ViewportFrame preview sekaligus.
+	-- Latar dipakai -> kartu preview muncul (satu-satunya tempat latar bisa tergambar).
+	-- Tanpa latar kartu DISEMBUNYIKAN: avatar asli di dunia lebih hidup (cahaya, bayangan, animasi
+	-- idle), sedangkan isi ViewportFrame diam sampai PR animasi (Animator:StepAnimation).
 	local unBackground = outfit:onBackground(function(bg)
 		previews:setBackground(bg)
+		if self ~= nil then
+			self._hasBackground = bg ~= nil
+			self:_refreshButtons()
+		end
 	end)
 	table.insert(self._conns, { Disconnect = unBackground } :: any)
 	task.spawn(outfit.start, outfit) -- yield (GetState)
@@ -550,6 +606,26 @@ function App._refreshButtons(self: App)
 	for _, rail in { self.leftRail, self.rightRail } do
 		rail:setVisible(not open)
 		rail:setCompact(L.compact)
+	end
+	local card = self._previewCard
+	local showCard = open and self._hasBackground
+	card.Position = UDim2.fromOffset(L.previewX, L.previewY)
+	card.Size = UDim2.fromOffset(L.previewW, L.previewH)
+	if showCard and not card.Visible then
+		card.Visible = true
+		local refresh = self._live.refresh
+		if refresh then
+			refresh() -- baru terlihat lagi: samakan dengan look sekarang
+		end
+	else
+		card.Visible = showCard
+	end
+	-- Animasi di dalam kartu: kartu MENCERMINKAN pose karakter asli tiap frame (spike 18 Sep:
+	-- 4,071 stud vs 0,352 stud diam), jadi animation pack yang dipakai pemain ikut apa adanya.
+	-- Hanya jalan selama kartu terlihat supaya tidak ada loop yang bekerja sia-sia.
+	local setLive = self._live.setLive
+	if setLive then
+		setLive(showCard)
 	end
 	local bar = self.actions.instance
 	bar.Visible = open
@@ -697,6 +773,7 @@ function App.destroy(self: App)
 	self.cart:stop()
 	self.cartPanel:destroy()
 	self.wardrobePanel:destroy()
+	self._live.cancel()
 	self.previews:destroy()
 	self.leftRail:destroy()
 	self.rightRail:destroy()

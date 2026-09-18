@@ -511,4 +511,437 @@ function M.clear()
 	say("clear: boneka & panel spike dihapus")
 end
 
+-- ===== PR kolom kiri: preview AVATAR SEKARANG (18 Sep 2026) =====
+-- Kolom kiri akan jadi kartu ViewportFrame supaya latar AvatarBackground punya tempat.
+-- Yang belum pasti: isi kartunya dibuat bagaimana?
+--   CLONE = clone karakter ASLI pemain (makeup Decal & layered clothing sudah menempel di situ)
+--   BUILD = bangun rig baru dari GetAppliedDescription (jalur OutfitPreview sekarang, ~0,44 dtk
+--           dan makeup harus ditempel ulang dari template)
+-- Diukur: waktu, makeup ikut atau tidak, rakitan/pose benar atau berantakan, dan apakah latar
+-- (ImageLabel SAUDARA di belakang viewport, seperti produksi) tetap tergambar di belakang avatar.
+-- Cara pakai (tab CLIENT):
+--   local S = require(game.ReplicatedStorage.Tests["PreviewRig.studio"]) S.current()
+--   S.currentOff()
+local CURRENT_GUI = "SPIKE_Current"
+local CURRENT_IMAGE = 139431817156818 -- Prism Skies
+
+local function frameFullBody(viewport: ViewportFrame, rig: Model)
+	local cf, size = rig:GetBoundingBox()
+	local half = math.rad(15)
+	local dist = (math.min(size.Y, 12) / 2) / math.tan(half) * 1.15 + size.Z / 2
+	local cam = Instance.new("Camera")
+	cam.FieldOfView = 30
+	cam.CFrame = CFrame.lookAt(cf.Position + cf.LookVector * dist, cf.Position)
+	cam.Parent = viewport
+	viewport.CurrentCamera = cam
+end
+
+-- Siapkan model untuk dipajang (sama seperti OutfitPreview.prepare di produksi).
+local function tidyForPreview(rig: Model)
+	for _, x in rig:GetDescendants() do
+		if x:IsA("BaseScript") then
+			x:Destroy()
+		elseif x:IsA("BasePart") then
+			local part = x :: BasePart
+			part.Massless = true
+			part.CanCollide = false
+			part.CanQuery = false
+		end
+	end
+	local root = rig.PrimaryPart or rig:FindFirstChild("HumanoidRootPart")
+	if root and root:IsA("BasePart") then
+		root.Anchored = true
+	end
+	local humanoid = rig:FindFirstChildOfClass("Humanoid")
+	if humanoid then
+		(humanoid :: Humanoid).DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
+	end
+end
+
+local function countDecals(rig: Model): number
+	local head = rig:FindFirstChild("Head")
+	if head == nil then
+		return 0
+	end
+	local n = 0
+	for _, child in (head :: Instance):GetChildren() do
+		if child:IsA("Decal") then
+			n += 1
+		end
+	end
+	return n
+end
+
+function M.currentOff()
+	local player = Players.LocalPlayer
+	local gui = if player then player:FindFirstChild("PlayerGui") else nil
+	local old = if gui then gui:FindFirstChild(CURRENT_GUI) else nil
+	if old then
+		old:Destroy()
+		say("currentOff: panel dihapus")
+	end
+end
+
+function M.current()
+	if not RunService:IsClient() then
+		say("S.current() HARUS dari tab CLIENT")
+		return
+	end
+	local char = firstCharacter()
+	local desc = appliedDescription()
+	if char == nil or desc == nil then
+		return
+	end
+	M.currentOff()
+
+	local screen = Instance.new("ScreenGui")
+	screen.Name = CURRENT_GUI
+	screen.ResetOnSpawn = false
+	screen.Parent = Players.LocalPlayer:WaitForChild("PlayerGui")
+
+	for index, mode in { "CLONE", "BUILD" } do
+		local viewport = makeViewport(screen, index, mode)
+		viewport.BackgroundTransparency = 1
+		-- latar: ImageLabel SAUDARA di belakang viewport (persis cara produksi)
+		local backdrop = Instance.new("ImageLabel")
+		backdrop.Name = "Backdrop"
+		backdrop.Image = "rbxassetid://" .. tostring(CURRENT_IMAGE)
+		backdrop.ScaleType = Enum.ScaleType.Crop
+		backdrop.BackgroundTransparency = 1
+		backdrop.BorderSizePixel = 0
+		backdrop.Position = viewport.Position
+		backdrop.Size = viewport.Size
+		backdrop.ZIndex = viewport.ZIndex - 1
+		backdrop.Parent = viewport.Parent
+
+		local world = Instance.new("WorldModel")
+		world.Name = "Preview"
+		world.Parent = viewport
+
+		local t0 = os.clock()
+		local rig: Model? = nil
+		if mode == "CLONE" then
+			-- TEMUAN: `Player.Character` datang dengan Archivable = false -> Clone() mengembalikan nil.
+			-- Dinyalakan sebentar, lalu dikembalikan seperti semula.
+			local target = char :: Model
+			local wasArchivable = target.Archivable
+			target.Archivable = true
+			local okClone, copy = pcall(function()
+				return target:Clone()
+			end)
+			target.Archivable = wasArchivable
+			rig = if okClone and typeof(copy) == "Instance" then copy :: Model else nil
+			if rig == nil then
+				say("CLONE tetap gagal: %s", tostring(copy))
+			end
+		else
+			rig = buildRig(desc)
+		end
+		if rig ~= nil then
+			tidyForPreview(rig)
+			rig:PivotTo(CFrame.new())
+			rig.Parent = world
+			frameFullBody(viewport, rig)
+			say("%s siap dalam %.3f detik, decal di Head = %d", mode, os.clock() - t0, countDecals(rig))
+		end
+	end
+	-- Latar hitam bisa berarti gambar BELUM TERMUAT, bukan tidak tergambar -> laporkan statusnya.
+	task.delay(1.5, function()
+		for _, holder in screen:GetChildren() do
+			local img = holder:FindFirstChild("Backdrop")
+			if img and img:IsA("ImageLabel") then
+				say("latar %s IsLoaded=%s ZIndex=%d", holder.Name, tostring(img.IsLoaded), img.ZIndex)
+			end
+		end
+	end)
+	say("current: CLONE vs BUILD berdampingan (kiri bawah). Hapus: S.currentOff()")
+end
+
+-- ===== PR kolom kiri: bisakah avatar di KARTU bergerak? (18 Sep 2026) =====
+-- Isi ViewportFrame tidak di-update engine, jadi animasi diam walau track-nya :Play().
+-- Dugaan: harus dipanggil `Animator:StepAnimation(dt)` sendiri tiap frame.
+--   PLAY = LoadAnimation + Play saja (pembanding: harusnya tetap patung)
+--   STEP = sama + RenderStepped -> animator:StepAnimation(dt)
+-- Animasinya diambil dari track yang SEDANG dimainkan karakter asli, jadi animation pack
+-- milik pemain ikut terpakai (bukan idle bawaan yang dipaksakan).
+--   local S = require(game.ReplicatedStorage.Tests["PreviewRig.studio"]) S.anim()
+--   S.animOff()
+-- HASIL (18 Sep 2026): PLAY = tangan bergerak 0.000 stud dalam 3 detik -> rig di ViewportFrame
+-- BEKU, dan `Animator:StepAnimation` SUDAH TIDAK ADA di API (mengaksesnya saja melempar error).
+-- Kesimpulan: animasi di dalam kartu preview TIDAK BISA lewat jalur ini. Kesan hidup diambil dari
+-- kamera yang berputar pelan (OutfitPreview.setSpin), bukan dari animasi rig.
+local ANIM_GUI = "SPIKE_Anim"
+local animConns: { RBXScriptConnection } = {}
+
+local function playingAnimationId(char: Model): string?
+	local humanoid = char:FindFirstChildOfClass("Humanoid")
+	local animator = if humanoid then humanoid:FindFirstChildOfClass("Animator") else nil
+	if animator == nil then
+		return nil
+	end
+	for _, track in (animator :: Animator):GetPlayingAnimationTracks() do
+		local anim = track.Animation
+		if anim ~= nil and anim.AnimationId ~= "" then
+			return anim.AnimationId
+		end
+	end
+	return nil
+end
+
+function M.animOff()
+	for _, conn in animConns do
+		conn:Disconnect()
+	end
+	table.clear(animConns)
+	local player = Players.LocalPlayer
+	local gui = if player then player:FindFirstChild("PlayerGui") else nil
+	local old = if gui then gui:FindFirstChild(ANIM_GUI) else nil
+	if old then
+		old:Destroy()
+		say("animOff: panel animasi dihapus")
+	end
+end
+
+function M.anim()
+	if not RunService:IsClient() then
+		say("S.anim() HARUS dari tab CLIENT")
+		return
+	end
+	local char = firstCharacter()
+	if char == nil then
+		return
+	end
+	M.animOff()
+	local animId = playingAnimationId(char)
+	say("animasi yang sedang dimainkan karakter: %s", tostring(animId))
+	if animId == nil then
+		say("tidak ada track yang jalan -> coba gerakkan karakter dulu, lalu ulangi")
+		return
+	end
+
+	local screen = Instance.new("ScreenGui")
+	screen.Name = ANIM_GUI
+	screen.ResetOnSpawn = false
+	screen.Parent = Players.LocalPlayer:WaitForChild("PlayerGui")
+
+	for index, mode in { "PLAY", "STEP" } do
+		local viewport = makeViewport(screen, index, mode)
+		local world = Instance.new("WorldModel")
+		world.Name = "Preview"
+		world.Parent = viewport
+
+		local target = char :: Model
+		local wasArchivable = target.Archivable
+		target.Archivable = true
+		local okClone, copy = pcall(function()
+			return target:Clone()
+		end)
+		target.Archivable = wasArchivable
+		if not okClone or typeof(copy) ~= "Instance" then
+			say("%s: clone gagal %s", mode, tostring(copy))
+			continue
+		end
+		local rig = copy :: Model
+		tidyForPreview(rig)
+		rig:PivotTo(CFrame.new())
+		rig.Parent = world
+		frameFullBody(viewport, rig)
+
+		local humanoid = rig:FindFirstChildOfClass("Humanoid")
+		local animator = if humanoid then humanoid:FindFirstChildOfClass("Animator") else nil
+		if animator == nil then
+			say("%s: rig clone TIDAK punya Animator -> animasi mustahil di jalur ini", mode)
+			continue
+		end
+		local anim = Instance.new("Animation")
+		anim.AnimationId = animId
+		local okTrack, track = pcall(function()
+			return (animator :: Animator):LoadAnimation(anim)
+		end)
+		if not okTrack then
+			say("%s: LoadAnimation gagal %s", mode, tostring(track))
+			continue
+		end
+		local playing = track :: AnimationTrack
+		playing.Looped = true
+		playing:Play()
+		if mode == "STEP" then
+			-- TEMUAN: `Animator:StepAnimation` SUDAH TIDAK ADA di API sekarang (ribuan error
+			-- "not a valid member"). Jadi kalau rig di ViewportFrame bergerak, itu karena WorldModel
+			-- yang mensimulasikannya sendiri -- bukan karena kita men-step manual.
+			local okStep, stepFn = pcall(function()
+				return (animator :: any).StepAnimation
+			end)
+			say("%s: StepAnimation tersedia? %s", mode, tostring(okStep and typeof(stepFn) == "function"))
+		end
+
+		-- Ukur GERAK secara objektif: bandingkan posisi tangan tiap 0,5 detik selama 3 detik.
+		local hand = rig:FindFirstChild("LeftHand", true) or rig:FindFirstChild("Left Arm", true)
+		if hand and hand:IsA("BasePart") then
+			task.spawn(function()
+				local part = hand :: BasePart
+				local last = part.Position
+				local moved = 0
+				for _ = 1, 6 do
+					task.wait(0.5)
+					if part.Parent == nil then
+						return
+					end
+					moved += (part.Position - last).Magnitude
+					last = part.Position
+				end
+				say("%s: tangan bergerak total %.3f stud dalam 3 detik", mode, moved)
+			end)
+		end
+		say("%s siap (track %s)", mode, animId)
+	end
+	say("anim: PLAY vs STEP berdampingan. Hapus: S.animOff()")
+end
+
+-- ===== PR kolom kiri: animasi lewat CERMIN POSE (18 Sep 2026) =====
+-- Spike sebelumnya membuktikan rig di ViewportFrame BEKU (0,000 stud) dan `Animator:StepAnimation`
+-- sudah tidak ada. Tapi karakter ASLI di workspace jelas beranimasi (animation pack pemain).
+-- Ide: clone di kartu tidak perlu "hidup" sendiri -- cukup MENYALIN pose karakter asli tiap frame.
+--   STATIC = clone diam (pembanding, seperti produksi sekarang)
+--   MIRROR = tiap RenderStepped, CFrame tiap part disalin relatif HumanoidRootPart
+-- Semua part clone di-anchor supaya weld/constraint tidak menarik balik CFrame yang kita setel.
+--   local S = require(game.ReplicatedStorage.Tests["PreviewRig.studio"]) S.mirror()
+--   S.mirrorOff()
+local MIRROR_GUI = "SPIKE_Mirror"
+local mirrorConns: { RBXScriptConnection } = {}
+
+-- Pasangan part asli <-> part clone. Clone dibuat dari model yang sama, jadi urutan anaknya identik.
+local function pairParts(src: Instance, dst: Instance): { { s: BasePart, d: BasePart } }
+	local out: { { s: BasePart, d: BasePart } } = {}
+	local function walk(a: Instance, b: Instance)
+		local bc = b:GetChildren()
+		for i, child in a:GetChildren() do
+			local mate = bc[i]
+			if mate == nil or mate.ClassName ~= child.ClassName then
+				continue
+			end
+			if child:IsA("BasePart") and mate:IsA("BasePart") then
+				table.insert(out, { s = child :: BasePart, d = mate :: BasePart })
+			end
+			walk(child, mate)
+		end
+	end
+	walk(src, dst)
+	return out
+end
+
+function M.mirrorOff()
+	for _, conn in mirrorConns do
+		conn:Disconnect()
+	end
+	table.clear(mirrorConns)
+	local player = Players.LocalPlayer
+	local gui = if player then player:FindFirstChild("PlayerGui") else nil
+	local old = if gui then gui:FindFirstChild(MIRROR_GUI) else nil
+	if old then
+		old:Destroy()
+		say("mirrorOff: panel cermin dihapus")
+	end
+end
+
+function M.mirror()
+	if not RunService:IsClient() then
+		say("S.mirror() HARUS dari tab CLIENT")
+		return
+	end
+	local char = firstCharacter()
+	if char == nil then
+		return
+	end
+	M.mirrorOff()
+
+	local screen = Instance.new("ScreenGui")
+	screen.Name = MIRROR_GUI
+	screen.ResetOnSpawn = false
+	screen.Parent = Players.LocalPlayer:WaitForChild("PlayerGui")
+
+	for index, mode in { "STATIC", "MIRROR" } do
+		local viewport = makeViewport(screen, index, mode)
+		local world = Instance.new("WorldModel")
+		world.Name = "Preview"
+		world.Parent = viewport
+
+		local target = char :: Model
+		local wasArchivable = target.Archivable
+		target.Archivable = true
+		local okClone, copy = pcall(function()
+			return target:Clone()
+		end)
+		target.Archivable = wasArchivable
+		if not okClone or typeof(copy) ~= "Instance" then
+			say("%s: clone gagal %s", mode, tostring(copy))
+			continue
+		end
+		local rig = copy :: Model
+		tidyForPreview(rig)
+		if mode == "MIRROR" then
+			-- anchor SEMUA: pose diatur penuh oleh kita, bukan oleh weld/constraint
+			for _, x in rig:GetDescendants() do
+				if x:IsA("BasePart") then
+					(x :: BasePart).Anchored = true
+				end
+			end
+		end
+		rig:PivotTo(CFrame.new())
+		rig.Parent = world
+		frameFullBody(viewport, rig)
+
+		if mode == "MIRROR" then
+			local pairs_ = pairParts(target, rig)
+			local srcRoot = target:FindFirstChild("HumanoidRootPart")
+			local dstRoot = rig:FindFirstChild("HumanoidRootPart")
+			say(
+				"MIRROR: %d pasang part, root asli %s / clone %s",
+				#pairs_,
+				tostring(srcRoot ~= nil),
+				tostring(dstRoot ~= nil)
+			)
+			if srcRoot and dstRoot then
+				local from = srcRoot :: BasePart
+				local to = dstRoot :: BasePart
+				table.insert(
+					mirrorConns,
+					RunService.RenderStepped:Connect(function()
+						if to.Parent == nil or from.Parent == nil then
+							return
+						end
+						local base = to.CFrame
+						local inv = from.CFrame:Inverse()
+						for _, pair in pairs_ do
+							if pair.d ~= to then
+								pair.d.CFrame = base * (inv * pair.s.CFrame)
+							end
+						end
+					end)
+				)
+			end
+		end
+
+		local hand = rig:FindFirstChild("LeftHand", true) or rig:FindFirstChild("Left Arm", true)
+		if hand and hand:IsA("BasePart") then
+			task.spawn(function()
+				local part = hand :: BasePart
+				local last = part.Position
+				local moved = 0
+				for _ = 1, 6 do
+					task.wait(0.5)
+					if part.Parent == nil then
+						return
+					end
+					moved += (part.Position - last).Magnitude
+					last = part.Position
+				end
+				say("%s: tangan bergerak total %.3f stud dalam 3 detik", mode, moved)
+			end)
+		end
+		say("%s siap", mode)
+	end
+	say("mirror: STATIC vs MIRROR berdampingan. Hapus: S.mirrorOff()")
+end
+
 return M

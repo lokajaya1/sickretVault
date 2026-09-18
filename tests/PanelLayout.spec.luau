@@ -24,6 +24,12 @@ return function()
 	eq(d.dockY + d.dockH, 1080 - P.MARGIN, "dock menempel bawah")
 	eq(d.dockH, P.ACTIONS_H + P.DOCK_GAP + P.STRIP_H, "tinggi dock")
 	assert(d.anchorY < d.dockY, "avatar di atas dock")
+	-- kartu preview avatar: selebar dock, dari bawah tombol atas sampai tepat di atas dock
+	eq(d.previewX, d.dockX, "preview sejajar dock")
+	eq(d.previewW, d.dockW, "preview selebar dock")
+	eq(d.previewY, P.TOP, "preview mulai di bawah tombol atas")
+	eq(d.previewY + d.previewH + P.DOCK_GAP, d.dockY, "preview berhenti tepat di atas dock")
+	assert(d.previewH > 0, "preview punya tinggi")
 	assert(d.columns >= 4, "desktop minimal 4 kolom")
 
 	-- 2. laptop 1280x720: 55%
@@ -55,6 +61,8 @@ return function()
 	assert(ls.columns >= 4, "landscape minimal 4 kolom")
 	eq(ls.stripH, P.STRIP_H_COMPACT, "strip compact")
 	eq(ls.dockY + ls.dockH, 390 - P.COMPACT_MARGIN, "dock compact menempel bawah")
+	eq(ls.previewY, P.COMPACT_MARGIN, "compact: preview mulai dari margin kecil (tombol atas disembunyikan)")
+	eq(ls.previewY + ls.previewH + P.DOCK_GAP_COMPACT, ls.dockY, "compact: preview berhenti di atas dock")
 	assert(ls.dockX + ls.dockW <= ls.x, "dock compact tidak menabrak panel")
 	assert(ls.anchorY > 0 and ls.anchorY < ls.dockY, "avatar compact di atas dock")
 

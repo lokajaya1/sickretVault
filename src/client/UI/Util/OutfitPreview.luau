@@ -6,6 +6,9 @@
 --   Outfit ringkas polos juga diterima: makeup-nya dibaca dari field `mk` di dalamnya
 --   (Wardrobe.summarize mengirim outfit utuh), jadi kartu wardrobe tidak perlu diubah.
 --   handle.cancel()          -- kartu dihapus / dibangun ulang
+--   local live = previews:mountCurrent(viewport, { background = true }) -- AVATAR SEKARANG
+--   live.refresh()           -- look berubah (outfit / makeup) -> ambil ulang dari karakter
+--   live.setLive(true)       -- cermin pose: kartu meniru gerak karakter asli tiap frame
 --   previews:setBackground({ image = "rbxassetid://...", color = Color3? } | nil)
 --   Latar hanya terpasang di mount yang MEMINTANYA (`{ background = true }`), yaitu preview yang
 --   mewakili avatar SEKARANG. Kartu Saved Outfits & halaman detail TIDAK memakainya: kartu itu
@@ -211,6 +214,8 @@ export type Handle = {
 	cancel: () -> (),
 	setSpin: (boolean) -> (), -- putar otomatis (halaman detail)
 	addYaw: (number) -> (), -- putar manual (drag); menghentikan sementara efek putaran otomatis
+	refresh: (() -> ())?, -- hanya ada di mountCurrent: ambil ulang rupa karakter
+	setLive: ((boolean) -> ())?, -- hanya ada di mountCurrent: cermin pose hidup/mati
 }
 
 -- Satu viewport yang sedang dipajang (kamera mengelilingi model).
@@ -571,6 +576,309 @@ function OutfitPreview.setBackground(self: OutfitPreview, bg: any)
 	for _, entry in self._backdrops do
 		applyBackdrop(entry, bg)
 	end
+end
+
+-- ===== Preview AVATAR SEKARANG (PR kolom kiri, 18 Sep 2026) =====
+-- Spike `S.current()`: meng-CLONE karakter asli butuh **0,005 detik** dan makeup IKUT SENDIRI
+-- (Decal-nya memang menempel di Head karakter, `decal di Head = 2`), sedangkan membangun rig dari
+-- `GetAppliedDescription` makan **0,46 detik** dan datang tanpa makeup (`= 0`). Jadi kartu avatar
+-- sekarang TIDAK memakai antrean/cache rig: cukup clone ulang tiap look berubah.
+-- Quirk: `Player.Character` datang dengan `Archivable = false` -> `Clone()` mengembalikan nil.
+local function cloneCharacter(): Model?
+	local player = Players.LocalPlayer
+	local char = if player then player.Character else nil
+	if char == nil then
+		return nil
+	end
+	local wasArchivable = char.Archivable
+	char.Archivable = true
+	local ok, copy = pcall(function()
+		return char:Clone()
+	end)
+	char.Archivable = wasArchivable
+	if not ok or typeof(copy) ~= "Instance" then
+		log.warn("clone karakter gagal", copy)
+		return nil
+	end
+	return copy :: Model
+end
+
+-- ===== Cermin pose =====
+-- Spike 18 Sep: rig di ViewportFrame BEKU (0,000 stud) dan `Animator:StepAnimation` sudah tidak
+-- ada -> animasi tidak bisa diputar di dalam kartu. Tapi karakter ASLI di workspace memang
+-- beranimasi (animation pack pemain), jadi kartu cukup MENYALIN posenya tiap frame:
+-- MIRROR 4,071 stud vs STATIC 0,352 stud dalam 3 detik. Efeknya animation pack apa pun ikut,
+-- tanpa memuat satu Animation pun.
+type Pose = { s: BasePart, d: BasePart }
+
+-- Pasangan dicocokkan lewat NAMA JALUR ("RightLowerLeg", "Fedora/Handle"), BUKAN urutan anak:
+-- uji Studio 18 Sep membuktikan urutan `GetChildren` model asli dan clone-nya TIDAK selalu sama,
+-- sehingga part bisa dipasangkan ke part yang salah -- gejalanya kaki meregang saat lompat dan
+-- satu kaki diam. Nama yang kembar (mis. dua "Handle") dipasangkan berurutan.
+local function keyOf(part: Instance, root: Instance): string
+	local names: { string } = {}
+	local node: Instance? = part
+	while node ~= nil and node ~= root do
+		table.insert(names, 1, node.Name)
+		node = node.Parent
+	end
+	return table.concat(names, "/")
+end
+
+local function pairParts(src: Instance, dst: Instance): { Pose }
+	local bySrcKey: { [string]: { BasePart } } = {}
+	for _, x in src:GetDescendants() do
+		if x:IsA("BasePart") then
+			local key = keyOf(x, src)
+			local list = bySrcKey[key]
+			if list == nil then
+				list = {}
+				bySrcKey[key] = list
+			end
+			table.insert(list, x :: BasePart)
+		end
+	end
+	local used: { [string]: number } = {}
+	local out: { Pose } = {}
+	for _, y in dst:GetDescendants() do
+		if y:IsA("BasePart") then
+			local key = keyOf(y, dst)
+			local list = bySrcKey[key]
+			if list ~= nil then
+				local i = (used[key] or 0) + 1
+				used[key] = i
+				local mate = list[i]
+				if mate ~= nil then
+					table.insert(out, { s = mate, d = y :: BasePart })
+				end
+			end
+		end
+	end
+	return out
+end
+
+-- Kartu avatar SEKARANG. `refresh()` dipanggil pemakai tiap look berubah; karakter baru
+-- (respawn / ApplyDescription) ditangani sendiri lewat CharacterAdded.
+function OutfitPreview.mountCurrent(self: OutfitPreview, viewport: ViewportFrame, opts: MountOptions?): Handle
+	local wantsBackdrop = type(opts) == "table" and opts.background == true
+	local entry = if wantsBackdrop then newBackdrop(viewport) else nil
+	if entry ~= nil then
+		self._backdrops[entry.image] = entry
+		applyBackdrop(entry, self._background)
+	end
+
+	local world = Instance.new("WorldModel")
+	world.Name = "Preview"
+	world.Parent = viewport
+	local camera = Instance.new("Camera")
+	camera.FieldOfView = FOV
+	camera.Parent = viewport
+	viewport.CurrentCamera = camera
+
+	local view: View = {
+		center = Vector3.zero,
+		dir = Vector3.new(0, 0, 1),
+		dist = 12,
+		yaw = 0,
+		ready = false,
+		apply = function() end,
+	}
+	local function applyCamera()
+		if not view.ready then
+			return
+		end
+		local offset = (CFrame.Angles(0, view.yaw, 0) * view.dir) * view.dist
+		camera.CFrame = CFrame.lookAt(view.center + offset, view.center)
+	end
+	view.apply = applyCamera
+
+	local alive = true
+	local model: Model? = nil
+	local pending = false
+	local conns: { RBXScriptConnection } = {}
+	local poses: { Pose } = {}
+	local srcRoot: BasePart? = nil
+	local dstRoot: BasePart? = nil
+	local mirrorConn: RBXScriptConnection? = nil
+	local charConns: { RBXScriptConnection } = {}
+	-- Dideklarasikan lebih dulu: `rebuild` memasang pemantau karakter yang memanggilnya balik.
+	local request: () -> ()
+
+	local function refit()
+		local shown = model
+		if shown == nil then
+			return
+		end
+		local size = viewport.AbsoluteSize
+		local center, dir, dist = OutfitPreview.frame(shown, camera, if size.Y > 0 then size.X / size.Y else 1)
+		view.center = center
+		view.dir = dir
+		view.dist = dist
+		view.ready = true
+		applyCamera()
+	end
+
+	local function rebuild()
+		if not alive or viewport.Parent == nil then
+			return
+		end
+		local fresh = cloneCharacter()
+		if fresh == nil then
+			return -- karakter belum ada; CharacterAdded akan memanggil lagi
+		end
+		prepare(fresh)
+		-- Pose diatur PENUH oleh kita (cermin), jadi semua part di-anchor: weld/constraint tidak
+		-- boleh menarik balik CFrame yang disetel tiap frame.
+		for _, x in fresh:GetDescendants() do
+			if x:IsA("BasePart") then
+				(x :: BasePart).Anchored = true
+			end
+		end
+		fresh:PivotTo(CFrame.new())
+		local old = model
+		model = fresh
+		fresh.Parent = world
+		if old ~= nil then
+			old:Destroy() -- yang lama dibuang SETELAH yang baru dipasang (tidak ada kartu kosong)
+		end
+		local player = Players.LocalPlayer
+		local char = if player then player.Character else nil
+		-- Sesudah ApplyDescription, part & aksesori karakter menyusul beberapa saat kemudian, jadi
+		-- clone pertama bisa ketinggalan item baru -> pantau isi karakter dan clone ulang saat reda.
+		for _, c in charConns do
+			c:Disconnect()
+		end
+		table.clear(charConns)
+		if char ~= nil then
+			table.insert(
+				charConns,
+				char.DescendantAdded:Connect(function()
+					request()
+				end)
+			)
+			table.insert(
+				charConns,
+				char.DescendantRemoving:Connect(function()
+					request()
+				end)
+			)
+		end
+		poses = if char then pairParts(char, fresh) else {}
+		srcRoot = if char then char:FindFirstChild("HumanoidRootPart") :: BasePart? else nil
+		dstRoot = fresh:FindFirstChild("HumanoidRootPart") :: BasePart?
+		refit()
+	end
+
+	-- Satu koneksi per kartu, hanya selama kartu dipakai (App mematikannya saat kartu tersembunyi).
+	local function mirrorStep()
+		local from, to = srcRoot, dstRoot
+		if from == nil or to == nil or from.Parent == nil or to.Parent == nil then
+			return
+		end
+		local base = to.CFrame
+		local inv = from.CFrame:Inverse()
+		for _, pose in poses do
+			if pose.d ~= to and pose.s.Parent ~= nil and pose.d.Parent ~= nil then
+				pose.d.CFrame = base * (inv * pose.s.CFrame)
+			end
+		end
+	end
+
+	local function setLive(on: boolean)
+		if not alive then
+			return
+		end
+		if on and mirrorConn == nil then
+			mirrorConn = RunService.RenderStepped:Connect(mirrorStep)
+		elseif not on and mirrorConn ~= nil then
+			mirrorConn:Disconnect()
+			mirrorConn = nil
+		end
+	end
+
+	-- Beberapa perubahan dalam satu frame (mis. lepas + pakai) cukup satu clone.
+	request = function()
+		if pending or not alive then
+			return
+		end
+		pending = true
+		-- Jeda kecil, bukan satu frame: perubahan karakter datang bertubi-tubi (part, aksesori,
+		-- layered clothing) dan kita hanya ingin satu clone setelah semuanya reda.
+		task.delay(0.15, function()
+			pending = false
+			local okBuild, err = pcall(rebuild)
+			if not okBuild then
+				log.warn("preview avatar sekarang gagal", err)
+			end
+		end)
+	end
+
+	table.insert(conns, viewport:GetPropertyChangedSignal("AbsoluteSize"):Connect(refit))
+	local player = Players.LocalPlayer
+	if player then
+		table.insert(
+			conns,
+			player.CharacterAdded:Connect(function(char: Model)
+				char:WaitForChild("Humanoid", 10)
+				task.wait(0.2) -- aksesori & layered clothing menyusul sesudah Humanoid
+				request()
+			end)
+		)
+	end
+	request()
+
+	return {
+		cancel = function()
+			if not alive then
+				return
+			end
+			alive = false
+			self._spin[view] = nil
+			self:_spinStop()
+			if mirrorConn ~= nil then
+				mirrorConn:Disconnect()
+				mirrorConn = nil
+			end
+			for _, c in charConns do
+				c:Disconnect()
+			end
+			table.clear(charConns)
+			for _, c in conns do
+				c:Disconnect()
+			end
+			if entry ~= nil then
+				self._backdrops[entry.image] = nil
+				viewport.BackgroundTransparency = entry.original
+				for _, c in entry.conns do
+					c:Disconnect()
+				end
+				entry.image:Destroy()
+			end
+			world:Destroy()
+			camera:Destroy()
+		end,
+		setSpin = function(on: boolean)
+			if not alive then
+				return
+			end
+			if on then
+				self._spin[view] = true
+				self:_spinStart()
+			else
+				self._spin[view] = nil
+				self:_spinStop()
+			end
+		end,
+		addYaw = function(delta: number)
+			if not alive then
+				return
+			end
+			view.yaw += delta
+			applyCamera()
+		end,
+		refresh = request,
+		setLive = setLive,
+	}
 end
 
 function OutfitPreview.forget(self: OutfitPreview, key: string)
