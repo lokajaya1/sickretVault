@@ -45,6 +45,7 @@ export type Outfit = {
 	favorite: boolean,
 	folders: { number }?,
 	count: number,
+	makeup: number?, -- jumlah makeup (ikut dihitung di `count`)
 	thumbs: { number },
 	outfit: any,
 }
@@ -806,7 +807,10 @@ function OutfitDetailSheet._loadItems(self: OutfitDetailSheet, outfit: Outfit, f
 	self:_clearItems()
 	self._total.Text = "—"
 	self._total.TextColor3 = Tokens.Color.TextMuted
-	self._itemsTitle.Text = ("Items (%d)"):format(outfit.count)
+	local makeupCount = if type(outfit.makeup) == "number" then outfit.makeup else 0
+	self._itemsTitle.Text = if makeupCount > 0
+		then ("Items (%d, %d makeup)"):format(outfit.count, makeupCount)
+		else ("Items (%d)"):format(outfit.count)
 	local load = props.loadItems
 	if load == nil then
 		self:_setStatus(nil, false)
