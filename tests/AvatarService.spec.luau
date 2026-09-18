@@ -54,6 +54,7 @@ local function setup(opts: { baselineFails: boolean?, noBundles: boolean? }?)
 		errors = {} :: { string },
 		applied = {} :: { any },
 		applyFail = false,
+		appliedHooks = 0,
 		timers = {} :: { () -> () },
 		humanoid = {} :: any,
 		onApply = nil :: (() -> ())?,
@@ -109,6 +110,9 @@ local function setup(opts: { baselineFails: boolean?, noBundles: boolean? }?)
 		end,
 		onError = function(_p: any, code: string)
 			table.insert(t.errors, code)
+		end,
+		onApplied = function(_p: any)
+			t.appliedHooks += 1
 		end,
 		build = function(s: any)
 			return s -- "description" palsu = state itu sendiri
@@ -335,6 +339,22 @@ return function()
 	assert(svc6:handle(player, { op = "undo" }), "undo wearOutfit")
 	eq((svc6:getState(player) :: any).accessories["1"], nil, "undo -> outfit sebelumnya")
 	eq((svc6:getState(player) :: any).accessories["2"] ~= nil, true, "item sebelumnya kembali")
+
+	-- 18. onApplied: dipanggil saat respawn & setiap apply BERHASIL
+	--     (di situlah Head bisa berganti, dan decal makeup ikut hilang bersama Head lama)
+	local svc7, t7 = setup()
+	assert(svc7:load(player), "load 7")
+	eq(t7.appliedHooks, 0, "belum ada hook")
+	svc7:onRespawn(player)
+	eq(t7.appliedHooks, 1, "respawn memanggil hook")
+	assert(svc7:handle(player, { op = "wear", assetId = 1 }), "wear (7)")
+	t7.flushTimers()
+	eq(#t7.applied > 0, true, "apply jalan")
+	eq(t7.appliedHooks, 2, "apply berhasil memanggil hook")
+	t7.applyFail = true
+	assert(svc7:handle(player, { op = "wear", assetId = 2 }), "wear (7b)")
+	t7.flushTimers()
+	eq(t7.appliedHooks, 2, "apply gagal TIDAK memanggil hook")
 
 	print("PASS AvatarService.spec")
 end
