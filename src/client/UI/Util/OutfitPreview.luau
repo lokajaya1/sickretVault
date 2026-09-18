@@ -6,6 +6,7 @@
 --   Outfit ringkas polos juga diterima: makeup-nya dibaca dari field `mk` di dalamnya
 --   (Wardrobe.summarize mengirim outfit utuh), jadi kartu wardrobe tidak perlu diubah.
 --   handle.cancel()          -- kartu dihapus / dibangun ulang
+--   previews:setBackground({ image = "rbxassetid://...", color = Color3? } | nil) -- latar SEMUA preview
 --   previews:destroy()
 -- key = "<id>:<updatedAt>" -> model dibuat ulang hanya bila isi outfit berubah.
 -- Uji Studio 17 Sep 2026: Players:CreateHumanoidModelFromDescriptionAsync JALAN DI CLIENT (0.44s,
@@ -44,6 +45,35 @@ local SPIN_SPEED = 0.35 -- radian per detik (putaran otomatis)
 -- Decal buatan sendiri dari texture id saja TIDAK boleh dipakai: proyeksi datar -> melar ke dahi.
 local MAKEUP_FOLDER = "MakeupTemplates"
 local MAKEUP_PREFIX = "CL_Makeup_"
+
+-- ===== Latar area preview (PR avatar-background, 18 Sep 2026) =====
+-- Spike `S.backdrop()`: ImageLabel yang jadi ANAK ViewportFrame DIRENDER dan letaknya DI BELAKANG
+-- rig -- jadi latar cukup dipasang di sini, pemakai (OutfitCard/WardrobePanel/OutfitDetailSheet)
+-- tidak perlu menyediakan container apa pun. Syaratnya ViewportFrame tembus selama latar terpasang.
+-- `Color` aset TIDAK dipakai sebagai tint (ImageColor3): di spike panel TINT tampak kusam.
+-- Ia dipakai sebagai warna DASAR di belakang gambar (berguna sebelum gambar termuat).
+local BACKDROP_NAME = "Backdrop"
+
+type Backdrop = { image: ImageLabel, viewport: ViewportFrame, original: number }
+
+local function applyBackdrop(entry: Backdrop, bg: any)
+	local image = if type(bg) == "table" then bg.image else nil
+	if type(image) ~= "string" or image == "" then
+		entry.image.Visible = false
+		entry.image.Image = ""
+		entry.viewport.BackgroundTransparency = entry.original
+		return
+	end
+	entry.image.Image = image
+	if typeof(bg.color) == "Color3" then
+		entry.image.BackgroundColor3 = bg.color
+		entry.image.BackgroundTransparency = 0
+	else
+		entry.image.BackgroundTransparency = 1
+	end
+	entry.image.Visible = true
+	entry.viewport.BackgroundTransparency = 1 -- tanpa ini gambarnya tertutup latar viewport
+end
 
 local function makeupFolder(): Instance?
 	return ReplicatedStorage:FindFirstChild(MAKEUP_FOLDER)
@@ -157,6 +187,8 @@ export type OutfitPreview = typeof(setmetatable(
 		_running: boolean,
 		_destroyed: boolean,
 		_spin: { [View]: boolean },
+		_backdrops: { [ImageLabel]: Backdrop }, -- satu per viewport yang sedang dipajang
+		_background: any?, -- latar yang sedang berlaku untuk SEMUA preview
 		_conn: RBXScriptConnection?,
 	},
 	OutfitPreview
@@ -228,6 +260,8 @@ function OutfitPreview.new(deps: Deps?): OutfitPreview
 		_running = false,
 		_destroyed = false,
 		_spin = {},
+		_backdrops = {},
+		_background = nil,
 		_conn = nil,
 	}, OutfitPreview)
 end
@@ -356,6 +390,20 @@ function OutfitPreview.mount(
 	-- sama seperti gejala "anchor semua part" di PR #15. Di spike preview-rig rig di dalam
 	-- WorldModel memang bergerak sedikit, tapi di sini kamera dihitung dari bounding box + refit,
 	-- jadi tidak mengganggu. Makeup TETAP merender: yang menentukan adalah rig ada di ViewportFrame.
+	-- Latar DULU, sebelum WorldModel & Camera: ZIndex 0 + urutan anak = pasti di belakang rig.
+	local backdrop = Instance.new("ImageLabel")
+	backdrop.Name = BACKDROP_NAME
+	backdrop.Size = UDim2.fromScale(1, 1)
+	backdrop.BackgroundTransparency = 1
+	backdrop.BorderSizePixel = 0
+	backdrop.ScaleType = Enum.ScaleType.Crop
+	backdrop.ZIndex = 0
+	backdrop.Visible = false
+	backdrop.Parent = viewport
+	local entry: Backdrop = { image = backdrop, viewport = viewport, original = viewport.BackgroundTransparency }
+	self._backdrops[backdrop] = entry
+	applyBackdrop(entry, self._background)
+
 	local world = Instance.new("WorldModel")
 	world.Name = "Preview"
 	world.Parent = viewport
@@ -432,6 +480,9 @@ function OutfitPreview.mount(
 			if stopMakeup then
 				stopMakeup()
 			end
+			self._backdrops[backdrop] = nil
+			viewport.BackgroundTransparency = entry.original
+			backdrop:Destroy()
 			world:Destroy()
 			camera:Destroy()
 		end,
@@ -457,6 +508,15 @@ function OutfitPreview.mount(
 	}
 end
 
+-- Latar untuk SEMUA preview (kartu wardrobe, halaman detail, pemakai berikutnya).
+-- bg = { image = "rbxassetid://...", color = Color3? } atau nil untuk melepas latar.
+function OutfitPreview.setBackground(self: OutfitPreview, bg: any)
+	self._background = bg
+	for _, entry in self._backdrops do
+		applyBackdrop(entry, bg)
+	end
+end
+
 function OutfitPreview.forget(self: OutfitPreview, key: string)
 	self._failed[key] = nil
 	local model = self._cache[key]
@@ -473,6 +533,7 @@ end
 function OutfitPreview.destroy(self: OutfitPreview)
 	self._destroyed = true
 	table.clear(self._spin)
+	table.clear(self._backdrops)
 	local conn = self._conn
 	if conn ~= nil then
 		conn:Disconnect()
