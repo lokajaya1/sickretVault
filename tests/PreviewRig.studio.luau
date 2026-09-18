@@ -657,4 +657,145 @@ function M.current()
 	say("current: CLONE vs BUILD berdampingan (kiri bawah). Hapus: S.currentOff()")
 end
 
+-- ===== PR kolom kiri: bisakah avatar di KARTU bergerak? (18 Sep 2026) =====
+-- Isi ViewportFrame tidak di-update engine, jadi animasi diam walau track-nya :Play().
+-- Dugaan: harus dipanggil `Animator:StepAnimation(dt)` sendiri tiap frame.
+--   PLAY = LoadAnimation + Play saja (pembanding: harusnya tetap patung)
+--   STEP = sama + RenderStepped -> animator:StepAnimation(dt)
+-- Animasinya diambil dari track yang SEDANG dimainkan karakter asli, jadi animation pack
+-- milik pemain ikut terpakai (bukan idle bawaan yang dipaksakan).
+--   local S = require(game.ReplicatedStorage.Tests["PreviewRig.studio"]) S.anim()
+--   S.animOff()
+-- HASIL (18 Sep 2026): PLAY = tangan bergerak 0.000 stud dalam 3 detik -> rig di ViewportFrame
+-- BEKU, dan `Animator:StepAnimation` SUDAH TIDAK ADA di API (mengaksesnya saja melempar error).
+-- Kesimpulan: animasi di dalam kartu preview TIDAK BISA lewat jalur ini. Kesan hidup diambil dari
+-- kamera yang berputar pelan (OutfitPreview.setSpin), bukan dari animasi rig.
+local ANIM_GUI = "SPIKE_Anim"
+local animConns: { RBXScriptConnection } = {}
+
+local function playingAnimationId(char: Model): string?
+	local humanoid = char:FindFirstChildOfClass("Humanoid")
+	local animator = if humanoid then humanoid:FindFirstChildOfClass("Animator") else nil
+	if animator == nil then
+		return nil
+	end
+	for _, track in (animator :: Animator):GetPlayingAnimationTracks() do
+		local anim = track.Animation
+		if anim ~= nil and anim.AnimationId ~= "" then
+			return anim.AnimationId
+		end
+	end
+	return nil
+end
+
+function M.animOff()
+	for _, conn in animConns do
+		conn:Disconnect()
+	end
+	table.clear(animConns)
+	local player = Players.LocalPlayer
+	local gui = if player then player:FindFirstChild("PlayerGui") else nil
+	local old = if gui then gui:FindFirstChild(ANIM_GUI) else nil
+	if old then
+		old:Destroy()
+		say("animOff: panel animasi dihapus")
+	end
+end
+
+function M.anim()
+	if not RunService:IsClient() then
+		say("S.anim() HARUS dari tab CLIENT")
+		return
+	end
+	local char = firstCharacter()
+	if char == nil then
+		return
+	end
+	M.animOff()
+	local animId = playingAnimationId(char)
+	say("animasi yang sedang dimainkan karakter: %s", tostring(animId))
+	if animId == nil then
+		say("tidak ada track yang jalan -> coba gerakkan karakter dulu, lalu ulangi")
+		return
+	end
+
+	local screen = Instance.new("ScreenGui")
+	screen.Name = ANIM_GUI
+	screen.ResetOnSpawn = false
+	screen.Parent = Players.LocalPlayer:WaitForChild("PlayerGui")
+
+	for index, mode in { "PLAY", "STEP" } do
+		local viewport = makeViewport(screen, index, mode)
+		local world = Instance.new("WorldModel")
+		world.Name = "Preview"
+		world.Parent = viewport
+
+		local target = char :: Model
+		local wasArchivable = target.Archivable
+		target.Archivable = true
+		local okClone, copy = pcall(function()
+			return target:Clone()
+		end)
+		target.Archivable = wasArchivable
+		if not okClone or typeof(copy) ~= "Instance" then
+			say("%s: clone gagal %s", mode, tostring(copy))
+			continue
+		end
+		local rig = copy :: Model
+		tidyForPreview(rig)
+		rig:PivotTo(CFrame.new())
+		rig.Parent = world
+		frameFullBody(viewport, rig)
+
+		local humanoid = rig:FindFirstChildOfClass("Humanoid")
+		local animator = if humanoid then humanoid:FindFirstChildOfClass("Animator") else nil
+		if animator == nil then
+			say("%s: rig clone TIDAK punya Animator -> animasi mustahil di jalur ini", mode)
+			continue
+		end
+		local anim = Instance.new("Animation")
+		anim.AnimationId = animId
+		local okTrack, track = pcall(function()
+			return (animator :: Animator):LoadAnimation(anim)
+		end)
+		if not okTrack then
+			say("%s: LoadAnimation gagal %s", mode, tostring(track))
+			continue
+		end
+		local playing = track :: AnimationTrack
+		playing.Looped = true
+		playing:Play()
+		if mode == "STEP" then
+			-- TEMUAN: `Animator:StepAnimation` SUDAH TIDAK ADA di API sekarang (ribuan error
+			-- "not a valid member"). Jadi kalau rig di ViewportFrame bergerak, itu karena WorldModel
+			-- yang mensimulasikannya sendiri -- bukan karena kita men-step manual.
+			local okStep, stepFn = pcall(function()
+				return (animator :: any).StepAnimation
+			end)
+			say("%s: StepAnimation tersedia? %s", mode, tostring(okStep and typeof(stepFn) == "function"))
+		end
+
+		-- Ukur GERAK secara objektif: bandingkan posisi tangan tiap 0,5 detik selama 3 detik.
+		local hand = rig:FindFirstChild("LeftHand", true) or rig:FindFirstChild("Left Arm", true)
+		if hand and hand:IsA("BasePart") then
+			task.spawn(function()
+				local part = hand :: BasePart
+				local last = part.Position
+				local moved = 0
+				for _ = 1, 6 do
+					task.wait(0.5)
+					if part.Parent == nil then
+						return
+					end
+					moved += (part.Position - last).Magnitude
+					last = part.Position
+				end
+				say("%s: tangan bergerak total %.3f stud dalam 3 detik", mode, moved)
+			end)
+		end
+		say("%s siap (track %s)", mode, animId)
+	end
+	say("anim: PLAY vs STEP berdampingan. Hapus: S.animOff()")
+end
+
 return M
