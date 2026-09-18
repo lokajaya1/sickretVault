@@ -3,7 +3,8 @@
 --   local previews = OutfitPreview.new()
 --   local handle = previews:mount(viewport, key, look, function() ... tampilkan cadangan ... end)
 --   look = { outfit = <outfit ringkas>, makeup = { { assetId = n, slot = "face" }, ... } }
---   (outfit ringkas polos juga masih diterima = look tanpa makeup)
+--   Outfit ringkas polos juga diterima: makeup-nya dibaca dari field `mk` di dalamnya
+--   (Wardrobe.summarize mengirim outfit utuh), jadi kartu wardrobe tidak perlu diubah.
 --   handle.cancel()          -- kartu dihapus / dibangun ulang
 --   previews:destroy()
 -- key = "<id>:<updatedAt>" -> model dibuat ulang hanya bila isi outfit berubah.
@@ -347,8 +348,17 @@ function OutfitPreview.mount(
 	local isLook = type(look) == "table" and look.outfit ~= nil
 	local outfit = if isLook then look.outfit else look
 	local makeupRows = if isLook then look.makeup else nil
-	-- TANPA WorldModel (spike preview-rig): di dalam WorldModel Humanoid + fisika ikut jalan dan
-	-- rig preview (yang tidak punya Motor6D) bergeser sendiri sampai keluar bingkai kamera.
+	if makeupRows == nil then
+		makeupRows = PlayerData.makeupOf(outfit) -- slot menyimpan look utuh: makeup ada di field `mk`
+	end
+	-- WorldModel DIPERTAHANKAN. Uji Studio 18 Sep 2026: tanpa WorldModel rakitan rig preview
+	-- berantakan (part berserakan -> bounding box melar -> kamera mundur jauh -> avatar jadi titik),
+	-- sama seperti gejala "anchor semua part" di PR #15. Di spike preview-rig rig di dalam
+	-- WorldModel memang bergerak sedikit, tapi di sini kamera dihitung dari bounding box + refit,
+	-- jadi tidak mengganggu. Makeup TETAP merender: yang menentukan adalah rig ada di ViewportFrame.
+	local world = Instance.new("WorldModel")
+	world.Name = "Preview"
+	world.Parent = viewport
 	local camera = Instance.new("Camera")
 	camera.FieldOfView = FOV
 	camera.Parent = viewport
@@ -373,7 +383,6 @@ function OutfitPreview.mount(
 
 	local alive = true
 	local conn: RBXScriptConnection? = nil
-	local shown: Model? = nil
 	local stopMakeup: (() -> ())? = nil
 	local stop = self:_request(key, outfit, function(template: Model?)
 		if not alive or viewport.Parent == nil then
@@ -386,9 +395,7 @@ function OutfitPreview.mount(
 			return
 		end
 		local model = template:Clone()
-		model.Parent = viewport
-		shown = model
-		stopMakeup = attachMakeup(model, makeupRows)
+		model.Parent = world
 		local function refit()
 			local s = viewport.AbsoluteSize
 			local center, dir, dist = OutfitPreview.frame(model, camera, if s.Y > 0 then s.X / s.Y else 1)
@@ -400,6 +407,14 @@ function OutfitPreview.mount(
 		end
 		refit()
 		conn = viewport:GetPropertyChangedSignal("AbsoluteSize"):Connect(refit)
+		-- Makeup PALING AKHIR dan dibungkus pcall: kamera harus sudah terpasang lebih dulu,
+		-- kalau tidak, gagal menempel decal = kamera tertinggal di titik nol (kartu hitam).
+		local okMakeup, errMakeup = pcall(function()
+			stopMakeup = attachMakeup(model, makeupRows)
+		end)
+		if not okMakeup then
+			log.warn("makeup preview gagal", errMakeup)
+		end
 	end)
 
 	return {
@@ -417,9 +432,7 @@ function OutfitPreview.mount(
 			if stopMakeup then
 				stopMakeup()
 			end
-			if shown then
-				shown:Destroy()
-			end
+			world:Destroy()
 			camera:Destroy()
 		end,
 		setSpin = function(on: boolean)
