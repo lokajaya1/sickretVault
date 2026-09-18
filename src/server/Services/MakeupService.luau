@@ -7,6 +7,13 @@
 --   makeup:apply(player, state)                 -- TANPA yield: tempel Decal ke Head
 --   makeup:reapply(player)                      -- Head berganti: pasang ulang yang terakhir
 --   makeup:detach(player)                       -- PlayerRemoving
+--   makeup:prewarm({ id, id, ... })             -- YIELD: siapkan template sebelum panel dibuka
+--
+-- REPLIKASI TEMPLATE (PR preview-rig): setiap template yang berhasil di-resolve ikut disalin ke
+-- `ReplicatedStorage/MakeupTemplates/<assetId>` supaya CLIENT bisa meng-clone-nya ke Head rig
+-- preview di dalam ViewportFrame. Spike preview-rig membuktikan rig yang dibangun di client
+-- merender decal ber-WrapTextureTransfer dengan PRESISI selama rig itu ada di ViewportFrame
+-- (bukan di workspace) -- jadi TIDAK perlu rig server. InsertService tetap hanya di server.
 --
 -- Kenapa state-nya TIDAK di sini (PR makeup-wardrobe):
 --   makeup harus ikut Undo/Redo dan ikut slot Saved Outfits. Keduanya hidup di satu timeline
@@ -30,6 +37,8 @@ local Log = require(Shared.Util.Log)
 local log = Log.new("MakeupService")
 
 local DECAL_PREFIX = "SV_Makeup_"
+-- Folder yang dibaca client untuk preview (kartu wardrobe, hover katalog, Community Outfits).
+local SHARED_FOLDER = "MakeupTemplates"
 
 export type Code = "NOT_READY" | "NOT_FOUND" | "FAILED" | "UNSUPPORTED_TYPE"
 
@@ -39,6 +48,7 @@ export type Deps = {
 	-- engine (default Roblox; diganti saat test)
 	getHead: ((player: any) -> any)?,
 	face: any?, -- default Enum.NormalId.Front
+	share: ((assetId: number, template: any) -> ())?, -- default: salin ke ReplicatedStorage
 }
 
 -- `rendered` = apa yang (seharusnya) menempel di Head sekarang.
@@ -53,11 +63,31 @@ export type MakeupService = typeof(setmetatable(
 		_itemInfo: any,
 		_getHead: (any) -> any,
 		_face: any,
+		_share: (number, any) -> (),
 		_templates: { [number]: any }, -- assetId -> Decal template (SELALU di-Clone sebelum dipasang)
 		_sessions: { [any]: Session },
 	},
 	MakeupService
 ))
+
+-- Salin template ke ReplicatedStorage sekali saja; client cukup meng-clone dari sana.
+local function defaultShare(assetId: number, template: any)
+	local storage = game:GetService("ReplicatedStorage")
+	local folder = storage:FindFirstChild(SHARED_FOLDER)
+	if folder == nil then
+		local made = Instance.new("Folder")
+		made.Name = SHARED_FOLDER
+		made.Parent = storage
+		folder = made
+	end
+	local name = tostring(assetId)
+	if (folder :: Instance):FindFirstChild(name) ~= nil then
+		return
+	end
+	local copy = template:Clone()
+	copy.Name = name
+	copy.Parent = folder
+end
 
 local function defaultGetHead(player: any): any
 	local character = player.Character
@@ -74,6 +104,7 @@ function MakeupService.new(deps: Deps): MakeupService
 		_itemInfo = deps.itemInfo,
 		_getHead = deps.getHead or defaultGetHead,
 		_face = if deps.face ~= nil then deps.face else Enum.NormalId.Front,
+		_share = deps.share or defaultShare,
 		_templates = {},
 		_sessions = {},
 	}, MakeupService)
@@ -129,6 +160,7 @@ function MakeupService.resolve(self: MakeupService, assetId: number): (boolean, 
 	end
 
 	self._templates[info.assetId] = decalInfo.template
+	self:_publish(info.assetId, decalInfo.template)
 	return true, { assetId = info.assetId, slot = slot, textureId = decalInfo.textureId }
 end
 
@@ -162,6 +194,44 @@ end
 -- Sudah pernah di-resolve? (AvatarService memakainya untuk tahu perlu yield atau tidak)
 function MakeupService.hasTemplate(self: MakeupService, assetId: number): boolean
 	return self._templates[assetId] ~= nil
+end
+
+-- Replikasi tidak boleh menjatuhkan resolve: gagal menyalin = preview polos, bukan error.
+function MakeupService._publish(self: MakeupService, assetId: number, template: any)
+	if template == nil then
+		return
+	end
+	local ok, err = pcall(self._share, assetId, template)
+	if not ok then
+		log.warn("replikasi template gagal", assetId, err)
+	end
+end
+
+-- YIELD. Siapkan template untuk sekumpulan id (makeup di 30 slot wardrobe + lastOutfit) supaya
+-- kartu sudah bermakeup begitu panel dibuka. Id ganda & id yang sudah punya template tidak
+-- menyentuh InsertService lagi. Return jumlah id yang templatenya siap.
+function MakeupService.prewarm(self: MakeupService, assetIds: any): number
+	if type(assetIds) ~= "table" then
+		return 0
+	end
+	local seen: { [number]: boolean } = {}
+	local ready = 0
+	for _, assetId in assetIds do
+		if type(assetId) ~= "number" or seen[assetId] then
+			continue
+		end
+		seen[assetId] = true
+		if self:hasTemplate(assetId) then
+			self:_publish(assetId, self._templates[assetId]) -- pastikan ada di folder replikasi
+			ready += 1
+		else
+			local ok = self:resolve(assetId) -- yield
+			if ok then
+				ready += 1
+			end
+		end
+	end
+	return ready
 end
 
 -- ===== Render (TANPA yield) =====

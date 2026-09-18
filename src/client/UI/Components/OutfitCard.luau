@@ -11,15 +11,15 @@
 --   card:setSelectMode(true)  card:setSelected(true)   -- mode "Select Outfits" (pilih banyak)
 -- Mode pilih: tap kartu = centang/hapus centang (onToggleSelect), overlay & bintang & ikon hapus tidak muncul.
 -- Render 3D gagal -> otomatis menampilkan thumbnail item (maks 4) sebagai cadangan.
--- Pita MAKEUP: preview 3D TIDAK bisa menampilkan makeup (Decal di Head, di luar
--- HumanoidDescription, dan model preview dibuat di client) -> kartu mengabarkannya lewat pita.
+-- Makeup: sejak PR preview-rig preview 3D kartu SUDAH menampilkan makeup (OutfitPreview
+-- meng-clone template Decal dari ReplicatedStorage/MakeupTemplates), jadi pita "MAKEUP" lama
+-- dihapus -- wajahnya sendiri yang mengabarkan.
 -- Bintang: selalu tampil bila favorit; selain itu muncul saat hover (PC) atau kartu armed (HP).
 -- Hapus TIDAK ada di kartu: lewat halaman detail (VIEW -> Delete) atau mode "Select Outfits".
 
 local Tokens = require(script.Parent.Parent.Theme.Tokens)
 
 local NAME_H = 28
-local BADGE_H = 20
 local STAR_SIZE = 28
 local ACTION_H = 34
 local CHECK_SIZE = 26
@@ -33,7 +33,7 @@ export type Outfit = {
 	updatedAt: number,
 	favorite: boolean,
 	count: number,
-	makeup: number?, -- berapa makeup di look ini (tidak terlihat di preview 3D)
+	makeup: number?, -- berapa makeup di look ini (dipakai halaman detail; kartu menampilkannya di wajah)
 	thumbs: { number },
 	outfit: any,
 }
@@ -62,7 +62,6 @@ export type OutfitCard = typeof(setmetatable(
 		_viewport: ViewportFrame,
 		_fallback: Frame,
 		_name: TextLabel,
-		_makeup: TextLabel,
 		_star: TextButton,
 		_check: TextLabel,
 		_stroke: UIStroke,
@@ -198,29 +197,6 @@ function OutfitCard.new(props: Props): OutfitCard
 		Parent = root,
 	}, { make("UIPadding", { PaddingLeft = UDim.new(0, pad), PaddingRight = UDim.new(0, pad) }) })
 
-	-- Pita MAKEUP (kiri bawah, di atas nama): satu-satunya petunjuk bahwa look ini bermakeup,
-	-- karena preview 3D-nya tidak bisa menampilkannya.
-	local makeupCount = if type(outfit.makeup) == "number" then outfit.makeup else 0
-	local makeupBadge: TextLabel = make("TextLabel", {
-		Name = "MakeupBadge",
-		Text = if makeupCount > 1 then ("MAKEUP x%d"):format(makeupCount) else "MAKEUP",
-		FontFace = Tokens.Font.Bold,
-		TextSize = Tokens.TextSize.Caption,
-		TextColor3 = Tokens.Color.AccentText,
-		BackgroundColor3 = Tokens.Color.Accent,
-		BorderSizePixel = 0,
-		AutomaticSize = Enum.AutomaticSize.X,
-		Visible = makeupCount > 0,
-		AnchorPoint = Vector2.new(0, 1),
-		Position = UDim2.new(0, pad, 1, -NAME_H),
-		Size = UDim2.fromOffset(0, BADGE_H),
-		ZIndex = Z + 1,
-		Parent = root,
-	}, {
-		corner(Tokens.Radius.Pill),
-		make("UIPadding", { PaddingLeft = UDim.new(0, pad), PaddingRight = UDim.new(0, pad) }),
-	})
-
 	local star: TextButton = make("TextButton", {
 		Name = "Favorite",
 		Text = if outfit.favorite then STAR_ON else STAR_OFF,
@@ -317,7 +293,6 @@ function OutfitCard.new(props: Props): OutfitCard
 		_viewport = viewport,
 		_fallback = fallback,
 		_name = nameLabel,
-		_makeup = makeupBadge,
 		_star = star,
 		_check = check,
 		_stroke = stroke,
@@ -438,13 +413,6 @@ end
 function OutfitCard.setName(self: OutfitCard, name: string)
 	self.outfit.name = name
 	self._name.Text = name
-end
-
--- Dipakai setelah slot ditimpa (isi look berubah tanpa kartu dibangun ulang).
-function OutfitCard.setMakeup(self: OutfitCard, count: number)
-	self.outfit.makeup = count
-	self._makeup.Text = if count > 1 then ("MAKEUP x%d"):format(count) else "MAKEUP"
-	self._makeup.Visible = count > 0
 end
 
 function OutfitCard.destroy(self: OutfitCard)

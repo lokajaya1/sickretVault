@@ -1,7 +1,10 @@
 --!strict
 -- Render avatar 3D dari outfit tersimpan ke ViewportFrame (kartu Saved Outfits).
 --   local previews = OutfitPreview.new()
---   local handle = previews:mount(viewport, key, outfit, function() ... tampilkan cadangan ... end)
+--   local handle = previews:mount(viewport, key, look, function() ... tampilkan cadangan ... end)
+--   look = { outfit = <outfit ringkas>, makeup = { { assetId = n, slot = "face" }, ... } }
+--   Outfit ringkas polos juga diterima: makeup-nya dibaca dari field `mk` di dalamnya
+--   (Wardrobe.summarize mengirim outfit utuh), jadi kartu wardrobe tidak perlu diubah.
 --   handle.cancel()          -- kartu dihapus / dibangun ulang
 --   previews:destroy()
 -- key = "<id>:<updatedAt>" -> model dibuat ulang hanya bila isi outfit berubah.
@@ -16,10 +19,12 @@
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-local Shared = game:GetService("ReplicatedStorage"):WaitForChild("Shared")
+local Shared = ReplicatedStorage:WaitForChild("Shared")
 local PlayerData = require(Shared.Domain.PlayerData)
 local DescriptionBuilder = require(Shared.Avatar.DescriptionBuilder)
+local Makeup = require(Shared.Domain.Makeup)
 local Log = require(Shared.Util.Log)
 
 local log = Log.new("OutfitPreview")
@@ -29,6 +34,91 @@ local FOV = 30
 local MARGIN = 1.12 -- ruang kosong di atas/bawah avatar
 local MAX_EXTENT = 12 -- stud; batas ukuran avatar yang dianggap wajar (R15 ~5.5)
 local SPIN_SPEED = 0.35 -- radian per detik (putaran otomatis)
+
+-- ===== Makeup di preview (spike PR preview-rig, 18 Sep 2026) =====
+-- Server mereplikasi TEMPLATE Decal ke ReplicatedStorage/MakeupTemplates (MakeupService), lengkap
+-- dengan anak WrapTextureTransfer; client tinggal meng-clone-nya ke Head model preview.
+-- TEMUAN PENTING: rig yang dibangun di client merender decal itu dengan PRESISI selama rig berada
+-- di dalam ViewportFrame; di workspace decal yang sama TIDAK digambar sama sekali (itulah tembok
+-- yang salah disimpulkan di PR #21 sebagai "rig client tidak bisa"). Rig server tidak diperlukan.
+-- Decal buatan sendiri dari texture id saja TIDAK boleh dipakai: proyeksi datar -> melar ke dahi.
+local MAKEUP_FOLDER = "MakeupTemplates"
+local MAKEUP_PREFIX = "CL_Makeup_"
+
+local function makeupFolder(): Instance?
+	return ReplicatedStorage:FindFirstChild(MAKEUP_FOLDER)
+end
+
+-- Satu slot. false = templatenya belum ter-replikasi (dicoba lagi saat template datang).
+local function attachSlot(head: Instance, assetId: number, slot: string): boolean
+	local folder = makeupFolder()
+	local template = if folder then folder:FindFirstChild(tostring(assetId)) else nil
+	if template == nil or not template:IsA("Decal") then
+		return false
+	end
+	local old = head:FindFirstChild(MAKEUP_PREFIX .. slot)
+	if old then
+		old:Destroy()
+	end
+	local decal = template:Clone()
+	decal.Name = MAKEUP_PREFIX .. slot
+	decal.Face = Enum.NormalId.Front
+	decal.Parent = head
+	return true
+end
+
+-- Tempel semua baris makeup ke Head; urutan tetap face -> eye -> lip. Template yang belum sampai
+-- DITUNGGU (server mengisi folder saat pemain join / memakai item baru) supaya kartu cukup
+-- ditambal, tidak perlu dibangun ulang. Return fungsi penghenti penantian.
+local function attachMakeup(model: Model, rows: any): () -> ()
+	local head = model:FindFirstChild("Head")
+	if head == nil or type(rows) ~= "table" or #rows == 0 then
+		return function() end
+	end
+	local bySlot: { [string]: number } = {}
+	for _, row in rows do
+		if type(row) == "table" and type(row.assetId) == "number" and Makeup.isValidSlot(row.slot) then
+			bySlot[row.slot] = row.assetId
+		end
+	end
+	local pending: { [string]: number } = {}
+	for _, slot in Makeup.Slots do
+		local assetId = bySlot[slot]
+		if assetId ~= nil and not attachSlot(head, assetId, slot) then
+			pending[slot] = assetId
+		end
+	end
+	if next(pending) == nil then
+		return function() end
+	end
+	local conn: RBXScriptConnection? = nil
+	local function disconnect()
+		if conn then
+			conn:Disconnect()
+			conn = nil
+		end
+	end
+	conn = ReplicatedStorage.DescendantAdded:Connect(function(added: Instance)
+		local parent = added.Parent
+		if parent == nil or parent.Name ~= MAKEUP_FOLDER then
+			return
+		end
+		if model.Parent == nil then
+			disconnect() -- kartunya sudah dibuang
+			return
+		end
+		for _, slot in Makeup.Slots do
+			local waiting = pending[slot]
+			if waiting ~= nil and attachSlot(head, waiting, slot) then
+				pending[slot] = nil
+			end
+		end
+		if next(pending) == nil then
+			disconnect()
+		end
+	end)
+	return disconnect
+end
 
 export type Handle = {
 	cancel: () -> (),
@@ -251,9 +341,21 @@ function OutfitPreview.mount(
 	self: OutfitPreview,
 	viewport: ViewportFrame,
 	key: string,
-	outfit: any,
+	look: any,
 	onFallback: (() -> ())?
 ): Handle
+	-- look = { outfit, makeup } ; outfit ringkas polos = look tanpa makeup (pemakai lama).
+	local isLook = type(look) == "table" and look.outfit ~= nil
+	local outfit = if isLook then look.outfit else look
+	local makeupRows = if isLook then look.makeup else nil
+	if makeupRows == nil then
+		makeupRows = PlayerData.makeupOf(outfit) -- slot menyimpan look utuh: makeup ada di field `mk`
+	end
+	-- WorldModel DIPERTAHANKAN. Uji Studio 18 Sep 2026: tanpa WorldModel rakitan rig preview
+	-- berantakan (part berserakan -> bounding box melar -> kamera mundur jauh -> avatar jadi titik),
+	-- sama seperti gejala "anchor semua part" di PR #15. Di spike preview-rig rig di dalam
+	-- WorldModel memang bergerak sedikit, tapi di sini kamera dihitung dari bounding box + refit,
+	-- jadi tidak mengganggu. Makeup TETAP merender: yang menentukan adalah rig ada di ViewportFrame.
 	local world = Instance.new("WorldModel")
 	world.Name = "Preview"
 	world.Parent = viewport
@@ -281,6 +383,7 @@ function OutfitPreview.mount(
 
 	local alive = true
 	local conn: RBXScriptConnection? = nil
+	local stopMakeup: (() -> ())? = nil
 	local stop = self:_request(key, outfit, function(template: Model?)
 		if not alive or viewport.Parent == nil then
 			return
@@ -304,6 +407,14 @@ function OutfitPreview.mount(
 		end
 		refit()
 		conn = viewport:GetPropertyChangedSignal("AbsoluteSize"):Connect(refit)
+		-- Makeup PALING AKHIR dan dibungkus pcall: kamera harus sudah terpasang lebih dulu,
+		-- kalau tidak, gagal menempel decal = kamera tertinggal di titik nol (kartu hitam).
+		local okMakeup, errMakeup = pcall(function()
+			stopMakeup = attachMakeup(model, makeupRows)
+		end)
+		if not okMakeup then
+			log.warn("makeup preview gagal", errMakeup)
+		end
 	end)
 
 	return {
@@ -317,6 +428,9 @@ function OutfitPreview.mount(
 			stop()
 			if conn then
 				conn:Disconnect()
+			end
+			if stopMakeup then
+				stopMakeup()
 			end
 			world:Destroy()
 			camera:Destroy()
