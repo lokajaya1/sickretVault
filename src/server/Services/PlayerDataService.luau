@@ -4,9 +4,11 @@
 --   local data = PlayerDataService.new({ store = store })
 --   data:load(player)                       -- saat join (YIELD). false = main tanpa simpan
 --   data:getLastOutfit(player)              -- OutfitState? (sudah divalidasi)
---   data:setLastOutfit(player, state | nil) -- dipanggil setiap state berubah (murah, tanpa yield)
+--   data:setLastOutfit(player, state | nil, makeup?) -- setiap look berubah (murah, tanpa yield)
+--   data:getLastMakeup(player)              -- { { assetId, slot } } (di dalam lastOutfit sejak PR ini)
 --   data:setSetting(player, "restoreOutfit", false)  -- toggle "pakai outfit terakhir"
---   data:addOutfit(player, name?, state) / getOutfit / renameOutfit / deleteOutfit / favoriteOutfit / listOutfits
+--   data:addOutfit(player, name?, state, makeup?) / getOutfit / getOutfitLook / renameOutfit /
+--     deleteOutfit / favoriteOutfit / listOutfits
 --   data:deleteOutfits(player, { 1, 2 })    -- hapus banyak sekaligus ("Select Outfits")
 --   data:listFolders(player) / addFolder / renameFolder / deleteFolder
 --   data:setOutfitFolders(player, outfitId, { 1 }) / applyFolder(player, { 1, 2 }, folderId, true)
@@ -165,35 +167,34 @@ function PlayerDataService.getLastOutfit(self: PlayerDataService, player: any): 
 end
 
 -- Tulis ke profile.Data (di memori). ProfileStore yang menyimpan ke DataStore.
--- state = nil -> hapus (pemain memakai avatar asli). Return true bila ditulis.
-function PlayerDataService.setLastOutfit(self: PlayerDataService, player: any, state: State?): boolean
+-- state = nil -> hapus (pemain memakai avatar asli, tanpa makeup). Return true bila ditulis.
+-- `makeup` (Makeup.State) ikut ke dalam lastOutfit sebagai `mk`: satu look = satu blob.
+function PlayerDataService.setLastOutfit(self: PlayerDataService, player: any, state: State?, makeup: any?): boolean
 	local session = self._sessions[player]
 	if session == nil or session.newer or not session.profile:IsActive() then
 		return false
 	end
-	session.profile.Data.lastOutfit = if state then PlayerData.encodeOutfit(state) else nil
+	session.profile.Data.lastOutfit = if state then PlayerData.encodeOutfit(state, makeup) else nil
+	session.profile.Data.lastMakeup = nil -- makeup pindah ke dalam lastOutfit (field lama dibuang)
 	return true
 end
 
--- ===== Makeup (v4) =====
+-- ===== Makeup =====
 
 -- Makeup tersimpan: array { assetId, slot } (kosong = tidak ada / tidak valid).
+-- Sumbernya `lastOutfit.mk`; `lastMakeup` (skema v4 dari PR #18) masih dibaca sebagai cadangan
+-- supaya makeup pemain lama tidak hilang saat pertama kali join setelah PR ini.
 function PlayerDataService.getLastMakeup(self: PlayerDataService, player: any): { { assetId: number, slot: string } }
 	local session = self._sessions[player]
 	if session == nil or session.newer then
 		return {}
 	end
-	return PlayerData.decodeMakeup(session.profile.Data.lastMakeup)
-end
-
--- state = Makeup.State. Kosong -> field dihapus. Return true bila ditulis.
-function PlayerDataService.setLastMakeup(self: PlayerDataService, player: any, state: any): boolean
-	local session = self._sessions[player]
-	if session == nil or session.newer or not session.profile:IsActive() then
-		return false
+	local data = session.profile.Data
+	local rows = PlayerData.makeupOf(data.lastOutfit)
+	if #rows > 0 then
+		return rows
 	end
-	session.profile.Data.lastMakeup = PlayerData.encodeMakeup(state)
-	return true
+	return PlayerData.decodeMakeup(data.lastMakeup)
 end
 
 -- ===== Setting =====
@@ -233,17 +234,20 @@ function PlayerDataService.outfitSlotInfo(self: PlayerDataService, player: any):
 end
 
 -- `name` harus sudah bersih + difilter (atau nama bawaan). nil = nama bawaan "Outfit N".
+-- `makeup` (Makeup.State) ikut tersimpan di slot: satu slot = satu LOOK utuh.
 function PlayerDataService.addOutfit(
 	self: PlayerDataService,
 	player: any,
 	name: string?,
-	state: State
+	state: State,
+	makeup: any?
 ): (Wardrobe.Summary?, string?)
 	local data = writable(self, player)
 	if data == nil then
 		return nil, "NOT_LOADED"
 	end
-	local entry, err = Wardrobe.add(data, name or Wardrobe.defaultName(data), PlayerData.encodeOutfit(state), os.time())
+	local encoded = PlayerData.encodeOutfit(state, makeup)
+	local entry, err = Wardrobe.add(data, name or Wardrobe.defaultName(data), encoded, os.time())
 	if entry == nil then
 		return nil, err
 	end
@@ -254,31 +258,44 @@ function PlayerDataService.overwriteOutfit(
 	self: PlayerDataService,
 	player: any,
 	id: number,
-	state: State
+	state: State,
+	makeup: any?
 ): (boolean, string?)
 	local data = writable(self, player)
 	if data == nil then
 		return false, "NOT_LOADED"
 	end
-	return Wardrobe.overwrite(data, id, PlayerData.encodeOutfit(state), os.time())
+	return Wardrobe.overwrite(data, id, PlayerData.encodeOutfit(state, makeup), os.time())
 end
 
--- Outfit di slot (sudah divalidasi ulang). INVALID = data slot rusak / format lama.
-function PlayerDataService.getOutfit(self: PlayerDataService, player: any, id: number): (State?, string?)
+-- LOOK di slot: (outfit, baris makeup, nil) | (nil, nil, kode).
+-- INVALID = data slot rusak / format lama. Baris makeup kosong = slot tanpa makeup
+-- (memakainya akan MEMBERSIHKAN makeup yang sedang dipakai -- slot = look utuh).
+function PlayerDataService.getOutfitLook(
+	self: PlayerDataService,
+	player: any,
+	id: number
+): (State?, { { assetId: number, slot: string } }?, string?)
 	local data = readable(self, player)
 	if data == nil then
-		return nil, "NOT_LOADED"
+		return nil, nil, "NOT_LOADED"
 	end
 	local entry = Wardrobe.find(data, id)
 	if entry == nil then
-		return nil, "NOT_FOUND"
+		return nil, nil, "NOT_FOUND"
 	end
 	local state, err = PlayerData.decodeOutfit(entry.o)
 	if state == nil then
 		log.warn("slot outfit tidak valid", player.Name, id, err)
-		return nil, "INVALID"
+		return nil, nil, "INVALID"
 	end
-	return state, nil
+	return state, PlayerData.makeupOf(entry.o), nil
+end
+
+-- Outfit di slot saja (tanpa makeup). INVALID = data slot rusak / format lama.
+function PlayerDataService.getOutfit(self: PlayerDataService, player: any, id: number): (State?, string?)
+	local state, _rows, code = self:getOutfitLook(player, id)
+	return state, code
 end
 
 function PlayerDataService.renameOutfit(

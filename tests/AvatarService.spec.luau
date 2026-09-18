@@ -6,6 +6,7 @@ local ServerScriptService = game:GetService("ServerScriptService")
 local AvatarService = require(ServerScriptService:WaitForChild("Server").Services.AvatarService)
 local Shared = game:GetService("ReplicatedStorage"):WaitForChild("Shared")
 local OutfitState = require(Shared.Domain.OutfitState)
+local Makeup = require(Shared.Domain.Makeup)
 local Log = require(Shared.Util.Log)
 
 local function eq(a: any, b: any, msg: string)
@@ -55,6 +56,8 @@ local function setup(opts: { baselineFails: boolean?, noBundles: boolean? }?)
 		applied = {} :: { any },
 		applyFail = false,
 		appliedHooks = 0,
+		makeupApplied = {} :: { any },
+		lastMakeup = nil :: any,
 		timers = {} :: { () -> () },
 		humanoid = {} :: any,
 		onApply = nil :: (() -> ())?,
@@ -105,8 +108,12 @@ local function setup(opts: { baselineFails: boolean?, noBundles: boolean? }?)
 		itemInfo = itemInfo,
 		rules = rules,
 		bundles = if o.noBundles then nil else bundles,
-		onState = function(_p: any, s: any)
+		onState = function(_p: any, s: any, mk: any)
 			table.insert(t.states, s)
+			t.lastMakeup = mk
+		end,
+		applyMakeup = function(_p: any, mk: any)
+			table.insert(t.makeupApplied, mk)
 		end,
 		onError = function(_p: any, code: string)
 			table.insert(t.errors, code)
@@ -355,6 +362,92 @@ return function()
 	assert(svc7:handle(player, { op = "wear", assetId = 2 }), "wear (7b)")
 	t7.flushTimers()
 	eq(t7.appliedHooks, 2, "apply gagal TIDAK memanggil hook")
+
+	-- 19. LOOK: makeup ikut satu timeline undo/redo, tapi TIDAK memicu apply description
+	local FACE = { assetId = 900, slot = "face", textureId = "rbxassetid://1" }
+	local FACE2 = { assetId = 901, slot = "face", textureId = "rbxassetid://2" }
+	local LIP = { assetId = 902, slot = "lip", textureId = "rbxassetid://3" }
+	local svc8, t8 = setup()
+	eq(codeOf(svc8:wearMakeup(player, FACE)), "NOT_READY", "wearMakeup sebelum load")
+	assert(svc8:load(player), "load 8")
+	eq(svc8:isBaseline(player), true, "baseline di awal")
+
+	assert(svc8:wearMakeup(player, FACE), "pakai makeup")
+	eq(#t8.makeupApplied, 1, "decal dipasang")
+	eq(Makeup.count(svc8:getMakeup(player)), 1, "satu makeup")
+	eq(svc8:isMakeupWorn(player, 900), true, "dipakai")
+	eq(t8.lastMakeup ~= nil, true, "makeup ikut dikabarkan ke client")
+	eq(svc8:isBaseline(player), false, "bermakeup != avatar asli")
+	t8.flushTimers()
+	eq(#t8.applied, 0, "ganti makeup TIDAK memicu ApplyDescription")
+
+	eq(codeOf(svc8:wearMakeup(player, FACE)), "NOTHING", "makeup yang sama")
+	eq(codeOf(svc8:wearMakeup(player, { assetId = 1 })), "FAILED", "entry cacat")
+	assert(svc8:wearMakeup(player, FACE2), "slot yang sama -> menggeser")
+	eq(Makeup.count(svc8:getMakeup(player)), 1, "tetap satu di slot face")
+	assert(svc8:wearMakeup(player, LIP), "slot lain menumpuk")
+	eq(Makeup.count(svc8:getMakeup(player)), 2, "dua makeup")
+
+	-- undo/redo melintasi makeup DAN outfit dalam satu tumpukan
+	assert(svc8:handle(player, { op = "undo" }), "undo lip")
+	eq(svc8:isMakeupWorn(player, 902), false, "lip lepas")
+	eq(svc8:isMakeupWorn(player, 901), true, "face2 masih")
+	assert(svc8:handle(player, { op = "redo" }), "redo lip")
+	eq(svc8:isMakeupWorn(player, 902), true, "lip kembali")
+
+	assert(svc8:handle(player, { op = "wear", assetId = 1 }), "pakai topi")
+	t8.flushTimers()
+	eq(#t8.applied, 1, "outfit berubah -> apply sekali")
+	assert(svc8:handle(player, { op = "undo" }), "undo topi")
+	eq((svc8:getState(player) :: any).accessories["1"], nil, "topi lepas")
+	eq(Makeup.count(svc8:getMakeup(player)), 2, "makeup tidak ikut hilang")
+
+	-- lepas lewat intent remove (id makeup tidak ada di OutfitState)
+	local makeupAppliedBefore = #t8.makeupApplied
+	assert(svc8:handle(player, { op = "remove", assetId = 902 }), "remove makeup")
+	eq(svc8:isMakeupWorn(player, 902), false, "lip lepas lewat remove")
+	eq(#t8.makeupApplied, makeupAppliedBefore + 1, "decal dipasang ulang")
+	eq(codeOf(svc8:handle(player, { op = "remove", assetId = 902 })), "NOTHING", "sudah lepas")
+
+	-- reset membersihkan makeup juga
+	assert(svc8:handle(player, { op = "reset" }), "reset")
+	eq(Makeup.count(svc8:getMakeup(player)), 0, "makeup bersih")
+	eq(svc8:isBaseline(player), true, "kembali ke avatar asli")
+	eq(codeOf(svc8:handle(player, { op = "reset" })), "NOTHING", "reset dua kali")
+	assert(svc8:handle(player, { op = "undo" }), "undo reset")
+	eq(Makeup.count(svc8:getMakeup(player)), 1, "makeup kembali setelah undo reset")
+
+	-- 20. wearOutfit & restore membawa makeup; slot tanpa makeup MEMBERSIHKAN makeup
+	local svc9, t9 = setup()
+	assert(svc9:load(player), "load 9")
+	local mkSlot = Makeup.set(Makeup.empty(), FACE)
+	local slot9 = OutfitState.wear(OutfitState.clone(svc9:getState(player) :: any), 1, "Hat")
+	assert(svc9:wearOutfit(player, slot9, mkSlot), "pakai slot bermakeup")
+	eq(Makeup.count(svc9:getMakeup(player)), 1, "makeup slot ikut")
+	eq(codeOf(svc9:wearOutfit(player, slot9, mkSlot)), "NOTHING", "look yang sama")
+	assert(svc9:wearOutfit(player, slot9), "slot lama (tanpa makeup)")
+	eq(Makeup.count(svc9:getMakeup(player)), 0, "makeup dibersihkan")
+	assert(svc9:handle(player, { op = "undo" }), "undo slot lama")
+	eq(Makeup.count(svc9:getMakeup(player)), 1, "makeup kembali")
+	eq(#t9.states > 0, true, "state dikirim")
+
+	local svc10, t10 = setup()
+	assert(svc10:load(player), "load 10")
+	local saved10 = OutfitState.clone(svc10:getState(player) :: any)
+	assert(svc10:restore(player, saved10, mkSlot), "restore look tersimpan")
+	eq(Makeup.count(svc10:getMakeup(player)), 1, "makeup tersimpan kembali")
+	eq(#t10.makeupApplied, 1, "decal dipasang saat join")
+	t10.flushTimers()
+	eq(#t10.applied, 0, "outfit sama -> tidak perlu apply")
+	eq(codeOf(svc10:restore(player, saved10, mkSlot)), "CHANGED", "restore kedua ditolak")
+
+	local svc11 = setup()
+	assert(svc11:load(player), "load 11")
+	eq(codeOf(svc11:restore(player, nil, Makeup.empty())), "NOTHING", "tidak ada yang berubah")
+	assert(svc11:restore(player, nil, mkSlot), "restore makeup saja")
+	eq(Makeup.count(svc11:getMakeup(player)), 1, "makeup saja kembali")
+	eq(svc11:getMakeup({ UserId = 99 }) ~= nil, true, "tanpa sesi -> kosong")
+	eq(Makeup.count(svc11:getMakeup({ UserId = 99 })), 0, "kosong")
 
 	print("PASS AvatarService.spec")
 end

@@ -4,13 +4,18 @@
 --   avatar:attach(player)                        -- saat PlayerAdded (yield: ambil avatar asli)
 --   local ok, code = avatar:handle(player, intent) -- intent SUDAH lolos IntentValidator
 --   avatar:detach(player)                        -- saat PlayerRemoving
--- Alur: intent -> state baru (murni) -> onState(player, state) -> apply ter-debounce (Limits.ApplyDebounce).
+-- LOOK = outfit (OutfitState, bisa ke HumanoidDescription) + makeup (Decal di Head, tidak bisa).
+-- Keduanya satu timeline undo/redo supaya tombol Undo jujur; OutfitState sendiri TETAP murni
+-- cermin HumanoidDescription (makeup tidak pernah masuk DescriptionBuilder).
+-- Apply description hanya dipicu perubahan OUTFIT: ganti makeup tidak boleh mengganti Head.
+-- Alur: intent -> look baru (murni) -> onState(player, state, makeup) -> apply ter-debounce.
 -- Apply gagal -> state dikembalikan ke state terakhir yang berhasil, onState dipanggil lagi + onError.
 -- Semua akses engine lewat `deps` supaya bisa dites di Lune.
 
 local Shared = game:GetService("ReplicatedStorage"):WaitForChild("Shared")
 local Types = require(Shared.Domain.Types)
 local OutfitState = require(Shared.Domain.OutfitState)
+local Makeup = require(Shared.Domain.Makeup)
 local DescriptionBuilder = require(Shared.Avatar.DescriptionBuilder)
 local Limits = require(Shared.Config.Limits)
 local Log = require(Shared.Util.Log)
@@ -18,6 +23,10 @@ local Log = require(Shared.Util.Log)
 local log = Log.new("AvatarService")
 
 type State = Types.OutfitState
+type MakeupState = Makeup.State
+
+-- Satu titik di timeline undo/redo.
+export type Look = { state: State, makeup: MakeupState }
 
 export type Code =
 	"NOT_READY"
@@ -37,7 +46,8 @@ export type Deps = {
 	itemInfo: any, -- ItemInfoService
 	rules: any?, -- AvatarRules (batas per tipe); nil = tanpa batas per tipe
 	bundles: any?, -- BundleService (get); nil = bundle belum didukung (NOT_IMPLEMENTED)
-	onState: ((player: any, state: State) -> ())?, -- kirim StateChanged
+	onState: ((player: any, state: State, makeup: MakeupState) -> ())?, -- kirim StateChanged + MakeupChanged
+	applyMakeup: ((player: any, makeup: MakeupState) -> ())?, -- MakeupService.apply (TANPA yield)
 	onError: ((player: any, code: string) -> ())?, -- kirim Notify
 	-- dipanggil setiap Head pemain mungkin berganti (respawn / apply berhasil):
 	-- dipakai MakeupService untuk menempelkan ulang Decal makeup.
@@ -54,8 +64,9 @@ type Session = {
 	baseline: State, -- avatar asli pemain
 	state: State, -- yang diinginkan
 	applied: State, -- terakhir berhasil diterapkan (untuk rollback)
-	undo: { State },
-	redo: { State },
+	makeup: MakeupState, -- makeup yang sedang dipakai (di luar HumanoidDescription)
+	undo: { Look },
+	redo: { Look },
 	scheduled: boolean,
 	applying: boolean,
 	dirty: boolean,
@@ -72,7 +83,8 @@ export type AvatarService = typeof(setmetatable(
 		_itemInfo: any,
 		_rules: any?,
 		_bundles: any?,
-		_onState: (any, State) -> (),
+		_onState: (any, State, MakeupState) -> (),
+		_applyMakeup: (any, MakeupState) -> (),
 		_onError: (any, string) -> (),
 		_onApplied: (any) -> (),
 		_build: (State) -> any,
@@ -108,6 +120,7 @@ function AvatarService.new(deps: Deps): AvatarService
 		_rules = deps.rules,
 		_bundles = deps.bundles,
 		_onState = deps.onState or function() end,
+		_applyMakeup = deps.applyMakeup or function() end,
 		_onError = deps.onError or function() end,
 		_onApplied = deps.onApplied or function() end,
 		_build = deps.build or defaultBuild,
@@ -140,6 +153,7 @@ function AvatarService.load(self: AvatarService, player: any): boolean
 		baseline = empty,
 		state = empty,
 		applied = empty,
+		makeup = Makeup.empty(),
 		undo = {},
 		redo = {},
 		scheduled = false,
@@ -170,7 +184,7 @@ function AvatarService.load(self: AvatarService, player: any): boolean
 	session.state = OutfitState.clone(session.baseline)
 	session.applied = OutfitState.clone(session.baseline)
 	session.ready = true
-	self._onState(player, session.state)
+	self._onState(player, session.state, session.makeup)
 	return true
 end
 
@@ -242,15 +256,42 @@ local function hasWearablePart(parts: { Types.BundlePart }, partIds: { number }?
 	return false
 end
 
-local function commit(self: AvatarService, player: any, session: Session, nextState: State)
-	table.insert(session.undo, session.state)
+-- Pindah ke look baru: dorong look sekarang ke undo, kabarkan, lalu kerjakan AKIBATNYA.
+-- Outfit berubah -> apply description (debounce). Makeup berubah -> tempel decal (tanpa yield).
+-- `nextMakeup` nil = makeup tidak berubah.
+local function commit(self: AvatarService, player: any, session: Session, nextState: State, nextMakeup: MakeupState?)
+	local makeup = nextMakeup or session.makeup
+	table.insert(session.undo, { state = session.state, makeup = session.makeup })
 	while #session.undo > Limits.UndoDepth do
 		table.remove(session.undo, 1)
 	end
 	table.clear(session.redo)
+	local outfitChanged = not sameLook(nextState, session.state)
+	local makeupChanged = not Makeup.equals(makeup, session.makeup)
 	session.state = nextState
-	self._onState(player, nextState)
-	self:_schedule(player)
+	session.makeup = makeup
+	self._onState(player, nextState, makeup)
+	if makeupChanged then
+		self._applyMakeup(player, makeup)
+	end
+	if outfitChanged then
+		self:_schedule(player)
+	end
+end
+
+-- Pindah ke look dari tumpukan undo/redo (tanpa mendorong apa pun ke tumpukan).
+local function jumpTo(self: AvatarService, player: any, session: Session, target: Look)
+	local outfitChanged = not sameLook(target.state, session.state)
+	local makeupChanged = not Makeup.equals(target.makeup, session.makeup)
+	session.state = target.state
+	session.makeup = target.makeup
+	self._onState(player, session.state, session.makeup)
+	if makeupChanged then
+		self._applyMakeup(player, session.makeup)
+	end
+	if outfitChanged then
+		self:_schedule(player)
+	end
 end
 
 -- `intent` harus hasil IntentValidator.validate. Return (true, nil) | (false, Code).
@@ -284,6 +325,11 @@ function AvatarService.handle(self: AvatarService, player: any, intent: Types.In
 		commit(self, player, session, nextState)
 		return true, nil
 	elseif op == "remove" then
+		-- makeup hidup di luar OutfitState -> dicek lebih dulu
+		if Makeup.hasAsset(session.makeup, i.assetId) then
+			commit(self, player, session, session.state, Makeup.removeAsset(session.makeup, i.assetId))
+			return true, nil
+		end
 		local nextState = OutfitState.remove(session.state, i.assetId, session.baseline)
 		if sameLook(nextState, session.state) then
 			return false, "NOTHING"
@@ -298,10 +344,10 @@ function AvatarService.handle(self: AvatarService, player: any, intent: Types.In
 		commit(self, player, session, nextState)
 		return true, nil
 	elseif op == "reset" then
-		if sameLook(session.state, session.baseline) then
+		if sameLook(session.state, session.baseline) and Makeup.isEmpty(session.makeup) then
 			return false, "NOTHING"
 		end
-		commit(self, player, session, OutfitState.clone(session.baseline))
+		commit(self, player, session, OutfitState.clone(session.baseline), Makeup.empty())
 		return true, nil
 	elseif op == "undo" or op == "redo" then
 		local from = if op == "undo" then session.undo else session.redo
@@ -310,10 +356,8 @@ function AvatarService.handle(self: AvatarService, player: any, intent: Types.In
 		if target == nil then
 			return false, "NOTHING"
 		end
-		table.insert(to, session.state)
-		session.state = target
-		self._onState(player, target)
-		self:_schedule(player)
+		table.insert(to, { state = session.state, makeup = session.makeup })
+		jumpTo(self, player, session, target)
 		return true, nil
 	elseif op == "wearBundle" then
 		if self._bundles == nil then
@@ -358,40 +402,91 @@ function AvatarService.handle(self: AvatarService, player: any, intent: Types.In
 	return false, "BAD_OP"
 end
 
--- true bila outfit sekarang tampak sama dengan avatar asli (tidak perlu disimpan).
-function AvatarService.isBaseline(self: AvatarService, player: any): boolean
-	local session = self._sessions[player]
-	return session ~= nil and session.ready and sameLook(session.state, session.baseline)
-end
+-- ===== Makeup (di luar HumanoidDescription, satu timeline dengan outfit) =====
 
--- Pasang outfit tersimpan saat join (Undo kembali ke avatar asli).
--- Hanya bila pemain BELUM mengubah apa pun, supaya data yang telat dimuat tidak menimpa pilihannya.
-function AvatarService.restore(self: AvatarService, player: any, state: State): (boolean, Code?)
+-- `entry` = hasil MakeupService.resolve ({ assetId, slot, textureId }). Bisa di-Undo seperti item lain.
+function AvatarService.wearMakeup(self: AvatarService, player: any, entry: any): (boolean, Code?)
 	local session = self._sessions[player]
 	if session == nil or not session.ready then
 		return false, "NOT_READY"
 	end
-	if #session.undo > 0 or #session.redo > 0 or not sameLook(session.state, session.baseline) then
-		return false, "CHANGED"
+	if type(entry) ~= "table" then
+		return false, "FAILED"
 	end
-	if sameLook(state, session.state) then
-		return false, "NOTHING"
+	local current = Makeup.get(session.makeup, entry.slot)
+	if current and current.assetId == entry.assetId then
+		return false, "NOTHING" -- sudah dipakai di slot itu
 	end
-	commit(self, player, session, OutfitState.clone(state))
+	local nextMakeup, err = Makeup.set(session.makeup, entry)
+	if nextMakeup == nil then
+		log.warn("entry makeup ditolak", entry.assetId, err)
+		return false, "FAILED"
+	end
+	commit(self, player, session, session.state, nextMakeup)
 	return true, nil
 end
 
--- Pakai outfit dari slot wardrobe (sudah divalidasi PlayerData.decodeOutfit). Bisa di-Undo.
--- Return (true) | (false, "NOT_READY" | "NOTHING").
-function AvatarService.wearOutfit(self: AvatarService, player: any, state: State): (boolean, Code?)
+function AvatarService.getMakeup(self: AvatarService, player: any): MakeupState
+	local session = self._sessions[player]
+	return if session and session.ready then session.makeup else Makeup.empty()
+end
+
+function AvatarService.isMakeupWorn(self: AvatarService, player: any, assetId: number): boolean
+	return Makeup.hasAsset(self:getMakeup(player), assetId)
+end
+
+-- true bila look sekarang tampak sama dengan avatar asli (tidak perlu disimpan).
+function AvatarService.isBaseline(self: AvatarService, player: any): boolean
+	local session = self._sessions[player]
+	return session ~= nil
+		and session.ready
+		and sameLook(session.state, session.baseline)
+		and Makeup.isEmpty(session.makeup)
+end
+
+-- Pasang look tersimpan saat join (Undo kembali ke avatar asli).
+-- Hanya bila pemain BELUM mengubah apa pun, supaya data yang telat dimuat tidak menimpa pilihannya.
+-- `state` nil = outfit tidak berubah (mis. cuma makeup yang tersimpan).
+function AvatarService.restore(self: AvatarService, player: any, state: State?, makeup: MakeupState?): (boolean, Code?)
 	local session = self._sessions[player]
 	if session == nil or not session.ready then
 		return false, "NOT_READY"
 	end
-	if sameLook(state, session.state) then
+	if
+		#session.undo > 0
+		or #session.redo > 0
+		or not sameLook(session.state, session.baseline)
+		or not Makeup.isEmpty(session.makeup)
+	then
+		return false, "CHANGED"
+	end
+	local target = state or session.state
+	local nextMakeup = makeup or Makeup.empty()
+	if sameLook(target, session.state) and Makeup.equals(nextMakeup, session.makeup) then
+		return false, "NOTHING"
+	end
+	commit(self, player, session, OutfitState.clone(target), nextMakeup)
+	return true, nil
+end
+
+-- Pakai LOOK dari slot wardrobe (sudah divalidasi PlayerData.decodeOutfit + resolveRows). Bisa di-Undo.
+-- `makeup` nil = slot tanpa makeup -> makeup yang sedang dipakai DIBERSIHKAN (slot = look utuh).
+-- Return (true) | (false, "NOT_READY" | "NOTHING").
+function AvatarService.wearOutfit(
+	self: AvatarService,
+	player: any,
+	state: State,
+	makeup: MakeupState?
+): (boolean, Code?)
+	local session = self._sessions[player]
+	if session == nil or not session.ready then
+		return false, "NOT_READY"
+	end
+	local nextMakeup = makeup or Makeup.empty()
+	if sameLook(state, session.state) and Makeup.equals(nextMakeup, session.makeup) then
 		return false, "NOTHING" -- sudah dipakai
 	end
-	commit(self, player, session, OutfitState.clone(state))
+	commit(self, player, session, OutfitState.clone(state), nextMakeup)
 	return true, nil
 end
 
@@ -455,7 +550,7 @@ function AvatarService._flush(self: AvatarService, player: any)
 			-- gagal & tidak ada perubahan baru: kembalikan ke yang terakhir berhasil
 			log.warn("apply gagal, rollback", player.Name, err and err.message)
 			session.state = session.applied
-			self._onState(player, session.state)
+			self._onState(player, session.state, session.makeup)
 			self._onError(player, "APPLY_FAILED")
 		end
 	until not session.dirty

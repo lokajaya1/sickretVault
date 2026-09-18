@@ -120,6 +120,26 @@ return function()
 		eq(t.profile.Data.lastOutfit, nil, "terhapus")
 	end
 
+	-- 2b. LOOK: makeup ikut di dalam lastOutfit, field lastMakeup lama dibuang
+	do
+		local svc, t = setup({ data = { v = 4, lastMakeup = { { i = 700, s = "face" } } } })
+		local p = player("B2", 71)
+		svc:load(p)
+		-- data lama (PR #18): makeup masih di lastMakeup -> tetap terbaca
+		eq(#svc:getLastMakeup(p), 1, "makeup lama terbaca")
+		eq(svc:getLastMakeup(p)[1].assetId, 700, "assetId lama")
+
+		local mk = { face = { assetId = 800, slot = "face", textureId = "rbxassetid://1" } }
+		eq(svc:setLastOutfit(p, OS.empty(), mk), true, "tulis look")
+		eq(t.profile.Data.lastMakeup, nil, "field lama dibuang")
+		eq(#t.profile.Data.lastOutfit.mk, 1, "makeup di dalam lastOutfit")
+		local rows = svc:getLastMakeup(p)
+		eq(#rows, 1, "satu makeup")
+		eq(rows[1].assetId, 800, "makeup baru")
+		eq(svc:setLastOutfit(p, nil), true, "hapus look")
+		eq(#svc:getLastMakeup(p), 0, "makeup ikut hilang")
+	end
+
 	-- 3. outfit tersimpan rusak -> nil (fallback avatar asli)
 	do
 		local svc = setup({ data = { v = 1, lastOutfit = { ov = 1, r = "R99" } } })
@@ -262,6 +282,37 @@ return function()
 		-- slot rusak -> INVALID (bukan error)
 		t.profile.Data.outfits[1].o = { ov = 99 }
 		eq(select(2, svc:getOutfit(p, b.id)), "INVALID", "slot rusak")
+	end
+
+	-- 11b. slot menyimpan LOOK: makeup ikut masuk & keluar lagi
+	do
+		local svc, t = setup()
+		local p = player("K2", 172)
+		svc:load(p)
+		local mk = {
+			face = { assetId = 800, slot = "face", textureId = "rbxassetid://1" },
+			lip = { assetId = 801, slot = "lip", textureId = "rbxassetid://2" },
+		}
+		local a = svc:addOutfit(p, "Look", OS.wear(OS.empty(), 20, "Hat"), mk)
+		assert(a, "add look")
+		eq(a.makeup, 2, "ringkasan menghitung makeup")
+		eq(a.count, 3, "1 item + 2 makeup")
+		local state, rows = svc:getOutfitLook(p, a.id)
+		assert(state, "look kembali")
+		eq(#(rows :: any), 2, "dua baris makeup")
+		eq((rows :: any)[1].slot, "face", "urutan slot")
+		eq(state.accessories["20"] ~= nil, true, "outfit ikut")
+
+		-- slot tanpa makeup (slot lama / disimpan tanpa makeup) -> baris kosong
+		local b = svc:addOutfit(p, "Polos", OS.empty())
+		assert(b, "add polos")
+		eq(#(select(2, svc:getOutfitLook(p, b.id)) :: any), 0, "tanpa makeup")
+		eq(svc:overwriteOutfit(p, b.id, OS.empty(), mk), true, "overwrite dengan makeup")
+		eq(#(select(2, svc:getOutfitLook(p, b.id)) :: any), 2, "makeup masuk saat overwrite")
+		eq(svc:overwriteOutfit(p, b.id, OS.empty()), true, "overwrite tanpa makeup")
+		eq(#(select(2, svc:getOutfitLook(p, b.id)) :: any), 0, "makeup ikut hilang")
+		eq(select(3, svc:getOutfitLook(p, 999)), "NOT_FOUND", "slot tidak ada")
+		eq(#t.profile.Data.outfits, 2, "dua slot")
 	end
 
 	-- 12. wardrobe penuh

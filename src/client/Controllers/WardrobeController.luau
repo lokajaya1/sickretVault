@@ -41,6 +41,7 @@ export type Summary = {
 	favorite: boolean,
 	folders: { number },
 	count: number,
+	makeup: number, -- jumlah makeup di look (Wardrobe.summarize)
 	thumbs: { number },
 	outfit: any, -- outfit ringkas (PlayerData.decodeOutfit) untuk render kartu
 }

@@ -8,6 +8,9 @@
 --   S.wear("A")                -- pasang varian, DIBIARKAN sampai S.off()
 --   S.wear("B") / S.wear("C") / S.wear("D")
 --   S.off()                    -- lepas semua pasangan spike
+--   S.publish(133520807586498)  -- [SERVER] taruh template Decal di ReplicatedStorage
+--   S.previewClient(133520807586498) -- [CLIENT] dua boneka preview: template vs texture saja
+--   S.clear()                   -- hapus boneka (bisa dari tab mana pun)
 --
 -- ===== TEMUAN YANG SUDAH TETAP (jangan diulang) =====
 -- 1. Makeup TIDAK bisa lewat HumanoidDescription (spike #17c): SetAccessories + Apply
@@ -350,6 +353,139 @@ function M.compare(assetId: number?)
 	end
 	root:Destroy()
 	say("compare: A / B / D berjajar di depanmu — satu screenshot cukup. Hapus dengan S.clear()")
+end
+
+-- ===== SPIKE PREVIEW (PR makeup-wardrobe) =====
+-- Pertanyaannya: makeup tidak muncul di preview 3D kartu outfit, karena model preview dibuat DI
+-- CLIENT dari HumanoidDescription (makeup bukan bagian description). Kalau template Decal-nya
+-- direplikasi ke client, apakah anak `WrapTextureTransfer` IKUT ter-replikasi -- dan apakah
+-- hasilnya presisi seperti di karakter asli?
+--
+-- Cara pakai (dua langkah, dua tab Command Bar):
+--   tab SERVER: local S = require(game.ReplicatedStorage.Tests["MakeupDecal.studio"]) S.publish(133520807586498)
+--   tab CLIENT: local S = require(game.ReplicatedStorage.Tests["MakeupDecal.studio"]) S.previewClient(133520807586498)
+-- Tiga boneka berjajar:
+--   TPL  = clone template, ditempel SEBELUM boneka masuk workspace
+--   TPL2 = clone template, boneka masuk workspace dulu lalu tunggu 1 frame, BARU ditempel
+--   TEX  = Decal dari texture saja (pembanding: pasti meleset)
+--
+-- TEMUAN 18 Sep 2026 (putaran 1): WrapTextureTransfer IKUT ter-replikasi ke client (true),
+-- tapi TPL tidak merender apa pun sementara TEX melar menutupi dahi -> dugaan: decal harus
+-- ditempel ke Head yang SUDAH ada di workspace (itulah yang TPL2 uji).
+local TEMPLATE_FOLDER = "SPIKE_MakeupTemplates"
+
+-- [SERVER] LoadAsset lalu simpan template Decal di ReplicatedStorage supaya ikut ter-replikasi.
+function M.publish(assetId: number)
+	local ReplicatedStorage = game:GetService("ReplicatedStorage")
+	local root = loadAsset(assetId)
+	if root == nil then
+		return
+	end
+	local decal = findDecal(root)
+	if decal == nil then
+		say("publish: aset %d tidak berisi Decal", assetId)
+		root:Destroy()
+		return
+	end
+	local folder = ReplicatedStorage:FindFirstChild(TEMPLATE_FOLDER)
+	if folder == nil then
+		local f = Instance.new("Folder")
+		f.Name = TEMPLATE_FOLDER
+		f.Parent = ReplicatedStorage
+		folder = f
+	end
+	local old = (folder :: Instance):FindFirstChild(tostring(assetId))
+	if old then
+		old:Destroy()
+	end
+	local copy = decal:Clone()
+	copy.Name = tostring(assetId)
+	copy.Parent = folder
+	say("publish: template %d ditaruh di ReplicatedStorage.%s", assetId, TEMPLATE_FOLDER)
+	dumpTree("publish", copy, 0) -- di server anak WrapTextureTransfer PASTI ada
+	root:Destroy()
+end
+
+-- Tempel satu decal ke Head model preview; `kind` = "TPL" | "TPL2" | "TEX".
+local function attachPreview(head: BasePart, kind: string, template: Instance)
+	local decal: Decal
+	if kind == "TEX" then
+		decal = Instance.new("Decal")
+		decal.Texture = (template :: Decal).Texture
+	else
+		decal = (template :: Decal):Clone()
+	end
+	decal.Name = PREFIX .. kind
+	decal.Face = Enum.NormalId.Front
+	decal.Parent = head
+end
+
+-- [CLIENT] Tiga boneka berjajar: TPL / TPL2 / TEX (lihat catatan di atas).
+function M.previewClient(assetId: number)
+	local Players = game:GetService("Players")
+	local ReplicatedStorage = game:GetService("ReplicatedStorage")
+	local player = Players.LocalPlayer
+	if player == nil then
+		say("previewClient HARUS dijalankan dari tab CLIENT")
+		return
+	end
+	local folder = ReplicatedStorage:FindFirstChild(TEMPLATE_FOLDER)
+	local template = if folder then folder:FindFirstChild(tostring(assetId)) else nil
+	if template == nil then
+		say("template %d belum ada di client -> jalankan S.publish(%d) dari tab SERVER dulu", assetId, assetId)
+		return
+	end
+	-- INILAH pertanyaannya: apakah anak WrapTextureTransfer ikut sampai ke client?
+	dumpTree("client-template", template, 0)
+	local wrap = template:FindFirstChildWhichIsA("WrapTextureTransfer" :: any, true)
+	say("client: WrapTextureTransfer ikut ter-replikasi? %s", tostring(wrap ~= nil))
+
+	local char = player.Character
+	local humanoid = if char then char:FindFirstChildOfClass("Humanoid") else nil
+	if humanoid == nil then
+		say("previewClient: karakter belum siap, coba lagi sebentar")
+		return
+	end
+	local desc = (humanoid :: Humanoid):GetAppliedDescription()
+	local cam = workspace.CurrentCamera
+	local base = cam.CFrame * CFrame.new(0, 0, -8)
+	local RunService = game:GetService("RunService")
+	local variants = { "TPL", "TPL2", "TEX" }
+	for i, variant in variants do
+		local okModel, model = pcall(function()
+			return Players:CreateHumanoidModelFromDescriptionAsync(desc, Enum.HumanoidRigType.R15)
+		end)
+		if not okModel then
+			say("boneka %s gagal: %s", variant, tostring(model))
+			continue
+		end
+		local dummy = model :: Model
+		dummy.Name = DUMMY_PREFIX .. variant
+		local head = dummy:FindFirstChild("Head")
+		if i == 1 and head then
+			-- apakah Head model preview punya WrapTarget seperti Head karakter asli?
+			say("preview head %s", describe(head))
+			for _, child in (head :: Instance):GetChildren() do
+				say("preview head anak: %s", describe(child))
+			end
+		end
+		if head and variant ~= "TPL2" then
+			attachPreview(head :: BasePart, variant, template) -- sebelum masuk workspace
+		end
+		labelOf(dummy, variant)
+		dummy:PivotTo(base * CFrame.new((i - 2) * 4, 0, 0) * CFrame.Angles(0, math.pi, 0))
+		local dummyRoot = dummy:FindFirstChild("HumanoidRootPart")
+		if dummyRoot then
+			(dummyRoot :: BasePart).Anchored = true
+		end
+		dummy.Parent = workspace
+		if head and variant == "TPL2" then
+			RunService.Heartbeat:Wait() -- Head sudah di workspace & WrapTarget sempat aktif
+			attachPreview(head :: BasePart, variant, template)
+		end
+		say("boneka %s siap (client-side, hanya kamu yang lihat)", variant)
+	end
+	say("previewClient: TPL=sebelum parent, TPL2=sesudah parent, TEX=texture saja. Hapus: S.clear()")
 end
 
 return M
