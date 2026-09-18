@@ -611,24 +611,49 @@ end
 -- tanpa memuat satu Animation pun.
 type Pose = { s: BasePart, d: BasePart }
 
--- Clone dibuat dari model yang sama -> urutan anaknya identik, jadi pasangan cukup dicocokkan
--- posisi per posisi (nama tidak dipakai: "Handle" milik aksesori banyak yang kembar).
+-- Pasangan dicocokkan lewat NAMA JALUR ("RightLowerLeg", "Fedora/Handle"), BUKAN urutan anak:
+-- uji Studio 18 Sep membuktikan urutan `GetChildren` model asli dan clone-nya TIDAK selalu sama,
+-- sehingga part bisa dipasangkan ke part yang salah -- gejalanya kaki meregang saat lompat dan
+-- satu kaki diam. Nama yang kembar (mis. dua "Handle") dipasangkan berurutan.
+local function keyOf(part: Instance, root: Instance): string
+	local names: { string } = {}
+	local node: Instance? = part
+	while node ~= nil and node ~= root do
+		table.insert(names, 1, node.Name)
+		node = node.Parent
+	end
+	return table.concat(names, "/")
+end
+
 local function pairParts(src: Instance, dst: Instance): { Pose }
-	local out: { Pose } = {}
-	local function walk(a: Instance, b: Instance)
-		local bc = b:GetChildren()
-		for i, child in a:GetChildren() do
-			local mate = bc[i]
-			if mate == nil or mate.ClassName ~= child.ClassName then
-				continue
+	local bySrcKey: { [string]: { BasePart } } = {}
+	for _, x in src:GetDescendants() do
+		if x:IsA("BasePart") then
+			local key = keyOf(x, src)
+			local list = bySrcKey[key]
+			if list == nil then
+				list = {}
+				bySrcKey[key] = list
 			end
-			if child:IsA("BasePart") and mate:IsA("BasePart") then
-				table.insert(out, { s = child :: BasePart, d = mate :: BasePart })
-			end
-			walk(child, mate)
+			table.insert(list, x :: BasePart)
 		end
 	end
-	walk(src, dst)
+	local used: { [string]: number } = {}
+	local out: { Pose } = {}
+	for _, y in dst:GetDescendants() do
+		if y:IsA("BasePart") then
+			local key = keyOf(y, dst)
+			local list = bySrcKey[key]
+			if list ~= nil then
+				local i = (used[key] or 0) + 1
+				used[key] = i
+				local mate = list[i]
+				if mate ~= nil then
+					table.insert(out, { s = mate, d = y :: BasePart })
+				end
+			end
+		end
+	end
 	return out
 end
 
@@ -675,6 +700,9 @@ function OutfitPreview.mountCurrent(self: OutfitPreview, viewport: ViewportFrame
 	local srcRoot: BasePart? = nil
 	local dstRoot: BasePart? = nil
 	local mirrorConn: RBXScriptConnection? = nil
+	local charConns: { RBXScriptConnection } = {}
+	-- Dideklarasikan lebih dulu: `rebuild` memasang pemantau karakter yang memanggilnya balik.
+	local request: () -> ()
 
 	local function refit()
 		local shown = model
@@ -715,6 +743,26 @@ function OutfitPreview.mountCurrent(self: OutfitPreview, viewport: ViewportFrame
 		end
 		local player = Players.LocalPlayer
 		local char = if player then player.Character else nil
+		-- Sesudah ApplyDescription, part & aksesori karakter menyusul beberapa saat kemudian, jadi
+		-- clone pertama bisa ketinggalan item baru -> pantau isi karakter dan clone ulang saat reda.
+		for _, c in charConns do
+			c:Disconnect()
+		end
+		table.clear(charConns)
+		if char ~= nil then
+			table.insert(
+				charConns,
+				char.DescendantAdded:Connect(function()
+					request()
+				end)
+			)
+			table.insert(
+				charConns,
+				char.DescendantRemoving:Connect(function()
+					request()
+				end)
+			)
+		end
 		poses = if char then pairParts(char, fresh) else {}
 		srcRoot = if char then char:FindFirstChild("HumanoidRootPart") :: BasePart? else nil
 		dstRoot = fresh:FindFirstChild("HumanoidRootPart") :: BasePart?
@@ -749,12 +797,14 @@ function OutfitPreview.mountCurrent(self: OutfitPreview, viewport: ViewportFrame
 	end
 
 	-- Beberapa perubahan dalam satu frame (mis. lepas + pakai) cukup satu clone.
-	local function request()
+	request = function()
 		if pending or not alive then
 			return
 		end
 		pending = true
-		task.defer(function()
+		-- Jeda kecil, bukan satu frame: perubahan karakter datang bertubi-tubi (part, aksesori,
+		-- layered clothing) dan kita hanya ingin satu clone setelah semuanya reda.
+		task.delay(0.15, function()
 			pending = false
 			local okBuild, err = pcall(rebuild)
 			if not okBuild then
@@ -789,6 +839,10 @@ function OutfitPreview.mountCurrent(self: OutfitPreview, viewport: ViewportFrame
 				mirrorConn:Disconnect()
 				mirrorConn = nil
 			end
+			for _, c in charConns do
+				c:Disconnect()
+			end
+			table.clear(charConns)
 			for _, c in conns do
 				c:Disconnect()
 			end
