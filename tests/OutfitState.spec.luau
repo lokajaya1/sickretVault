@@ -106,5 +106,13 @@ return function()
 	local hb2 = OS.wearBundle(OS.empty(), 9100, hats)
 	assert(hb2.accessories["95"] and hb2.accessories["96"], "tanpa batas -> dua topi")
 
+	-- makeup punya kind sendiri sejak PR #18, tapi TIDAK boleh masuk OutfitState
+	-- (dipasang sebagai Decal oleh MakeupService, bukan lewat HumanoidDescription)
+	for _, ty in { "FaceMakeup", "EyeMakeup", "LipMakeup" } do
+		local ms, merr = OS.wear(OS.empty(), 123, ty)
+		eq(merr, "UNSUPPORTED_TYPE", ty .. " ditolak OutfitState")
+		eq(ms.accessories["123"], nil, ty .. " tidak tersimpan")
+	end
+
 	print("PASS OutfitState.spec")
 end

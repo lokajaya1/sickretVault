@@ -59,6 +59,15 @@ M.Rigid = {
 	EyelashAccessory = true,
 }
 
+-- Makeup: ADA di katalog, tidak bisa lewat HumanoidDescription, tapi BISA dipasang sebagai
+-- Decal di Head (PR #18). Diberi kind sendiri supaya ItemInfoService tidak membuangnya,
+-- tapi TANPA slot -> OutfitState.wear tetap menolaknya (tidak akan bocor ke description).
+M.Makeup = {
+	FaceMakeup = true,
+	EyeMakeup = true,
+	LipMakeup = true,
+}
+
 -- Tipe yang ADA di katalog tapi TIDAK bisa dipasang ke avatar sama sekali.
 -- AvatarBackground bukan barang yang dipakai: di CAC ia latar area preview (PR terpisah).
 -- Makeup DIKELUARKAN dari daftar ini sejak PR #18: tidak lewat HumanoidDescription, tapi
@@ -83,7 +92,7 @@ M.ClassicSlots = { "Shirt", "Pants", "GraphicTShirt", "Face" }
 M.ColorSlots = { "HeadColor", "TorsoColor", "LeftArmColor", "RightArmColor", "LeftLegColor", "RightLegColor" }
 M.ScaleSlots = { "HeightScale", "WidthScale", "DepthScale", "HeadScale", "BodyTypeScale", "ProportionScale" }
 
-export type Kind = "bodyPart" | "animation" | "classic" | "accessory" | "unknown"
+export type Kind = "bodyPart" | "animation" | "classic" | "accessory" | "makeup" | "unknown"
 
 -- AssetType dari API bisa berupa string nama atau angka id -> normalisasi ke nama.
 local idToName: { [number]: string } = {}
@@ -111,6 +120,8 @@ function M.classify(assetTypeName: string): (Kind, string?)
 		return "classic", M.Classic[assetTypeName]
 	elseif M.Layered[assetTypeName] or M.Rigid[assetTypeName] then
 		return "accessory", assetTypeName
+	elseif M.Makeup[assetTypeName] then
+		return "makeup", nil -- slot nil disengaja: bukan slot HumanoidDescription mana pun
 	end
 	return "unknown", nil
 end

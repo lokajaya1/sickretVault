@@ -27,7 +27,12 @@ return function()
 
 	-- 3. daftar ini TIDAK ikut mengubah klasifikasi lama
 	eq((AssetTypeMap.classify("Hat")), "accessory", "topi tetap accessory")
-	eq((AssetTypeMap.classify("FaceMakeup")), "unknown", "makeup memang bukan slot mana pun")
+	local makeupKind, makeupSlot = AssetTypeMap.classify("FaceMakeup")
+	eq(makeupKind, "makeup", "makeup punya kind sendiri")
+	eq(makeupSlot, nil, "TANPA slot -> OutfitState.wear menolaknya")
+	eq((AssetTypeMap.classify("EyeMakeup")), "makeup", "eye makeup")
+	eq((AssetTypeMap.classify("LipMakeup")), "makeup", "lip makeup")
+	eq((AssetTypeMap.classify("AvatarBackground")), "unknown", "background tetap bukan apa-apa")
 
 	print("PASS AssetTypeMap.spec")
 end
