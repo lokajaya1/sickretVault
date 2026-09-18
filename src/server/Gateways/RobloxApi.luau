@@ -9,7 +9,8 @@
 --
 -- Nama API diverifikasi di Creator Hub (16 Sep 2026), lihat docs/API_VERIFICATION.md:
 --   AvatarEditorService: SearchCatalogAsync, GetItemDetailsAsync, GetBatchItemDetailsAsync,
---                        GetAvatarRulesAsync, GetOutfitDetailsAsync
+--                        GetAvatarRulesAsync, GetOutfitDetailsAsync,
+--                        GetRecommendedAssetsAsync, GetRecommendedBundlesAsync (spike 19 Sep 2026)
 --   AssetService:        GetBundleDetailsAsync
 --   Players:             GetHumanoidDescriptionFromUserIdAsync, GetHumanoidDescriptionFromOutfitIdAsync
 --   Humanoid:            ApplyDescriptionAsync (versi tanpa Async sudah deprecated)
@@ -48,6 +49,7 @@ export type SearchOptions = {
 	maxPrice: number?,
 	includeOffSale: boolean?,
 	creatorName: string?,
+	creatorType: any?, -- Enum.CreatorType (User | Group); tidak diset = semua pencipta
 	limit: number?, -- 10 | 28 | 30 | 60 | 120 (default 30)
 }
 
@@ -252,6 +254,9 @@ local function buildParams(self: RobloxApi, o: SearchOptions): (any, string?)
 	if o.creatorName then
 		params.CreatorName = o.creatorName
 	end
+	if o.creatorType then
+		params.CreatorType = o.creatorType
+	end
 	local limit = o.limit or 30
 	if not VALID_LIMITS[limit] then
 		return nil, "limit harus 10/28/30/60/120"
@@ -292,6 +297,77 @@ function RobloxApi.nextPage(self: RobloxApi, prev: SearchPage): (boolean, any)
 	end
 	local page: SearchPage = { items = pages:GetCurrentPage(), isFinished = pages.IsFinished, pages = pages }
 	return true, page
+end
+
+-- ===== Rekomendasi =====
+-- Spike 19 Sep 2026 (tests/CatalogFilter.studio "4"): GetRecommendedAssetsAsync &
+-- GetRecommendedBundlesAsync mengembalikan 50 entri berbentuk ASING —
+--   aset  : { Creator = {...}, Item = { AssetId, Name, Price }, Product = {...} }  (TANPA AssetType)
+--   bundle: { Id, Name, Creator = {...}, Items = {...}, Product = {...}, BundleType = 3 (ANGKA) }
+-- Tiga bentuk berbeda, tanpa AssetType, dengan BundleType berupa angka. Jadi gateway hanya
+-- mengambil DAFTAR ID; datanya diambil ulang lewat getBatchItemDetails yang bentuknya sama dengan
+-- hasil pencarian -> satu normalizer (CatalogService.toDto) untuk semua kartu.
+-- Tidak di-cache di sini (seperti searchCatalog); ItemDetailService yang menyimpan hasilnya.
+
+local MAX_RECOMMENDED = 25
+
+-- Ambil id dari daftar rekomendasi: buang yang bukan id dan buang item yang sedang dibuka.
+local function pickIds(list: any, limit: number, skip: number, get: (any) -> any): { number }
+	local out: { number } = {}
+	if type(list) ~= "table" then
+		return out
+	end
+	for _, entry in list do
+		if #out >= limit then
+			break
+		end
+		local id = get(entry)
+		if isId(id) and id ~= skip then
+			table.insert(out, id)
+		end
+	end
+	return out
+end
+
+-- assetType: Enum.AvatarAssetType dari item yang sedang dibuka. Return (true, { id }).
+function RobloxApi.getRecommendedAssetIds(
+	self: RobloxApi,
+	assetType: any,
+	contextId: number,
+	limit: number?
+): (boolean, any)
+	if not isId(contextId) then
+		return false, badArg("GetRecommendedAssetsAsync", "contextId tidak valid")
+	end
+	if assetType == nil then
+		return false, badArg("GetRecommendedAssetsAsync", "assetType tidak valid")
+	end
+	local ok, list = self:_call("GetRecommendedAssetsAsync", function()
+		return self._aes:GetRecommendedAssetsAsync(assetType, contextId)
+	end)
+	if not ok then
+		return false, list
+	end
+	return true,
+		pickIds(list, math.clamp(limit or MAX_RECOMMENDED, 1, MAX_RECOMMENDED), contextId, function(entry)
+			return if type(entry) == "table" and type(entry.Item) == "table" then entry.Item.AssetId else nil
+		end)
+end
+
+function RobloxApi.getRecommendedBundleIds(self: RobloxApi, bundleId: number, limit: number?): (boolean, any)
+	if not isId(bundleId) then
+		return false, badArg("GetRecommendedBundlesAsync", "bundleId tidak valid")
+	end
+	local ok, list = self:_call("GetRecommendedBundlesAsync", function()
+		return self._aes:GetRecommendedBundlesAsync(bundleId)
+	end)
+	if not ok then
+		return false, list
+	end
+	return true,
+		pickIds(list, math.clamp(limit or MAX_RECOMMENDED, 1, MAX_RECOMMENDED), bundleId, function(entry)
+			return if type(entry) == "table" then entry.Id else nil
+		end)
 end
 
 -- ===== Bundle & outfit =====

@@ -4,8 +4,11 @@
 --   local ok, d = details:get(123, "Asset")    -- d = ItemDetail.Detail | { code = "BAD_ARG" | "NOT_FOUND" | "FAILED" }
 --   local ok, d = details:get(456, "Bundle")   -- d.parts = part bundle (nil jika BundleService gagal)
 -- Part bundle gagal (FAILED) -> detail tetap dikirim tanpa part & TIDAK di-cache (dicoba lagi berikutnya).
+--   local ok, items = details:getRecommended(123, "Asset", "Hat")  -- baris Recommended (#17d)
 -- Tidak memanggil API Roblox langsung (lewat `api`). `toEnum` bisa diganti saat test.
 
+local ServerScriptService = game:GetService("ServerScriptService")
+local CatalogService = require(ServerScriptService:WaitForChild("Server").Services.CatalogService)
 local Shared = game:GetService("ReplicatedStorage"):WaitForChild("Shared")
 local ItemDetail = require(Shared.Domain.ItemDetail)
 local Limits = require(Shared.Config.Limits)
@@ -16,6 +19,7 @@ local log = Log.new("ItemDetailService")
 
 local MISS_TTL = 60
 local CACHE_SIZE = 500
+local RECOMMENDED_LIMIT = 10 -- satu baris geser di halaman detail
 
 export type Deps = {
 	api: any, -- RobloxApi (getItemDetails)
@@ -32,8 +36,10 @@ export type ItemDetailService = typeof(setmetatable(
 		_api: any,
 		_bundles: any,
 		_enums: { [string]: any },
+		_toEnum: (string, string) -> any,
 		_cache: Cache.Cache,
 		_misses: Cache.Cache,
+		_recs: Cache.Cache,
 	},
 	ItemDetailService
 ))
@@ -65,8 +71,10 @@ function ItemDetailService.new(deps: Deps): ItemDetailService
 		_api = deps.api,
 		_bundles = deps.bundles,
 		_enums = enums,
+		_toEnum = toEnum,
 		_cache = Cache.new({ ttl = Limits.ItemCacheTTL, maxSize = CACHE_SIZE, clock = deps.clock }),
 		_misses = Cache.new({ ttl = MISS_TTL, maxSize = CACHE_SIZE, clock = deps.clock }),
+		_recs = Cache.new({ ttl = Limits.SearchCacheTTL, maxSize = 200, clock = deps.clock }),
 	}, ItemDetailService)
 end
 
@@ -121,6 +129,69 @@ function ItemDetailService.get(self: ItemDetailService, id: number, itemType: st
 		self._cache:set(key, detail)
 	end
 	return true, detail
+end
+
+-- Baris "Recommended". API rekomendasi hanya dipakai untuk mengambil DAFTAR ID — bentuk aslinya
+-- asing dan TANPA AssetType (lihat catatan di RobloxApi). Datanya diambil ulang lewat
+-- getBatchItemDetails, yang bentuknya sama dengan hasil pencarian, jadi kartu Recommended memakai
+-- DTO yang sama persis dengan kartu katalog (harga, pita LIMITED, stok ikut sendiri).
+-- assetType: nama Enum.AvatarAssetType item yang sedang dibuka; wajib untuk Asset, diabaikan Bundle.
+function ItemDetailService.getRecommended(
+	self: ItemDetailService,
+	id: number,
+	itemType: string,
+	assetType: string?
+): (boolean, any)
+	if not isId(id) then
+		return fail("BAD_ARG", "id tidak valid")
+	end
+	local enum = if type(itemType) == "string" then self._enums[itemType] else nil
+	if enum == nil then
+		return fail("BAD_ARG", "itemType tidak valid")
+	end
+
+	local key = ("%s:%d:%s"):format(itemType, id, tostring(assetType))
+	local hit = self._recs:get(key)
+	if hit ~= nil then
+		return true, hit
+	end
+
+	local ok: boolean
+	local ids: any
+	if itemType == "Bundle" then
+		ok, ids = self._api:getRecommendedBundleIds(id, RECOMMENDED_LIMIT)
+	else
+		local at = if type(assetType) == "string" then self._toEnum("AvatarAssetType", assetType) else nil
+		if at == nil then
+			return fail("BAD_ARG", "assetType tidak valid")
+		end
+		ok, ids = self._api:getRecommendedAssetIds(at, id, RECOMMENDED_LIMIT)
+	end
+	if not ok then
+		log.warn("rekomendasi gagal", itemType, id)
+		return fail("FAILED", "gagal memuat rekomendasi")
+	end
+	if #ids == 0 then
+		self._recs:set(key, {})
+		return true, {}
+	end
+
+	local bOk, map = self._api:getBatchItemDetails(ids, enum)
+	if not bOk then
+		log.warn("detail rekomendasi gagal", itemType, id)
+		return fail("FAILED", "gagal memuat rekomendasi")
+	end
+
+	-- Urutan rekomendasi dipertahankan; map hasil batch tidak punya urutan.
+	local items = {}
+	for _, recId in ids do
+		local dto = CatalogService.toDto(map[recId])
+		if dto then
+			table.insert(items, dto)
+		end
+	end
+	self._recs:set(key, items)
+	return true, items
 end
 
 return ItemDetailService

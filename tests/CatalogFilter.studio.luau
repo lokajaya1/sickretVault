@@ -8,6 +8,11 @@
 --   3. Banyak AssetTypes sekaligus (chip "All" per grup) -> jalan?
 --   4. MaxPrice = 0 -> benar-benar cuma item gratis (chip "Free")?
 --   5. CategoryFilter Featured & SalesTypeFilter Collectibles -> ada isinya?
+-- Putaran 4 (19 Sep 2026, PR #17d halaman detail item) menjawab:
+--   6. CatalogSearchParams punya CreatorName / CreatorType? (nama creator bisa diklik)
+--   7. Cari dengan CreatorName saja (tanpa tipe) -> ada hasil? nama ngawur -> kosong?
+--   8. Stok limited: UnitsAvailableForConsumption & TotalQuantity ada di GetItemDetailsAsync?
+--   9. AvatarEditorService:GetRecommendedAssetsAsync / GetRecommendedBundlesAsync -> ada & isinya apa?
 
 local ServerScriptService = game:GetService("ServerScriptService")
 local Server = ServerScriptService:WaitForChild("Server")
@@ -81,7 +86,7 @@ local function run(api: any, label: string, opts: any)
 	)
 end
 
-return function()
+return function(only: string?)
 	local api = RobloxApi.new()
 
 	print(TAG .. " CatalogCategoryFilter: " .. enumNames("CatalogCategoryFilter"))
@@ -91,6 +96,163 @@ return function()
 
 	local A = Enum.AvatarAssetType
 	local B = Enum.BundleType
+
+	-- ===== Putaran 4 (19 Sep 2026, #17d halaman detail item) =====
+	-- Ringkas satu item: persis field yang dibutuhkan halaman detail.
+	local function line17d(it: any): string
+		local restrictions = "-"
+		if type(it.ItemRestrictions) == "table" then
+			restrictions = table.concat(it.ItemRestrictions, "+")
+		end
+		return ("%s | creator=%s/%s | restr=%s units=%s total=%s"):format(
+			tostring(it.Name),
+			tostring(it.CreatorName),
+			tostring(it.CreatorType),
+			restrictions,
+			tostring(it.UnitsAvailableForConsumption),
+			tostring(it.TotalQuantity)
+		)
+	end
+
+	-- Isi satu entri Recommended: tabelnya bersarang (Creator / Item / Product).
+	local function dumpDeep(label: string, t: any)
+		for k, v in pairs(t) do
+			if type(v) == "table" then
+				local inner = {}
+				for k2, v2 in pairs(v) do
+					table.insert(inner, ("%s=%s"):format(tostring(k2), tostring(v2)))
+				end
+				print(("%s %s.%s: %s"):format(TAG, label, tostring(k), table.concat(inner, " ")))
+			else
+				print(("%s %s.%s = %s"):format(TAG, label, tostring(k), tostring(v)))
+			end
+		end
+	end
+
+	local function look(label: string, opts: any, count: number): { any }
+		local okLook, pageLook = api:searchCatalog(opts)
+		if not okLook then
+			print(("%s %s -> GAGAL %s"):format(TAG, label, tostring(pageLook.code)))
+			return {}
+		end
+		local out = {}
+		for i, it in pageLook.items do
+			if i > count then
+				break
+			end
+			table.insert(out, it)
+			print(("%s %s #%d %s"):format(TAG, label, i, line17d(it)))
+		end
+		print(("%s %s -> %d item"):format(TAG, label, #pageLook.items))
+		task.wait(0.15)
+		return out
+	end
+
+	-- 14. Properti CatalogSearchParams yang ADA (sekalian untuk panel "Search Options" nanti).
+	local params = CatalogSearchParams.new()
+	local have = {}
+	for _, propName in
+		{
+			"CreatorName",
+			"CreatorType",
+			"CreatorId",
+			"CreatorTargetId",
+			"MinPrice",
+			"MaxPrice",
+			"IncludeOffSale",
+			"SortAggregation",
+			"SearchKeyword",
+		}
+	do
+		local okProp = pcall(function()
+			return (params :: any)[propName]
+		end)
+		table.insert(have, ("%s=%s"):format(propName, if okProp then "ADA" else "-"))
+	end
+	print(TAG .. " 14 CatalogSearchParams: " .. table.concat(have, " "))
+	print(TAG .. " 14 CreatorType: " .. enumNames("CreatorType"))
+
+	-- 15. Klik nama creator: ambil nama dari hasil pencarian lalu cari balik dengan nama itu.
+	local seed = look("15 patokan Hat", { assetTypes = { A.Hat }, limit = 30 }, 3)
+	local who: string? = nil
+	for _, it in seed do
+		if type(it.CreatorName) == "string" and it.CreatorName ~= "" and it.CreatorName ~= "Roblox" then
+			who = it.CreatorName
+			break
+		end
+	end
+	if who then
+		look("15b creatorName '" .. who .. "' TANPA tipe", { creatorName = who, limit = 30 }, 5)
+		look("15c creatorName '" .. who .. "' + Hat", { creatorName = who, assetTypes = { A.Hat }, limit = 30 }, 5)
+	else
+		print(TAG .. " 15 tidak dapat nama creator dari hasil pencarian")
+	end
+	look("15d creatorName 'Roblox' TANPA tipe", { creatorName = "Roblox", limit = 30 }, 3)
+	look("15e creatorName ngawur", { creatorName = "zzq" .. tostring(math.random(100000, 999999)), limit = 30 }, 3)
+
+	-- 16. Stok limited: apakah search & detail satuan memberi angka yang sama?
+	local salesCollectibles = enumItem("SalesTypeFilter", "Collectibles")
+	if salesCollectibles then
+		local lim = look("16 limited Hat", {
+			salesTypeFilter = salesCollectibles,
+			assetTypes = { A.Hat },
+			limit = 30,
+		}, 4)
+		for i, it in lim do
+			if i <= 3 and type(it.Id) == "number" then
+				local okD, d = api:getItemDetails(it.Id, Enum.AvatarItemType.Asset)
+				if okD then
+					print(("%s 16 detail %d %s"):format(TAG, it.Id, line17d(d)))
+				else
+					print(("%s 16 detail %d GAGAL %s"):format(TAG, it.Id, tostring((d :: any).code)))
+				end
+				task.wait(0.2)
+			end
+		end
+	end
+
+	-- 17. Baris "Recommended" di halaman detail: adakah API-nya, dan apa isinya?
+	local AES = game:GetService("AvatarEditorService")
+	local ctx = seed[1]
+	if ctx then
+		local okRec, rec = pcall(function()
+			return (AES :: any):GetRecommendedAssetsAsync(A.Hat, ctx.Id)
+		end)
+		if okRec and type(rec) == "table" then
+			print(("%s 17 GetRecommendedAssetsAsync(Hat, %d) -> %d hasil"):format(TAG, ctx.Id, #rec))
+			if rec[1] then
+				dumpDeep("17 aset[1]", rec[1])
+			end
+			if rec[2] then
+				dumpDeep("17 aset[2]", rec[2])
+			end
+		else
+			print(TAG .. " 17 GetRecommendedAssetsAsync GAGAL: " .. tostring(rec))
+		end
+	end
+	local okBun, bunPage = api:searchCatalog({ bundleTypes = { B.Shoes }, limit = 10 })
+	local firstBundle = if okBun then bunPage.items[1] else nil
+	if firstBundle then
+		local okRB, recB = pcall(function()
+			return (AES :: any):GetRecommendedBundlesAsync(firstBundle.Id)
+		end)
+		print(
+			("%s 17b GetRecommendedBundlesAsync(%d) -> %s | %s"):format(
+				TAG,
+				firstBundle.Id,
+				tostring(okRB),
+				if okRB and type(recB) == "table" then tostring(#recB) .. " hasil" else tostring(recB)
+			)
+		)
+		if okRB and type(recB) == "table" and recB[1] then
+			dumpDeep("17b bundle[1]", recB[1])
+		end
+	end
+
+	if only == "4" then
+		print(TAG .. " SELESAI (putaran 4 saja)")
+		return
+	end
 
 	-- 1. patokan: satu tipe aset
 	run(api, "1 assetTypes {Hat}", { assetTypes = { A.Hat }, limit = 30 })

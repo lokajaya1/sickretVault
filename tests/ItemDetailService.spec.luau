@@ -132,6 +132,55 @@ return function()
 		eq(st.api, 0, "API tidak dipanggil")
 	end
 
+	-- 5. Baris Recommended (#17d): API rekomendasi memberi ID, datanya dari getBatchItemDetails
+	do
+		local calls = { asset = 0, bundle = 0, batch = 0 }
+		local recApi = {}
+		function recApi.getRecommendedAssetIds(_self: any, assetType: any, contextId: number, limit: number?)
+			calls.asset += 1
+			eq(assetType, "AvatarAssetType.Hat", "assetType jadi Enum")
+			eq(contextId, 1, "id item yang sedang dibuka")
+			eq(limit, 10, "satu baris geser = 10 item")
+			return true, { 7, 8, 9 }
+		end
+		function recApi.getRecommendedBundleIds(_self: any, bundleId: number, _limit: number?)
+			calls.bundle += 1
+			eq(bundleId, 2, "id bundle yang sedang dibuka")
+			return true, { 21 }
+		end
+		function recApi.getBatchItemDetails(_self: any, ids: { number }, _itemType: any)
+			calls.batch += 1
+			local map: { [number]: any } = {}
+			for _, id in ids do
+				if id ~= 8 then -- 8 sengaja tidak dikembalikan API
+					map[id] = { Id = id, ItemType = "Asset", AssetType = "Hat", Name = "R" .. id, Price = id }
+				end
+			end
+			return true, map
+		end
+		function recApi.getItemDetails(_self: any, _id: number, _itemType: any)
+			return false, { code = "NOT_FOUND", message = "x" }
+		end
+		local svc = ItemDetailService.new({ api = recApi, bundles = {}, toEnum = fakeEnum })
+
+		local ok, items = svc:getRecommended(1, "Asset", "Hat")
+		eq(ok, true, "rekomendasi aset ok")
+		eq(#items, 2, "id yang tidak dikembalikan batch dibuang")
+		eq(items[1].id, 7, "urutan rekomendasi dipertahankan")
+		eq(items[2].id, 9, "urutan rekomendasi dipertahankan")
+		eq(items[1].name, "R7", "DTO sama persis dengan kartu katalog")
+
+		svc:getRecommended(1, "Asset", "Hat")
+		eq(calls.asset, 1, "hasil rekomendasi di-cache")
+
+		eq((svc:getRecommended(2, "Bundle")), true, "bundle lewat jalur GetRecommendedBundles")
+		eq(calls.bundle, 1, "jalur bundle dipakai")
+
+		eq(select(2, svc:getRecommended(1, "Asset")).code, "BAD_ARG", "aset tanpa assetType ditolak")
+		eq(select(2, svc:getRecommended(0, "Asset", "Hat")).code, "BAD_ARG", "id tidak valid")
+		eq(select(2, svc:getRecommended(1, "Emote", "Hat")).code, "BAD_ARG", "itemType asing")
+	end
+
 	Log.setSink(nil)
 	print("PASS ItemDetailService.spec")
 end
