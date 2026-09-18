@@ -1,5 +1,6 @@
 --!strict
--- Wardrobe (server): simpan outfit sekarang ke slot, daftar, pakai, timpa, ganti nama, favorit, hapus, setting,
+-- Wardrobe (server): simpan LOOK sekarang (outfit + makeup) ke slot, daftar, pakai, timpa,
+-- ganti nama, favorit, hapus, setting,
 -- plus folder outfit (buat/ganti nama/hapus, pindah satu atau banyak) & hapus banyak sekaligus.
 --   local wardrobe = WardrobeService.new({ playerData = playerData, avatar = avatar })
 --   local res = wardrobe:handle(player, req)  -- req SUDAH lolos WardrobeValidator (YIELD: filter nama)
@@ -26,9 +27,12 @@ local log = Log.new("WardrobeService")
 -- (true, teksTerfilter) | (false, pesanError). Boleh yield.
 export type FilterName = (player: any, text: string) -> (boolean, string?)
 
+-- Slot menyimpan look UTUH: makeup ikut disimpan, dan memakai slot TANPA makeup membersihkan
+-- makeup yang sedang dipakai (slot lama = look tanpa makeup).
 export type Deps = {
 	playerData: any, -- PlayerDataService
-	avatar: any, -- AvatarService (getState, wearOutfit)
+	avatar: any, -- AvatarService (getState, getMakeup, wearOutfit)
+	makeup: any?, -- MakeupService (resolveRows); nil = makeup di slot diabaikan
 	items: any?, -- OutfitItemsService (nama & harga item); nil = op "items" menjawab DISABLED
 	filterName: FilterName?, -- default TextService (Broadcast)
 }
@@ -40,6 +44,7 @@ export type WardrobeService = typeof(setmetatable(
 	{} :: {
 		_data: any,
 		_avatar: any,
+		_makeup: any,
 		_itemsService: any,
 		_filter: FilterName,
 		_busy: { [any]: boolean },
@@ -63,11 +68,20 @@ local function fail(code: string): any
 	return { ok = false, code = code }
 end
 
+-- Makeup yang sedang dipakai (Makeup.State) -- ikut disimpan ke slot.
+local function currentMakeup(self: any, player: any): any
+	if self._avatar.getMakeup == nil then
+		return nil
+	end
+	return self._avatar:getMakeup(player)
+end
+
 function WardrobeService.new(deps: Deps): WardrobeService
 	assert(deps and deps.playerData and deps.avatar, "WardrobeService butuh deps.playerData & deps.avatar")
 	return setmetatable({
 		_data = deps.playerData,
 		_avatar = deps.avatar,
+		_makeup = deps.makeup,
 		_itemsService = deps.items,
 		_filter = deps.filterName or defaultFilter,
 		_busy = {},
@@ -132,24 +146,30 @@ function WardrobeService._save(self: WardrobeService, player: any, name: string?
 		end
 		finalName = filtered
 	end
-	-- ambil state SETELAH yield: yang disimpan = yang sedang dipakai saat ini
+	-- ambil look SETELAH yield: yang disimpan = yang sedang dipakai saat ini
 	local state = self._avatar:getState(player)
 	if state == nil then
 		return fail("NOT_READY")
 	end
-	local summary, code = self._data:addOutfit(player, finalName, state)
+	local summary, code = self._data:addOutfit(player, finalName, state, currentMakeup(self, player))
 	if summary == nil then
 		return fail(code or "FAILED")
 	end
 	return self:_changed(player, { outfit = summary })
 end
 
+-- Pakai isi slot sebagai LOOK utuh. Makeup di slot di-resolve dulu (YIELD: InsertService lewat
+-- gateway; template biasanya sudah di-cache). Slot tanpa makeup -> makeup sekarang dibersihkan.
 function WardrobeService._wear(self: WardrobeService, player: any, id: number): any
-	local state, code = self._data:getOutfit(player, id)
+	local state, rows, code = self._data:getOutfitLook(player, id)
 	if state == nil then
 		return fail(code or "NOT_FOUND")
 	end
-	local ok, wearCode = self._avatar:wearOutfit(player, state)
+	local makeup = nil
+	if self._makeup ~= nil and rows ~= nil and #rows > 0 then
+		makeup = self._makeup:resolveRows(rows) -- yield
+	end
+	local ok, wearCode = self._avatar:wearOutfit(player, state, makeup)
 	if not ok and wearCode ~= "NOTHING" then
 		return fail(wearCode or "FAILED")
 	end
@@ -161,7 +181,7 @@ function WardrobeService._overwrite(self: WardrobeService, player: any, id: numb
 	if state == nil then
 		return fail("NOT_READY")
 	end
-	local ok, code = self._data:overwriteOutfit(player, id, state)
+	local ok, code = self._data:overwriteOutfit(player, id, state, currentMakeup(self, player))
 	if not ok then
 		return fail(code or "FAILED")
 	end

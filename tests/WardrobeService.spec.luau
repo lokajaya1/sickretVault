@@ -39,6 +39,9 @@ local function setup(opts: { filter: any?, noState: boolean? }?)
 	local t = {
 		state = if o.noState then nil else OS.wear(OS.empty(), 20, "Hat"),
 		worn = {} :: { any },
+		wornMakeup = {} :: { any },
+		makeup = nil :: any,
+		resolved = {} :: { any },
 		filtered = {} :: { string },
 		wearCode = nil :: string?,
 	}
@@ -48,12 +51,26 @@ local function setup(opts: { filter: any?, noState: boolean? }?)
 	function avatar.getState(_self: any, _player: any)
 		return t.state
 	end
-	function avatar.wearOutfit(_self: any, _player: any, state: any)
+	function avatar.getMakeup(_self: any, _player: any)
+		return t.makeup
+	end
+	function avatar.wearOutfit(_self: any, _player: any, state: any, mk: any)
 		if t.wearCode then
 			return false, t.wearCode
 		end
 		table.insert(t.worn, state)
+		table.insert(t.wornMakeup, mk or false) -- false = slot tanpa makeup
 		return true, nil
+	end
+	-- MakeupService palsu: baris tersimpan -> Makeup.State
+	local makeupService: any = {}
+	function makeupService.resolveRows(_self: any, rows: any)
+		table.insert(t.resolved, rows)
+		local out: any = {}
+		for _, row in rows do
+			out[row.slot] = { assetId = row.assetId, slot = row.slot, textureId = "rbxassetid://1" }
+		end
+		return out
 	end
 	local itemsService: any = {}
 	function itemsService.list(_self: any, state: any)
@@ -66,6 +83,7 @@ local function setup(opts: { filter: any?, noState: boolean? }?)
 	local svc = WardrobeService.new({
 		playerData = data,
 		avatar = avatar,
+		makeup = makeupService,
 		items = itemsService,
 		filterName = o.filter or function(_player: any, text: string)
 			table.insert(t.filtered, text)
@@ -162,6 +180,37 @@ return function()
 	eq(svc:handle(p, { op = "wear", id = 1 }).code, "NOT_READY", "avatar belum siap")
 	t.wearCode = nil
 	eq(svc:handle(p, { op = "wear", id = 99 }).code, "NOT_FOUND", "slot tidak ada")
+
+	-- 7b. LOOK: makeup ikut tersimpan & ikut dipakai; slot tanpa makeup membersihkan makeup
+	do
+		local s9, t9, d9, p9 = setup()
+		d9:load(p9)
+		t9.makeup = { face = { assetId = 800, slot = "face", textureId = "rbxassetid://1" } }
+		local saved = s9:handle(p9, { op = "save", name = "Look" })
+		eq(saved.ok, true, "save look")
+		eq(saved.outfit.makeup, 1, "makeup ikut tersimpan")
+		eq(saved.outfit.count, 2, "1 item + 1 makeup")
+
+		t9.makeup = nil
+		local polos = s9:handle(p9, { op = "save", name = "Polos" })
+		eq(polos.outfit.makeup, 0, "slot tanpa makeup")
+
+		eq(s9:handle(p9, { op = "wear", id = saved.outfit.id }).ok, true, "pakai slot bermakeup")
+		eq(#t9.resolved, 1, "baris makeup di-resolve")
+		eq(t9.resolved[1][1].assetId, 800, "baris yang benar")
+		eq(t9.wornMakeup[1].face.assetId, 800, "makeup diteruskan ke AvatarService")
+
+		eq(s9:handle(p9, { op = "wear", id = polos.outfit.id }).ok, true, "pakai slot polos")
+		eq(#t9.resolved, 1, "tanpa makeup -> gateway tidak disentuh")
+		eq(t9.wornMakeup[2], false, "makeup nil -> AvatarService membersihkan")
+
+		-- overwrite juga menyimpan makeup yang sedang dipakai
+		t9.makeup = { lip = { assetId = 801, slot = "lip", textureId = "rbxassetid://2" } }
+		local res9 = s9:handle(p9, { op = "overwrite", id = polos.outfit.id })
+		eq(res9.ok, true, "overwrite")
+		local row9 = if res9.outfits[1].id == polos.outfit.id then res9.outfits[1] else res9.outfits[2]
+		eq(row9.makeup, 1, "makeup masuk saat overwrite")
+	end
 
 	-- 8. overwrite / rename / delete membalas daftar terbaru
 	t.state = OS.wear(OS.empty(), 40, "Pants")
