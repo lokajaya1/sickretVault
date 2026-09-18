@@ -364,8 +364,14 @@ end
 -- Cara pakai (dua langkah, dua tab Command Bar):
 --   tab SERVER: local S = require(game.ReplicatedStorage.Tests["MakeupDecal.studio"]) S.publish(133520807586498)
 --   tab CLIENT: local S = require(game.ReplicatedStorage.Tests["MakeupDecal.studio"]) S.previewClient(133520807586498)
--- Lalu lihat dua boneka: kiri = clone template (TPL), kanan = Decal dari texture saja (TEX).
--- Kalau TPL presisi dan TEX meleset, jalur replikasi template TERBUKTI layak.
+-- Tiga boneka berjajar:
+--   TPL  = clone template, ditempel SEBELUM boneka masuk workspace
+--   TPL2 = clone template, boneka masuk workspace dulu lalu tunggu 1 frame, BARU ditempel
+--   TEX  = Decal dari texture saja (pembanding: pasti meleset)
+--
+-- TEMUAN 18 Sep 2026 (putaran 1): WrapTextureTransfer IKUT ter-replikasi ke client (true),
+-- tapi TPL tidak merender apa pun sementara TEX melar menutupi dahi -> dugaan: decal harus
+-- ditempel ke Head yang SUDAH ada di workspace (itulah yang TPL2 uji).
 local TEMPLATE_FOLDER = "SPIKE_MakeupTemplates"
 
 -- [SERVER] LoadAsset lalu simpan template Decal di ReplicatedStorage supaya ikut ter-replikasi.
@@ -400,7 +406,21 @@ function M.publish(assetId: number)
 	root:Destroy()
 end
 
--- [CLIENT] Dua boneka berjajar: TPL (clone template replikasi) vs TEX (Decal dari texture saja).
+-- Tempel satu decal ke Head model preview; `kind` = "TPL" | "TPL2" | "TEX".
+local function attachPreview(head: BasePart, kind: string, template: Instance)
+	local decal: Decal
+	if kind == "TEX" then
+		decal = Instance.new("Decal")
+		decal.Texture = (template :: Decal).Texture
+	else
+		decal = (template :: Decal):Clone()
+	end
+	decal.Name = PREFIX .. kind
+	decal.Face = Enum.NormalId.Front
+	decal.Parent = head
+end
+
+-- [CLIENT] Tiga boneka berjajar: TPL / TPL2 / TEX (lihat catatan di atas).
 function M.previewClient(assetId: number)
 	local Players = game:GetService("Players")
 	local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -429,7 +449,9 @@ function M.previewClient(assetId: number)
 	local desc = (humanoid :: Humanoid):GetAppliedDescription()
 	local cam = workspace.CurrentCamera
 	local base = cam.CFrame * CFrame.new(0, 0, -8)
-	for i, variant in { "TPL", "TEX" } do
+	local RunService = game:GetService("RunService")
+	local variants = { "TPL", "TPL2", "TEX" }
+	for i, variant in variants do
 		local okModel, model = pcall(function()
 			return Players:CreateHumanoidModelFromDescriptionAsync(desc, Enum.HumanoidRigType.R15)
 		end)
@@ -440,28 +462,30 @@ function M.previewClient(assetId: number)
 		local dummy = model :: Model
 		dummy.Name = DUMMY_PREFIX .. variant
 		local head = dummy:FindFirstChild("Head")
-		if head then
-			local decal: Decal
-			if variant == "TPL" then
-				decal = (template :: Decal):Clone()
-			else
-				decal = Instance.new("Decal")
-				decal.Texture = (template :: Decal).Texture
+		if i == 1 and head then
+			-- apakah Head model preview punya WrapTarget seperti Head karakter asli?
+			say("preview head %s", describe(head))
+			for _, child in (head :: Instance):GetChildren() do
+				say("preview head anak: %s", describe(child))
 			end
-			decal.Name = PREFIX .. variant
-			decal.Face = Enum.NormalId.Front
-			decal.Parent = head
+		end
+		if head and variant ~= "TPL2" then
+			attachPreview(head :: BasePart, variant, template) -- sebelum masuk workspace
 		end
 		labelOf(dummy, variant)
-		dummy:PivotTo(base * CFrame.new((i - 1.5) * 4, 0, 0) * CFrame.Angles(0, math.pi, 0))
+		dummy:PivotTo(base * CFrame.new((i - 2) * 4, 0, 0) * CFrame.Angles(0, math.pi, 0))
 		local dummyRoot = dummy:FindFirstChild("HumanoidRootPart")
 		if dummyRoot then
 			(dummyRoot :: BasePart).Anchored = true
 		end
 		dummy.Parent = workspace
+		if head and variant == "TPL2" then
+			RunService.Heartbeat:Wait() -- Head sudah di workspace & WrapTarget sempat aktif
+			attachPreview(head :: BasePart, variant, template)
+		end
 		say("boneka %s siap (client-side, hanya kamu yang lihat)", variant)
 	end
-	say("previewClient: TPL = clone template, TEX = texture saja. Hapus dengan S.clear()")
+	say("previewClient: TPL=sebelum parent, TPL2=sesudah parent, TEX=texture saja. Hapus: S.clear()")
 end
 
 return M
