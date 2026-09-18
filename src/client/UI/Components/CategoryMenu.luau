@@ -13,6 +13,7 @@ local PanelLayout = require(Shared.Util.PanelLayout)
 local Tokens = require(script.Parent.Parent.Theme.Tokens)
 
 local TONE_MIX = 0.35 -- seberapa jauh warna kartu bergeser ke Accent (0 = polos)
+local SOON_SECONDS = 1.2 -- lama label "SOON" ditampilkan (pola tombol Stores)
 local LABEL_PAD = 10
 local WATERMARK_TRANSPARENCY = 0.88
 
@@ -136,10 +137,18 @@ function CategoryMenu.new(props: Props): CategoryMenu
 			Parent = card,
 		})
 
+		if group.soon then
+			labels[group.id].TextColor3 = Tokens.Color.TextMuted
+		end
+
 		cards[group.id] = card
 		table.insert(
 			conns,
 			card.Activated:Connect(function()
+				if group.soon then
+					self:_flashSoon(group)
+					return
+				end
 				props.onGroup(group)
 			end)
 		)
@@ -177,6 +186,20 @@ function CategoryMenu.setArea(self: CategoryMenu, x: number, y: number, w: numbe
 		self._marks[group.id].TextSize = size * 2
 	end
 	root.CanvasSize = UDim2.fromOffset(0, totalH)
+end
+
+-- Kartu grup yang belum ada isinya: label berkedip "SOON" sebentar (pola tombol Stores).
+function CategoryMenu._flashSoon(self: CategoryMenu, group: CatalogMenu.Group)
+	local label = self._labels[group.id]
+	if label == nil or label.Text ~= group.label then
+		return -- sedang berkedip
+	end
+	label.Text = "SOON"
+	task.delay(SOON_SECONDS, function()
+		if label.Parent then
+			label.Text = group.label
+		end
+	end)
 end
 
 function CategoryMenu.setVisible(self: CategoryMenu, visible: boolean)
