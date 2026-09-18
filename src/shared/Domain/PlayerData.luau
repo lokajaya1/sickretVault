@@ -5,6 +5,8 @@
 --   local state, err = PlayerData.decodeOutfit(data.lastOutfit) -- muat (divalidasi ulang)
 --   data.lastMakeup = PlayerData.encodeMakeup(makeupState)      -- makeup: assetId + slot saja
 --   local rows = PlayerData.decodeMakeup(data.lastMakeup)       -- texture di-resolve ulang saat join
+--   local enc = PlayerData.encodeOutfit(state, makeupState)     -- slot wardrobe = SATU look utuh
+--   local rows = PlayerData.makeupOf(enc)                       -- makeup di dalam slot itu
 -- Data dari DataStore TIDAK dipercaya penuh: skema bisa berubah / rusak -> decode memvalidasi semuanya.
 
 local Types = require(script.Parent.Types)
@@ -127,7 +129,9 @@ local GROUPS = {
 }
 
 -- OutfitState -> tabel ringkas (slot kosong dibuang, key pendek).
-function PlayerData.encodeOutfit(state: State): any
+-- `makeup` (opsional, Makeup.State) ikut disimpan di `mk` supaya satu slot wardrobe = satu LOOK utuh.
+-- Slot lama tanpa `mk` dianggap "tanpa makeup" (memakainya akan membersihkan makeup yang dipakai).
+function PlayerData.encodeOutfit(state: State, makeup: any?): any
 	local out: { [string]: any } = { ov = PlayerData.OUTFIT_VERSION, r = state.rig }
 	for _, g in GROUPS do
 		local group = (state :: any)[g.field]
@@ -175,7 +179,18 @@ function PlayerData.encodeOutfit(state: State): any
 		sc[k] = state.scales[k]
 	end
 	out.sc = sc
+	if makeup ~= nil then
+		out.mk = PlayerData.encodeMakeup(makeup) -- nil bila tidak ada makeup (tidak menambah ukuran)
+	end
 	return out
+end
+
+-- Makeup di dalam outfit tersimpan -> { { assetId, slot }, ... }. Kosong = look tanpa makeup.
+function PlayerData.makeupOf(raw: any): { { assetId: number, slot: string } }
+	if type(raw) ~= "table" then
+		return {}
+	end
+	return PlayerData.decodeMakeup(raw.mk)
 end
 
 -- Tabel ringkas -> OutfitState. Return (state, nil) | (nil, alasan).
