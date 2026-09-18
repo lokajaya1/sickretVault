@@ -59,16 +59,13 @@ M.Rigid = {
 	EyelashAccessory = true,
 }
 
--- Tipe yang ADA di katalog tapi TIDAK bisa dipakai lewat HumanoidDescription.
--- Spike 18 Sep 2026: SetAccessories + ApplyDescriptionAsync mengembalikan true, tapi item
--- tidak pernah muncul di GetAppliedDescription():GetAccessories() (varian rigid maupun
--- layered+Order). Eyelash & Eyebrow TERBUKTI terpasang, jadi tidak masuk daftar ini.
+-- Tipe yang ADA di katalog tapi TIDAK bisa dipasang ke avatar sama sekali.
+-- AvatarBackground bukan barang yang dipakai: di CAC ia latar area preview (PR terpisah).
+-- Makeup DIKELUARKAN dari daftar ini sejak PR #18: tidak lewat HumanoidDescription, tapi
+-- ditempel sebagai Decal di Head oleh MakeupService -> tombol TRY dihidupkan lagi.
 -- Dipakai UI untuk menyembunyikan tombol TRY, bukan untuk menyembunyikan itemnya.
 M.NotWearable = {
 	AvatarBackground = true,
-	FaceMakeup = true,
-	LipMakeup = true,
-	EyeMakeup = true,
 }
 
 M.BodyPartSlots = { "Head", "Torso", "LeftArm", "RightArm", "LeftLeg", "RightLeg" }
