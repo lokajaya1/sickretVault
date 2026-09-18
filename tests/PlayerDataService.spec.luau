@@ -140,6 +140,24 @@ return function()
 		eq(#svc:getLastMakeup(p), 0, "makeup ikut hilang")
 	end
 
+	-- 2c. latar area preview: assetId saja, ikut sesi, id cacat = lepas latar
+	do
+		local svc, t = setup({ data = { v = 4, lastBackground = 121199209890990 } })
+		local p = player("B3", 72)
+		svc:load(p)
+		eq(svc:getBackground(p), 121199209890990, "latar lama ikut naik ke v5")
+		eq(svc:setBackground(p, 555), true, "ganti latar")
+		eq(t.profile.Data.lastBackground, 555, "tersimpan sebagai angka polos")
+		eq(svc:getBackground(p), 555, "baca latar baru")
+		eq(svc:setBackground(p, nil), true, "lepas latar")
+		eq(t.profile.Data.lastBackground, nil, "terhapus")
+		eq(svc:setBackground(p, "rusak"), true, "id cacat diterima tapi tidak disimpan")
+		eq(svc:getBackground(p), nil, "id cacat = tanpa latar")
+		svc:release(p)
+		eq(svc:setBackground(p, 555), false, "setelah release tulis diabaikan")
+		eq(svc:getBackground(p), nil, "setelah release tidak ada sesi")
+	end
+
 	-- 3. outfit tersimpan rusak -> nil (fallback avatar asli)
 	do
 		local svc = setup({ data = { v = 1, lastOutfit = { ov = 1, r = "R99" } } })

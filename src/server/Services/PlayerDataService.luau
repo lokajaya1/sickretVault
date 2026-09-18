@@ -6,6 +6,7 @@
 --   data:getLastOutfit(player)              -- OutfitState? (sudah divalidasi)
 --   data:setLastOutfit(player, state | nil, makeup?) -- setiap look berubah (murah, tanpa yield)
 --   data:getLastMakeup(player)              -- { { assetId, slot } } (di dalam lastOutfit sejak PR ini)
+--   data:getBackground(player) / setBackground(player, assetId | nil) -- latar area preview (v5)
 --   data:setSetting(player, "restoreOutfit", false)  -- toggle "pakai outfit terakhir"
 --   data:addOutfit(player, name?, state, makeup?) / getOutfit / getOutfitLook / renameOutfit /
 --     deleteOutfit / favoriteOutfit / listOutfits
@@ -195,6 +196,29 @@ function PlayerDataService.getLastMakeup(self: PlayerDataService, player: any): 
 		return rows
 	end
 	return PlayerData.decodeMakeup(data.lastMakeup)
+end
+
+-- ===== Latar area preview (v5) =====
+-- Yang disimpan cuma assetId. ImageId + Color diambil ulang lewat gateway AssetDecal saat dipakai,
+-- jadi latar pemain ikut berubah kalau kreatornya memperbarui aset.
+
+-- assetId AvatarBackground yang terakhir dipakai (nil = tidak ada / tidak valid).
+function PlayerDataService.getBackground(self: PlayerDataService, player: any): number?
+	local data = readable(self, player)
+	if data == nil then
+		return nil
+	end
+	return PlayerData.decodeBackground(data.lastBackground)
+end
+
+-- nil (atau id cacat) = latar dilepas. Return true bila ditulis.
+function PlayerDataService.setBackground(self: PlayerDataService, player: any, assetId: any): boolean
+	local data = writable(self, player)
+	if data == nil then
+		return false
+	end
+	data.lastBackground = PlayerData.encodeBackground(assetId)
+	return true
 end
 
 -- ===== Setting =====
