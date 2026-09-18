@@ -14,6 +14,7 @@
 
 local Shared = game:GetService("ReplicatedStorage"):WaitForChild("Shared")
 local ItemDetail = require(Shared.Domain.ItemDetail)
+local AssetTypeMap = require(game:GetService("ReplicatedStorage"):WaitForChild("Shared").Domain.AssetTypeMap)
 local Tokens = require(script.Parent.Parent.Theme.Tokens)
 local CartIcon = require(script.Parent.Parent.Util.CartIcon)
 
@@ -659,6 +660,7 @@ function ItemDetailPanel.refreshWorn(self: ItemDetailPanel)
 		return
 	end
 	local worn = self._props.isWorn(d)
+	self._toggle.Visible = AssetTypeMap.isWearable(d.assetType)
 	self._toggle.Text = if worn then "Remove" else "Try On"
 	self._toggle.BackgroundColor3 = if worn then Tokens.Color.Danger else Tokens.Color.Accent
 	for _, tile in self._tiles do

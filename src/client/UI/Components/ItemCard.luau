@@ -12,6 +12,7 @@
 --   card.instance.Parent = grid
 --   card:setItem(itemLain)   card:setSelected(true)   card:setArmed(true)   card:setInCart(true)   card:destroy()
 
+local AssetTypeMap = require(game:GetService("ReplicatedStorage"):WaitForChild("Shared").Domain.AssetTypeMap)
 local Tokens = require(script.Parent.Parent.Theme.Tokens)
 local SecondaryAction = require(script.Parent.Parent.Util.SecondaryAction)
 local CartIcon = require(script.Parent.Parent.Util.CartIcon)
@@ -274,6 +275,7 @@ function ItemCard.new(props: Props): ItemCard
 	list.Parent = stack
 
 	local try = overlayButton("Try", "TRY", Tokens.Color.Accent, 1, stack)
+	try.Visible = AssetTypeMap.isWearable(props.item.assetType)
 	local buy = overlayButton("Buy", "BUY", Tokens.Color.Robux, 2, stack)
 
 	local info = Instance.new("TextButton")
@@ -409,6 +411,7 @@ function ItemCard.setItem(self: ItemCard, item: Item)
 	self._buy.BackgroundColor3 = if forSale then Tokens.Color.Accent else Tokens.Color.PanelRaised
 	self._buy.TextColor3 = if forSale then Tokens.Color.AccentText else Tokens.Color.TextMuted
 	self._buy.AutoButtonColor = forSale
+	self._try.Visible = AssetTypeMap.isWearable(item.assetType)
 	self._cart.Visible = self._hasCart and forSale
 	self:setInCart(false) -- pemanggil (CatalogPanel) mengatur ulang sesudah setItem
 	self:setArmed(false) -- kartu dipakai ulang untuk item lain

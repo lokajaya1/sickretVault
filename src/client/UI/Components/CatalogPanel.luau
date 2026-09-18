@@ -32,6 +32,7 @@ local STATUS_H = 28
 local STATUS_H_COMPACT = 20
 local CART_BTN_W = 60
 local BACK_W = 36
+local TAB_HOLD_SECONDS = 0.5 -- lama posisi geser baris tab dijaga setelah isi berubah
 
 export type Props = {
 	controller: any, -- CatalogController
@@ -65,6 +66,9 @@ export type CatalogPanel = typeof(setmetatable(
 		_groupBar: ScrollingFrame,
 		_groupTabs: { [string]: TextButton },
 		_filterTabs: { [string]: TextButton },
+		_groupScroll: number, -- posisi geser baris grup (baris pertama)
+		_groupHoldUntil: number,
+		_tabHoldUntil: number, -- os.clock() sampai kapan posisi geser dijaga (lihat _keepTabScroll)
 		_tabScroll: number, -- posisi geser baris kedua (dipulihkan setelah render ulang)
 		_page: "menu" | "list",
 		_group: CatalogMenu.Group?,
@@ -345,6 +349,7 @@ function CatalogPanel.new(props: Props): CatalogPanel
 			conns,
 			b.Activated:Connect(function()
 				self:_setWearing(false)
+				self:_keepTabScroll()
 				spawnCall(ctl.setCategory, ctl, cat.id)
 			end)
 		)
@@ -422,6 +427,9 @@ function CatalogPanel.new(props: Props): CatalogPanel
 		_groupTabs = groupTabs,
 		_filterTabs = filterTabs,
 		_tabScroll = 0,
+		_tabHoldUntil = 0,
+		_groupScroll = 0,
+		_groupHoldUntil = 0,
 		_page = "menu",
 		_group = nil,
 		_hasError = false,
@@ -525,10 +533,20 @@ function CatalogPanel.new(props: Props): CatalogPanel
 	table.insert(
 		conns,
 		tabBar:GetPropertyChangedSignal("CanvasPosition"):Connect(function()
-			local x = tabBar.CanvasPosition.X
-			if x > 0 then
-				self._tabScroll = x
+			if os.clock() < self._tabHoldUntil then
+				return -- sedang dijaga: perubahan dari tata letak, bukan dari pemain
 			end
+			self._tabScroll = tabBar.CanvasPosition.X
+		end)
+	)
+
+	table.insert(
+		conns,
+		groupBar:GetPropertyChangedSignal("CanvasPosition"):Connect(function()
+			if os.clock() < self._groupHoldUntil then
+				return
+			end
+			self._groupScroll = groupBar.CanvasPosition.X
 		end)
 	)
 	-- Isi tab berubah -> Roblox menghitung ulang canvas DAN membuang posisi gulir; kembalikan.
@@ -815,7 +833,7 @@ function CatalogPanel.openGroup(self: CatalogPanel, group: CatalogMenu.Group)
 	self._grid.CanvasPosition = Vector2.zero
 	self._tabScroll = 0 -- grup baru: baris kedua mulai dari kiri lagi
 	self._tabBar.CanvasPosition = Vector2.zero
-	self._groupBar.CanvasPosition = Vector2.zero
+	self:_keepGroupScroll() -- baris grup tetap di posisi pemain (dulu dipaksa ke 0 di sini)
 	self:_applyPage()
 	spawnCall(self._props.controller.setFilter, self._props.controller, group.id, "all")
 end
@@ -830,6 +848,7 @@ function CatalogPanel._setFilter(self: CatalogPanel, filterId: string)
 	self._wearing = false
 	self._lastCount = 0
 	self._grid.CanvasPosition = Vector2.zero
+	self:_keepTabScroll()
 	spawnCall(self._props.controller.setFilter, self._props.controller, group.id, filterId)
 end
 
@@ -881,22 +900,47 @@ end
 
 -- Kembalikan posisi geser baris tab setelah tata letaknya dihitung ulang.
 -- Dicoba beberapa kali: ukuran canvas kadang baru selesai dihitung satu-dua frame kemudian,
--- dan setiap perhitungan ulang membuang posisi gulir.
-function CatalogPanel._restoreTabScroll(self: CatalogPanel)
+-- Jaga posisi geser baris tab selama TAB_HOLD_SECONDS.
+-- Roblox menulis ulang CanvasPosition ke 0 setiap kali isi/ukuran kanvas dihitung ulang
+-- (ganti kategori, tab aktif berubah lebar), dan itu terjadi beberapa frame SETELAH klik,
+-- jadi menyetel ulang sekali saja tidak cukup. Selama dijaga, listener di atas berhenti
+-- merekam supaya angka 0 hasil reset tidak menggantikan posisi pemain.
+function CatalogPanel._keepTabScroll(self: CatalogPanel)
 	local want = self._tabScroll
-	if want <= 0 then
-		return
-	end
-	local function put()
-		if self.instance.Parent and self._page == "list" and self._tabScroll == want then
-			local bar = self._tabBar
-			local maxX = math.max(0, bar.AbsoluteCanvasSize.X - bar.AbsoluteWindowSize.X)
-			bar.CanvasPosition = Vector2.new(math.min(want, maxX), 0)
+	self._tabHoldUntil = os.clock() + TAB_HOLD_SECONDS
+	task.spawn(function()
+		while os.clock() < self._tabHoldUntil do
+			if self.instance.Parent == nil or self._page ~= "list" then
+				return
+			end
+			if math.abs(self._tabBar.CanvasPosition.X - want) > 0.5 then
+				self._tabBar.CanvasPosition = Vector2.new(want, 0)
+			end
+			task.wait()
 		end
-	end
-	task.defer(put)
-	task.delay(0.05, put)
-	task.delay(0.15, put)
+	end)
+end
+
+function CatalogPanel._restoreTabScroll(self: CatalogPanel)
+	self:_keepTabScroll()
+	self:_keepGroupScroll()
+end
+
+-- Sama seperti _keepTabScroll, untuk baris grup (baris pertama).
+function CatalogPanel._keepGroupScroll(self: CatalogPanel)
+	local want = self._groupScroll
+	self._groupHoldUntil = os.clock() + TAB_HOLD_SECONDS
+	task.spawn(function()
+		while os.clock() < self._groupHoldUntil do
+			if self.instance.Parent == nil or self._page ~= "list" then
+				return
+			end
+			if math.abs(self._groupBar.CanvasPosition.X - want) > 0.5 then
+				self._groupBar.CanvasPosition = Vector2.new(want, 0)
+			end
+			task.wait()
+		end
+	end)
 end
 
 function CatalogPanel.setVisible(self: CatalogPanel, visible: boolean)

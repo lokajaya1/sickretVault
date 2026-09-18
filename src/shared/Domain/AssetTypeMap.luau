@@ -59,6 +59,18 @@ M.Rigid = {
 	EyelashAccessory = true,
 }
 
+-- Tipe yang ADA di katalog tapi TIDAK bisa dipakai lewat HumanoidDescription.
+-- Spike 18 Sep 2026: SetAccessories + ApplyDescriptionAsync mengembalikan true, tapi item
+-- tidak pernah muncul di GetAppliedDescription():GetAccessories() (varian rigid maupun
+-- layered+Order). Eyelash & Eyebrow TERBUKTI terpasang, jadi tidak masuk daftar ini.
+-- Dipakai UI untuk menyembunyikan tombol TRY, bukan untuk menyembunyikan itemnya.
+M.NotWearable = {
+	AvatarBackground = true,
+	FaceMakeup = true,
+	LipMakeup = true,
+	EyeMakeup = true,
+}
+
 M.BodyPartSlots = { "Head", "Torso", "LeftArm", "RightArm", "LeftLeg", "RightLeg" }
 M.AnimationSlots = {
 	"IdleAnimation",
@@ -108,6 +120,14 @@ end
 
 function M.isLayered(assetTypeName: string): boolean
 	return M.Layered[assetTypeName] == true
+end
+
+-- Bisa dicoba di avatar? Bundle (tanpa assetType) dianggap bisa.
+function M.isWearable(assetTypeName: string?): boolean
+	if assetTypeName == nil then
+		return true
+	end
+	return M.NotWearable[assetTypeName] ~= true
 end
 
 return M
