@@ -503,6 +503,12 @@ function App.mount(opts: Options?): App
 		refreshStrip()
 	end)
 	table.insert(self._conns, { Disconnect = unsubscribe } :: any)
+
+	-- Latar area preview (AvatarBackground) -> SEMUA ViewportFrame preview sekaligus.
+	local unBackground = outfit:onBackground(function(bg)
+		previews:setBackground(bg)
+	end)
+	table.insert(self._conns, { Disconnect = unBackground } :: any)
 	task.spawn(outfit.start, outfit) -- yield (GetState)
 
 	-- Keranjang berubah -> angka di header, tanda 🛒 di kartu & panel detail.
