@@ -50,6 +50,13 @@ return function()
 	eq(table.concat(ids, ","), "20,21,31,30,111,40", "urutan id")
 	eq(#OutfitItemsService.idsOf(OS.empty()), 0, "outfit kosong")
 
+	-- 1b. makeup ikut PALING AKHIR (dan tidak menggeser urutan lama)
+	local mkRows = { { assetId = 800, slot = "face" }, { assetId = 801, slot = "lip" } }
+	eq(table.concat(OutfitItemsService.idsOf(sample(), mkRows), ","), "20,21,31,30,111,40,800,801", "urutan + makeup")
+	eq(table.concat(OutfitItemsService.idsOf(OS.empty(), mkRows), ","), "800,801", "makeup saja")
+	eq(#OutfitItemsService.idsOf(sample(), "rusak"), 6, "baris makeup rusak diabaikan")
+	eq(#OutfitItemsService.idsOf(sample(), { "x", { assetId = 20 } }), 6, "id ganda/cacat diabaikan")
+
 	-- 2. harga: Price, lalu LowestPrice, lalu tidak dijual
 	local svc, t = setup({
 		[20] = { Name = "Topi", AssetType = "Hat", Price = 50, CreatorName = "Roblox" },
@@ -84,6 +91,19 @@ return function()
 
 	-- 4. API gagal / state rusak
 	local svc3 = setup({}, false)
+	-- makeup masuk ke daftar & ikut dijumlahkan
+	local svcM, tM = setup({
+		[20] = { Name = "Topi", AssetType = "Hat", Price = 50 },
+		[800] = { Name = "Blush", AssetType = "FaceMakeup", Price = 10 },
+	})
+	local okM, resM = svcM:list(OS.wear(OS.empty(), 20, "Hat"), { { assetId = 800, slot = "face" } })
+	eq(okM, true, "list dengan makeup")
+	eq(#resM.items, 2, "dua item")
+	eq(resM.items[2].name, "Blush", "makeup di urutan terakhir")
+	eq(resM.items[2].assetType, "FaceMakeup", "tipe makeup")
+	eq(resM.total, 60, "harga makeup ikut dijumlahkan")
+	eq(tM.asked[#tM.asked], 800, "id makeup ikut diminta ke API")
+
 	eq(select(2, svc3:list(sample())).code, "FAILED", "api gagal")
 	eq(select(2, svc3:list({} :: any)).code, "BAD_ARG", "state rusak")
 

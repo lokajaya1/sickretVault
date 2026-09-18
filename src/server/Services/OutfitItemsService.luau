@@ -1,9 +1,10 @@
 --!strict
 -- Detail item di dalam satu outfit tersimpan (untuk halaman detail Saved Outfits).
 --   local items = OutfitItemsService.new({ api = api })
---   local ok, res = items:list(state)   -- YIELD (GetBatchItemDetailsAsync lewat gateway)
+--   local ok, res = items:list(state, makeupRows)  -- YIELD (GetBatchItemDetailsAsync lewat gateway)
 --   res = { items = { { id, name, price, assetType, creator, isForSale } }, total = 123, missing = 1 }
--- Urutan: aksesori (urut dipakai) -> classic -> body part -> animasi, supaya tampilan stabil.
+-- Urutan: aksesori (urut dipakai) -> classic -> body part -> animasi -> makeup, supaya tampilan
+-- stabil. Makeup ada di luar OutfitState, jadi barisnya ({ assetId, slot }) dikirim terpisah.
 -- Harga mengikuti aturan katalog: Price, kalau nil pakai LowestPrice; keduanya nil = tidak dijual.
 -- `total` hanya menjumlahkan item yang ada harganya (item tidak dijual tidak dihitung).
 -- Tidak memanggil API Roblox langsung (lewat `api`); `toEnum` bisa diganti saat test.
@@ -63,8 +64,9 @@ function OutfitItemsService.new(deps: Deps): OutfitItemsService
 	}, OutfitItemsService)
 end
 
--- Kumpulkan assetId dari OutfitState dengan urutan stabil (tanpa duplikat).
-function OutfitItemsService.idsOf(state: State): { number }
+-- Kumpulkan assetId dari LOOK dengan urutan stabil (tanpa duplikat).
+-- `makeupRows` = hasil PlayerData.makeupOf / MakeupService (urut face -> eye -> lip).
+function OutfitItemsService.idsOf(state: State, makeupRows: any?): { number }
 	local out: { number } = {}
 	local seen: { [number]: boolean } = {}
 	local function add(id: any)
@@ -98,6 +100,14 @@ function OutfitItemsService.idsOf(state: State): { number }
 			add(group[slot].id)
 		end
 	end
+
+	if type(makeupRows) == "table" then
+		for _, row in makeupRows :: any do
+			if type(row) == "table" then
+				add(row.assetId)
+			end
+		end
+	end
 	return out
 end
 
@@ -121,11 +131,11 @@ local function toItem(id: number, raw: any): Item?
 end
 
 -- YIELD. Return (true, Result) | (false, { code = "BAD_ARG" | "FAILED" }).
-function OutfitItemsService.list(self: OutfitItemsService, state: State): (boolean, any)
+function OutfitItemsService.list(self: OutfitItemsService, state: State, makeupRows: any?): (boolean, any)
 	if type(state) ~= "table" or type(state.accessories) ~= "table" then
 		return false, { code = "BAD_ARG" }
 	end
-	local ids = OutfitItemsService.idsOf(state)
+	local ids = OutfitItemsService.idsOf(state, makeupRows)
 	if #ids == 0 then
 		return true, { items = {}, total = 0, missing = 0 }
 	end

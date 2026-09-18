@@ -213,11 +213,11 @@ function WardrobeService._items(self: WardrobeService, player: any, id: number):
 	if self._itemsService == nil then
 		return fail("DISABLED")
 	end
-	local state, code = self._data:getOutfit(player, id)
+	local state, rows, code = self._data:getOutfitLook(player, id)
 	if state == nil then
 		return fail(code or "NOT_FOUND")
 	end
-	local ok, res = self._itemsService:list(state)
+	local ok, res = self._itemsService:list(state, rows)
 	if not ok then
 		return fail((res and res.code) or "FAILED")
 	end
