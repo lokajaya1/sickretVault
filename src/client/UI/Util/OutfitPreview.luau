@@ -8,6 +8,7 @@
 --   handle.cancel()          -- kartu dihapus / dibangun ulang
 --   local live = previews:mountCurrent(viewport, { background = true }) -- AVATAR SEKARANG
 --   live.refresh()           -- look berubah (outfit / makeup) -> ambil ulang dari karakter
+--   live.setLive(true)       -- cermin pose: kartu meniru gerak karakter asli tiap frame
 --   previews:setBackground({ image = "rbxassetid://...", color = Color3? } | nil)
 --   Latar hanya terpasang di mount yang MEMINTANYA (`{ background = true }`), yaitu preview yang
 --   mewakili avatar SEKARANG. Kartu Saved Outfits & halaman detail TIDAK memakainya: kartu itu
@@ -214,6 +215,7 @@ export type Handle = {
 	setSpin: (boolean) -> (), -- putar otomatis (halaman detail)
 	addYaw: (number) -> (), -- putar manual (drag); menghentikan sementara efek putaran otomatis
 	refresh: (() -> ())?, -- hanya ada di mountCurrent: ambil ulang rupa karakter
+	setLive: ((boolean) -> ())?, -- hanya ada di mountCurrent: cermin pose hidup/mati
 }
 
 -- Satu viewport yang sedang dipajang (kamera mengelilingi model).
@@ -601,6 +603,35 @@ local function cloneCharacter(): Model?
 	return copy :: Model
 end
 
+-- ===== Cermin pose =====
+-- Spike 18 Sep: rig di ViewportFrame BEKU (0,000 stud) dan `Animator:StepAnimation` sudah tidak
+-- ada -> animasi tidak bisa diputar di dalam kartu. Tapi karakter ASLI di workspace memang
+-- beranimasi (animation pack pemain), jadi kartu cukup MENYALIN posenya tiap frame:
+-- MIRROR 4,071 stud vs STATIC 0,352 stud dalam 3 detik. Efeknya animation pack apa pun ikut,
+-- tanpa memuat satu Animation pun.
+type Pose = { s: BasePart, d: BasePart }
+
+-- Clone dibuat dari model yang sama -> urutan anaknya identik, jadi pasangan cukup dicocokkan
+-- posisi per posisi (nama tidak dipakai: "Handle" milik aksesori banyak yang kembar).
+local function pairParts(src: Instance, dst: Instance): { Pose }
+	local out: { Pose } = {}
+	local function walk(a: Instance, b: Instance)
+		local bc = b:GetChildren()
+		for i, child in a:GetChildren() do
+			local mate = bc[i]
+			if mate == nil or mate.ClassName ~= child.ClassName then
+				continue
+			end
+			if child:IsA("BasePart") and mate:IsA("BasePart") then
+				table.insert(out, { s = child :: BasePart, d = mate :: BasePart })
+			end
+			walk(child, mate)
+		end
+	end
+	walk(src, dst)
+	return out
+end
+
 -- Kartu avatar SEKARANG. `refresh()` dipanggil pemakai tiap look berubah; karakter baru
 -- (respawn / ApplyDescription) ditangani sendiri lewat CharacterAdded.
 function OutfitPreview.mountCurrent(self: OutfitPreview, viewport: ViewportFrame, opts: MountOptions?): Handle
@@ -640,6 +671,10 @@ function OutfitPreview.mountCurrent(self: OutfitPreview, viewport: ViewportFrame
 	local model: Model? = nil
 	local pending = false
 	local conns: { RBXScriptConnection } = {}
+	local poses: { Pose } = {}
+	local srcRoot: BasePart? = nil
+	local dstRoot: BasePart? = nil
+	local mirrorConn: RBXScriptConnection? = nil
 
 	local function refit()
 		local shown = model
@@ -664,6 +699,13 @@ function OutfitPreview.mountCurrent(self: OutfitPreview, viewport: ViewportFrame
 			return -- karakter belum ada; CharacterAdded akan memanggil lagi
 		end
 		prepare(fresh)
+		-- Pose diatur PENUH oleh kita (cermin), jadi semua part di-anchor: weld/constraint tidak
+		-- boleh menarik balik CFrame yang disetel tiap frame.
+		for _, x in fresh:GetDescendants() do
+			if x:IsA("BasePart") then
+				(x :: BasePart).Anchored = true
+			end
+		end
 		fresh:PivotTo(CFrame.new())
 		local old = model
 		model = fresh
@@ -671,7 +713,39 @@ function OutfitPreview.mountCurrent(self: OutfitPreview, viewport: ViewportFrame
 		if old ~= nil then
 			old:Destroy() -- yang lama dibuang SETELAH yang baru dipasang (tidak ada kartu kosong)
 		end
+		local player = Players.LocalPlayer
+		local char = if player then player.Character else nil
+		poses = if char then pairParts(char, fresh) else {}
+		srcRoot = if char then char:FindFirstChild("HumanoidRootPart") :: BasePart? else nil
+		dstRoot = fresh:FindFirstChild("HumanoidRootPart") :: BasePart?
 		refit()
+	end
+
+	-- Satu koneksi per kartu, hanya selama kartu dipakai (App mematikannya saat kartu tersembunyi).
+	local function mirrorStep()
+		local from, to = srcRoot, dstRoot
+		if from == nil or to == nil or from.Parent == nil or to.Parent == nil then
+			return
+		end
+		local base = to.CFrame
+		local inv = from.CFrame:Inverse()
+		for _, pose in poses do
+			if pose.d ~= to and pose.s.Parent ~= nil and pose.d.Parent ~= nil then
+				pose.d.CFrame = base * (inv * pose.s.CFrame)
+			end
+		end
+	end
+
+	local function setLive(on: boolean)
+		if not alive then
+			return
+		end
+		if on and mirrorConn == nil then
+			mirrorConn = RunService.RenderStepped:Connect(mirrorStep)
+		elseif not on and mirrorConn ~= nil then
+			mirrorConn:Disconnect()
+			mirrorConn = nil
+		end
 	end
 
 	-- Beberapa perubahan dalam satu frame (mis. lepas + pakai) cukup satu clone.
@@ -711,6 +785,10 @@ function OutfitPreview.mountCurrent(self: OutfitPreview, viewport: ViewportFrame
 			alive = false
 			self._spin[view] = nil
 			self:_spinStop()
+			if mirrorConn ~= nil then
+				mirrorConn:Disconnect()
+				mirrorConn = nil
+			end
 			for _, c in conns do
 				c:Disconnect()
 			end
@@ -745,6 +823,7 @@ function OutfitPreview.mountCurrent(self: OutfitPreview, viewport: ViewportFrame
 			applyCamera()
 		end,
 		refresh = request,
+		setLive = setLive,
 	}
 end
 
