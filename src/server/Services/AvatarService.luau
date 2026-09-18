@@ -39,6 +39,9 @@ export type Deps = {
 	bundles: any?, -- BundleService (get); nil = bundle belum didukung (NOT_IMPLEMENTED)
 	onState: ((player: any, state: State) -> ())?, -- kirim StateChanged
 	onError: ((player: any, code: string) -> ())?, -- kirim Notify
+	-- dipanggil setiap Head pemain mungkin berganti (respawn / apply berhasil):
+	-- dipakai MakeupService untuk menempelkan ulang Decal makeup.
+	onApplied: ((player: any) -> ())?,
 	-- engine (default Roblox; diganti saat test)
 	build: ((state: State) -> any)?, -- default DescriptionBuilder.toDescription
 	fromDescription: ((desc: any, rig: string?) -> State)?,
@@ -71,6 +74,7 @@ export type AvatarService = typeof(setmetatable(
 		_bundles: any?,
 		_onState: (any, State) -> (),
 		_onError: (any, string) -> (),
+		_onApplied: (any) -> (),
 		_build: (State) -> any,
 		_fromDescription: (any, string?) -> State,
 		_getHumanoid: (any) -> any,
@@ -105,6 +109,7 @@ function AvatarService.new(deps: Deps): AvatarService
 		_bundles = deps.bundles,
 		_onState = deps.onState or function() end,
 		_onError = deps.onError or function() end,
+		_onApplied = deps.onApplied or function() end,
 		_build = deps.build or defaultBuild,
 		_fromDescription = deps.fromDescription or DescriptionBuilder.fromDescription,
 		_getHumanoid = deps.getHumanoid or defaultGetHumanoid,
@@ -206,6 +211,7 @@ function AvatarService.onRespawn(self: AvatarService, player: any)
 	end
 	session.gen += 1
 	session.applied = OutfitState.clone(session.baseline)
+	self._onApplied(player) -- Head baru: decal makeup ikut hilang bersama Head lama
 	if not sameLook(session.state, session.baseline) then
 		self:_schedule(player)
 	end
@@ -444,6 +450,7 @@ function AvatarService._flush(self: AvatarService, player: any)
 			session.dirty = true
 		elseif ok then
 			session.applied = target
+			self._onApplied(player)
 		elseif session.state == target then
 			-- gagal & tidak ada perubahan baru: kembalikan ke yang terakhir berhasil
 			log.warn("apply gagal, rollback", player.Name, err and err.message)

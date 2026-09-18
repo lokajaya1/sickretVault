@@ -15,12 +15,14 @@ local PlayerData = require(Shared.Domain.PlayerData)
 local IntentValidator = require(script.Validators.IntentValidator)
 local WardrobeValidator = require(script.Validators.WardrobeValidator)
 local RobloxApi = require(script.Gateways.RobloxApi)
+local AssetDecal = require(script.Gateways.AssetDecal)
 local CatalogService = require(script.Services.CatalogService)
 local ItemInfoService = require(script.Services.ItemInfoService)
 local BundleService = require(script.Services.BundleService)
 local ItemDetailService = require(script.Services.ItemDetailService)
 local CheckoutService = require(script.Services.CheckoutService)
 local AvatarService = require(script.Services.AvatarService)
+local MakeupService = require(script.Services.MakeupService)
 local AvatarRules = require(script.Services.AvatarRules)
 local PlayerDataService = require(script.Services.PlayerDataService)
 local WardrobeService = require(script.Services.WardrobeService)
@@ -39,9 +41,11 @@ local itemInfo = ItemInfoService.new({ api = api })
 local rules = AvatarRules.new({ api = api }) -- batas per tipe (Hat=3, lainnya 1)
 local bundles = BundleService.new({ api = api, itemInfo = itemInfo }) -- detail bundle (part + skala)
 local details = ItemDetailService.new({ api = api, bundles = bundles }) -- panel detail item
+local assetDecals = AssetDecal.new() -- InsertService: id item makeup -> texture id (server saja)
 
 local stateChanged = Remotes.event(RemoteNames.Events.StateChanged)
 local notify = Remotes.event(RemoteNames.Events.Notify)
+local makeupChanged = Remotes.event(RemoteNames.Events.MakeupChanged)
 
 -- Checkout keranjang: PromptBulkPurchase HARUS dari server; hasilnya didengarkan client.
 local checkout = CheckoutService.new()
@@ -56,6 +60,22 @@ if Features.PlayerData then
 	end
 	playerData = PlayerDataService.new({ store = store })
 end
+
+-- Makeup TIDAK bisa lewat HumanoidDescription (spike #18) -> Decal di Head, service sendiri.
+local makeup: MakeupService.MakeupService
+makeup = MakeupService.new({
+	decals = assetDecals,
+	itemInfo = itemInfo,
+	onState = function(player: Player, dto)
+		if player.Parent == Players then
+			makeupChanged:FireClient(player, dto)
+		end
+		if playerData then
+			-- yang disimpan cuma assetId + slot; texture diambil ulang saat join
+			playerData:setLastMakeup(player, makeup:get(player))
+		end
+	end,
+})
 
 local avatar: AvatarService.AvatarService
 
@@ -83,6 +103,10 @@ avatar = AvatarService.new({
 			notify:FireClient(player, { code = code })
 		end
 	end,
+	-- Head bisa berganti saat respawn / apply berhasil -> decal makeup dipasang ulang.
+	onApplied = function(player: Player)
+		makeup:reapply(player)
+	end,
 })
 
 -- Wardrobe (slot outfit) butuh data pemain.
@@ -99,6 +123,33 @@ local detailLimiter = RateLimiter.fromLimits(RemoteNames.Functions.GetItemDetail
 local checkoutLimiter = RateLimiter.fromLimits(RemoteNames.Functions.Checkout)
 local wardrobeLimiter = RateLimiter.fromLimits(RemoteNames.Functions.Wardrobe)
 
+-- 4a. Intent makeup dibelokkan ke MakeupService (tidak bisa lewat HumanoidDescription).
+--     wear : dicoba ke makeup dulu; UNSUPPORTED_TYPE = bukan makeup -> diteruskan ke AvatarService.
+--            (ItemInfoService punya cache, jadi pemeriksaan tipe dua kali tidak menambah request)
+--     remove: hanya dibelokkan bila id itu memang sedang dipakai sebagai makeup.
+--     reset : makeup dibersihkan, lalu outfit direset seperti biasa.
+local function routeIntent(player: Player, intent: any): (boolean, string?)
+	local op = intent.op
+	if op == "wear" then
+		local ok, code = makeup:wear(player, intent.assetId)
+		if ok or code ~= "UNSUPPORTED_TYPE" then
+			return ok, code
+		end
+	elseif op == "remove" then
+		if makeup:isWorn(player, intent.assetId) then
+			return makeup:remove(player, intent.assetId)
+		end
+	elseif op == "reset" then
+		local okMakeup = makeup:clear(player)
+		local okAvatar, code = avatar:handle(player, intent)
+		if okMakeup and not okAvatar and code == "NOTHING" then
+			return true, nil -- makeup memang dibersihkan, walau outfit sudah sama dengan avatar asli
+		end
+		return okAvatar, code
+	end
+	return avatar:handle(player, intent)
+end
+
 -- 4. AvatarIntent: rate limit -> validasi -> AvatarService. Gagal -> Notify { code, op }.
 Remotes.event(RemoteNames.Events.AvatarIntent).OnServerEvent:Connect(function(player: Player, raw: any)
 	if not intentLimiter:take(player.UserId) then
@@ -111,7 +162,7 @@ Remotes.event(RemoteNames.Events.AvatarIntent).OnServerEvent:Connect(function(pl
 		notify:FireClient(player, { code = "BAD_ARG" })
 		return
 	end
-	local pOk, ok, code = pcall(avatar.handle, avatar, player, intent)
+	local pOk, ok, code = pcall(routeIntent, player, intent)
 	if not pOk then
 		log.error("AvatarIntent error", ok, player.Name)
 		ok, code = false, "FAILED"
@@ -132,7 +183,7 @@ Remotes.func(RemoteNames.Functions.GetState).OnServerInvoke = function(player: P
 	if state == nil then
 		return { ok = false, code = "NOT_READY" }
 	end
-	return { ok = true, state = state }
+	return { ok = true, state = state, makeup = makeup:dto(player) }
 end
 
 -- 5. CatalogSearch: rate limit -> CatalogService.search. Selalu mengembalikan tabel Response.
@@ -247,6 +298,13 @@ local function loadPlayerData(player: Player)
 	end
 	local settings = playerData:getSettings(player)
 	local saved = if settings and settings.restoreOutfit then playerData:getLastOutfit(player) else nil
+	-- makeup dipasang duluan: ia tidak ikut OutfitState, jadi tidak terpengaruh restore/apply di bawah
+	if settings and settings.restoreOutfit then
+		local okMakeup, codeMakeup = makeup:restore(player, playerData:getLastMakeup(player))
+		if okMakeup or codeMakeup ~= "NOTHING" then
+			log.info("restore makeup", okMakeup, codeMakeup, player.Name)
+		end
+	end
 	if saved then
 		local ok, code = avatar:restore(player, saved)
 		log.info("restore outfit", ok, code, player.Name)
@@ -263,6 +321,7 @@ end
 
 -- 5f. Sesi avatar per pemain. attach yield (ambil avatar asli) -> task.spawn.
 local function onPlayerAdded(player: Player)
+	makeup:attach(player) -- sebelum avatar: onApplied bisa terpanggil saat attach
 	local ok, err = pcall(avatar.attach, avatar, player)
 	if not ok then
 		log.error("attach gagal", err, player.Name)
@@ -279,6 +338,7 @@ end
 
 Players.PlayerRemoving:Connect(function(player: Player)
 	avatar:detach(player)
+	makeup:detach(player)
 	if playerData then
 		playerData:release(player) -- outfit terakhir sudah ada di profil (saveOutfit)
 	end

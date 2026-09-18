@@ -24,6 +24,7 @@ export type Deps = {
 	getState: (() -> any)?, -- GetState:InvokeServer
 	onState: ((fn: (state: any) -> ()) -> any)?, -- StateChanged.OnClientEvent:Connect
 	onNotice: ((fn: (msg: any) -> ()) -> any)?, -- Notify.OnClientEvent:Connect
+	onMakeup: ((fn: (dto: any) -> ()) -> any)?, -- MakeupChanged.OnClientEvent:Connect
 }
 
 local OutfitController = {}
@@ -34,6 +35,7 @@ export type OutfitController = typeof(setmetatable(
 		_deps: Deps,
 		_state: any?,
 		_worn: { [number]: boolean },
+		_makeup: { [number]: boolean }, -- makeup dipasang sebagai Decal, di luar OutfitState
 		_bundles: { [number]: boolean },
 		_listeners: { (any) -> () },
 		_noticeListeners: { (Notice) -> () },
@@ -67,6 +69,10 @@ local function defaultDeps(): Deps
 			local Remotes, Names = remotes()
 			return Remotes.event(Names.Events.Notify).OnClientEvent:Connect(fn)
 		end,
+		onMakeup = function(fn)
+			local Remotes, Names = remotes()
+			return Remotes.event(Names.Events.MakeupChanged).OnClientEvent:Connect(fn)
+		end,
 	}
 end
 
@@ -79,6 +85,7 @@ function OutfitController.new(deps: Deps?): OutfitController
 		_deps = d,
 		_state = nil,
 		_worn = {},
+		_makeup = {},
 		_bundles = {},
 		_listeners = {},
 		_noticeListeners = {},
@@ -151,6 +158,22 @@ local function emit(list: { any }, value: any)
 	end
 end
 
+-- Daftar makeup dari server (Makeup.toDto). Di luar OutfitState, jadi disimpan terpisah.
+function OutfitController._setMakeup(self: OutfitController, dto: any)
+	local set: { [number]: boolean } = {}
+	if type(dto) == "table" then
+		for _, row in dto do
+			if type(row) == "table" and type(row.assetId) == "number" then
+				set[row.assetId] = true
+			end
+		end
+	end
+	self._makeup = set
+	if self._state ~= nil then
+		emit(self._listeners, self._state) -- kartu perlu digambar ulang (tanda dipakai)
+	end
+end
+
 function OutfitController._setState(self: OutfitController, state: any)
 	if type(state) ~= "table" then
 		return
@@ -182,10 +205,19 @@ function OutfitController.start(self: OutfitController)
 			end
 		end)
 	)
+	if d.onMakeup then
+		table.insert(
+			self._conns,
+			(d.onMakeup :: any)(function(dto)
+				self:_setMakeup(dto)
+			end)
+		)
+	end
 	-- StateChanged awal mungkin sudah lewat (atau tertunda) -> minta juga secara eksplisit.
 	local ok, res = pcall(d.getState :: any)
 	if ok and type(res) == "table" and res.ok and self._state == nil then
 		self:_setState(res.state)
+		self:_setMakeup(res.makeup)
 	elseif not ok then
 		log.warn("GetState gagal", res)
 	end
@@ -204,7 +236,7 @@ function OutfitController.getState(self: OutfitController): any?
 end
 
 function OutfitController.isWorn(self: OutfitController, assetId: number): boolean
-	return self._worn[assetId] == true
+	return self._worn[assetId] == true or self._makeup[assetId] == true
 end
 
 function OutfitController.isBundleWorn(self: OutfitController, bundleId: number): boolean

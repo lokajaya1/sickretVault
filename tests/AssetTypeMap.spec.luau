@@ -9,10 +9,14 @@ local function eq(a: any, b: any, msg: string)
 end
 
 return function()
-	-- 1. tipe yang tidak bisa dipakai lewat HumanoidDescription (spike 18 Sep 2026)
-	for _, name in { "AvatarBackground", "FaceMakeup", "LipMakeup", "EyeMakeup" } do
-		eq(AssetTypeMap.NotWearable[name], true, name .. ": ditandai tidak bisa dipakai")
-		eq(AssetTypeMap.isWearable(name), false, name .. ": isWearable false")
+	-- 1. hanya background yang tidak bisa dipasang ke avatar (latar preview, PR terpisah)
+	eq(AssetTypeMap.NotWearable.AvatarBackground, true, "background ditandai tidak bisa dipakai")
+	eq(AssetTypeMap.isWearable("AvatarBackground"), false, "background isWearable false")
+
+	-- 1b. makeup BISA dicoba sejak PR #18 (ditempel sebagai Decal, bukan lewat description)
+	for _, name in { "FaceMakeup", "LipMakeup", "EyeMakeup" } do
+		eq(AssetTypeMap.NotWearable[name], nil, name .. ": tidak lagi diblokir")
+		eq(AssetTypeMap.isWearable(name), true, name .. ": isWearable true")
 	end
 
 	-- 2. yang TERBUKTI terpasang di avatar tetap bisa dicoba
@@ -23,7 +27,12 @@ return function()
 
 	-- 3. daftar ini TIDAK ikut mengubah klasifikasi lama
 	eq((AssetTypeMap.classify("Hat")), "accessory", "topi tetap accessory")
-	eq((AssetTypeMap.classify("FaceMakeup")), "unknown", "makeup memang bukan slot mana pun")
+	local makeupKind, makeupSlot = AssetTypeMap.classify("FaceMakeup")
+	eq(makeupKind, "makeup", "makeup punya kind sendiri")
+	eq(makeupSlot, nil, "TANPA slot -> OutfitState.wear menolaknya")
+	eq((AssetTypeMap.classify("EyeMakeup")), "makeup", "eye makeup")
+	eq((AssetTypeMap.classify("LipMakeup")), "makeup", "lip makeup")
+	eq((AssetTypeMap.classify("AvatarBackground")), "unknown", "background tetap bukan apa-apa")
 
 	print("PASS AssetTypeMap.spec")
 end

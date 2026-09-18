@@ -3,6 +3,8 @@
 --   local data, newer = PlayerData.migrate(profile.Data) -- isi field hilang, naikkan versi
 --   data.lastOutfit = PlayerData.encodeOutfit(state)    -- simpan (ringkas, JSON-aman)
 --   local state, err = PlayerData.decodeOutfit(data.lastOutfit) -- muat (divalidasi ulang)
+--   data.lastMakeup = PlayerData.encodeMakeup(makeupState)      -- makeup: assetId + slot saja
+--   local rows = PlayerData.decodeMakeup(data.lastMakeup)       -- texture di-resolve ulang saat join
 -- Data dari DataStore TIDAK dipercaya penuh: skema bisa berubah / rusak -> decode memvalidasi semuanya.
 
 local Types = require(script.Parent.Types)
@@ -10,6 +12,7 @@ local Map = require(script.Parent.AssetTypeMap)
 local OutfitState = require(script.Parent.OutfitState)
 local Wardrobe = require(script.Parent.Wardrobe)
 local OutfitFolders = require(script.Parent.OutfitFolders)
+local Makeup = require(script.Parent.Makeup)
 local LayerOrder = require(script.Parent.Parent.Config.LayerOrder)
 local Limits = require(script.Parent.Parent.Config.Limits)
 
@@ -17,7 +20,7 @@ type State = Types.OutfitState
 
 local PlayerData = {}
 
-PlayerData.VERSION = 3
+PlayerData.VERSION = 4
 PlayerData.OUTFIT_VERSION = 1
 
 local MAX_ID = 2 ^ 53
@@ -30,6 +33,7 @@ export type Settings = {
 export type Data = {
 	v: number,
 	lastOutfit: any?, -- hasil encodeOutfit (nil = pakai avatar asli)
+	lastMakeup: any?, -- hasil encodeMakeup (v4); makeup = Decal di Head, di luar OutfitState
 	settings: Settings,
 	outfits: { Wardrobe.Entry }, -- slot wardrobe (v2)
 	nextOutfitId: number, -- id slot berikutnya (v2)
@@ -78,9 +82,40 @@ function PlayerData.migrate(data: any): (Data, boolean)
 	Wardrobe.sanitize(data)
 	-- v2 -> v3: folder outfit (HARUS setelah Wardrobe.sanitize: membuang id folder mati dari tiap outfit)
 	OutfitFolders.sanitize(data)
-	-- (migrasi v3 -> v4 dst. ditambahkan di sini, berurutan)
+	-- v3 -> v4: makeup (lastMakeup). Tidak ada yang perlu diisi: field baru boleh nil,
+	-- dan decodeMakeup memvalidasi ulang isinya setiap kali dibaca.
+	-- (migrasi v4 -> v5 dst. ditambahkan di sini, berurutan)
 	data.v = PlayerData.VERSION
 	return data, false
+end
+
+-- ===== Makeup (v4) =====
+-- Disimpan MINIMAL: assetId + slot. Texture id TIDAK ikut disimpan karena harus diambil ulang
+-- lewat InsertService saat join (kalau kreator memperbarui asetnya, yang dipakai versi terbaru).
+
+-- state = Makeup.State. Return array ringkas, atau nil bila tidak ada makeup.
+function PlayerData.encodeMakeup(state: any): any
+	local out = {}
+	for _, entry in Makeup.list(state) do
+		table.insert(out, { i = entry.assetId, s = entry.slot })
+	end
+	return if #out > 0 then out else nil
+end
+
+-- Kebalikannya: array { assetId, slot } yang sudah divalidasi. Baris rusak DILEWATI.
+function PlayerData.decodeMakeup(raw: any): { { assetId: number, slot: string } }
+	local out = {}
+	if type(raw) ~= "table" then
+		return out
+	end
+	local seen: { [string]: boolean } = {}
+	for _, row in raw do
+		if type(row) == "table" and isId(row.i) and Makeup.isValidSlot(row.s) and not seen[row.s] then
+			seen[row.s] = true
+			table.insert(out, { assetId = row.i, slot = row.s })
+		end
+	end
+	return out
 end
 
 -- ===== Outfit =====

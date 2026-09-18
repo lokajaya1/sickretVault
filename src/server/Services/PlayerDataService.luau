@@ -175,6 +175,27 @@ function PlayerDataService.setLastOutfit(self: PlayerDataService, player: any, s
 	return true
 end
 
+-- ===== Makeup (v4) =====
+
+-- Makeup tersimpan: array { assetId, slot } (kosong = tidak ada / tidak valid).
+function PlayerDataService.getLastMakeup(self: PlayerDataService, player: any): { { assetId: number, slot: string } }
+	local session = self._sessions[player]
+	if session == nil or session.newer then
+		return {}
+	end
+	return PlayerData.decodeMakeup(session.profile.Data.lastMakeup)
+end
+
+-- state = Makeup.State. Kosong -> field dihapus. Return true bila ditulis.
+function PlayerDataService.setLastMakeup(self: PlayerDataService, player: any, state: any): boolean
+	local session = self._sessions[player]
+	if session == nil or session.newer or not session.profile:IsActive() then
+		return false
+	end
+	session.profile.Data.lastMakeup = PlayerData.encodeMakeup(state)
+	return true
+end
+
 -- ===== Setting =====
 
 -- Hanya key yang dikenal & tipe yang sama dengan TEMPLATE. Return (true) | (false, "NOT_LOADED" | "BAD_ARG").
