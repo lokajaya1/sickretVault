@@ -137,9 +137,15 @@ return function()
 		return true, { textureId = TEX_FACE, template = template(TEX_FACE) }
 	end
 
+	-- Pengganti folder ReplicatedStorage: cukup catat id apa saja yang direplikasi.
+	local shared: { [number]: any } = {}
+
 	local svc = MakeupService.new({
 		decals = fakeDecals,
 		itemInfo = fakeItemInfo,
+		share = function(assetId: number, decalTemplate: any)
+			shared[assetId] = decalTemplate
+		end,
 		getHead = function()
 			return head
 		end,
@@ -159,6 +165,8 @@ return function()
 	eq(face.textureId, TEX_FACE, "texture dari gateway")
 	eq(svc:hasTemplate(ID_FACE), true, "template disimpan")
 	eq(svc:hasTemplate(ID_ASING), false, "id asing belum punya template")
+	eq(shared[ID_FACE] ~= nil, true, "template ikut direplikasi untuk preview client")
+	eq(shared[ID_ASING] ~= nil, false, "id asing tidak direplikasi")
 
 	-- 3. bukan makeup -> ditolak SEBELUM menyentuh gateway
 	local textureCallsBefore = calls.texture
@@ -262,6 +270,14 @@ return function()
 	eq(svc:apply(player, rows), true, "look lama bisa dipasang langsung")
 	eq(#ourDecals(head), 2, "dua decal")
 	svc:detach(player)
+
+	-- 15. prewarm: id ganda sekali saja, id bertemplate tidak menyentuh gateway lagi
+	local textureCallsPrewarm = calls.texture
+	eq(svc:prewarm({ ID_FACE, ID_FACE, ID_ASING }), 2, "dua id siap")
+	eq(calls.texture, textureCallsPrewarm + 1, "hanya id baru yang menyentuh gateway")
+	eq(shared[ID_ASING] ~= nil, true, "template hasil prewarm ikut direplikasi")
+	eq(svc:prewarm(nil), 0, "argumen cacat aman")
+	eq(svc:prewarm({ "x", ID_GONE }), 0, "id cacat & item hilang dilewati")
 
 	print("PASS MakeupService.spec")
 end
