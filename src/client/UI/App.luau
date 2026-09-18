@@ -7,6 +7,9 @@
 -- Kartu: tap -> overlay TRY / BUY / ⓘ / 🛒. ⓘ & paste link -> panel detail. 🛒 di header -> panel keranjang.
 --   app:toggleCatalog()   app:openDetail(id, "Asset")   app:openCart()   app:checkout()
 --   app:openWardrobe()    app:closeWardrobe()
+-- Kartu preview avatar (kolom kiri) punya kontrolnya sendiri, semuanya MELAYANG di atas kartu:
+-- drag = putar + dongak, dua jari / klik kanan = geser avatar, cubit / scroll / tombol bulat
+-- "+" & "-" di kanan bawah = zoom.
 -- Saved Outfits dibuka dari kolom samping (katalog tertutup) -> menutupnya kembali ke layar utama,
 -- bukan ke halaman menu katalog.
 -- Panel keranjang & wardrobe menutupi isi katalog; hanya satu yang terbuka.
@@ -15,6 +18,7 @@
 local MarketplaceService = game:GetService("MarketplaceService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
 
 local WornItems = require(ReplicatedStorage:WaitForChild("Shared").Domain.WornItems)
@@ -125,6 +129,18 @@ local WARDROBE_INFO_CODES: { [string]: boolean } = {
 }
 
 local SOON_SECONDS = 1.2
+local DRAG_SENSITIVITY = 0.008 -- radian per piksel (sama dengan OrbitMath.DEFAULTS)
+local PINCH_ZOOM = 3 -- seberapa kuat cubit dua jari mengubah zoom kartu
+-- Kontrol kartu sengaja RAMPING: ia melayang di atas gambar avatar, jadi tugasnya tersedia
+-- saat dicari, bukan menarik perhatian. Tiga tombol zoom/reset ditumpuk dalam SATU kapsul
+-- (satu bentuk, bukan tiga lingkaran tebal), dan tiap selnya tetap 34 px supaya masih nyaman
+-- ditekan jempol di ponsel.
+local ZOOM_BUTTON = 34 -- tinggi satu sel di dalam kapsul, sekaligus garis tengah tombol bulat
+local ZOOM_INSET = 10 -- jarak kontrol dari tepi kartu
+local ICON_LINE = 2 -- tebal garis ikon
+local ICON_SPAN = 13 -- panjang garis plus/minus
+local ICON_CHEVRON = 10 -- panjang satu sisi chevron
+local ICON_RING = 13 -- garis tengah lingkaran ikon reset
 
 local function plural(n: number, word: string): string
 	return ("%d %s%s"):format(n, word, if n == 1 then "" else "s")
@@ -144,8 +160,12 @@ export type App = typeof(setmetatable(
 		wardrobePanel: WardrobePanel.WardrobePanel,
 		previews: OutfitPreview.OutfitPreview,
 		_previewCard: Frame, -- kartu avatar SEKARANG (kolom kiri); hanya saat latar dipakai
-		_hasBackground: boolean,
 		_live: OutfitPreview.Handle,
+		_previewPort: ViewportFrame, -- salinan avatar; disembunyikan saat kartu sedang tembus
+		_previewStroke: UIStroke, -- bingkai kartu; dimatikan saat kartu tembus
+		_hasBackground: boolean, -- item AvatarBackground sedang dipakai -> kartu jadi pekat
+		_previewShow: TextButton, -- tombol bulat untuk memunculkan kartu yang disembunyikan
+		_previewMin: boolean, -- kartu sedang disembunyikan pemain
 		leftRail: SideRail.SideRail,
 		rightRail: SideRail.SideRail,
 		toast: Toast.Toast,
@@ -185,6 +205,161 @@ local function topButton(name: string, text: string, order: number, parent: Inst
 	stroke.Transparency = Tokens.Transparency.Stroke
 	stroke.Parent = b
 
+	b.Parent = parent
+	return b
+end
+
+-- Ikon DIGAMBAR dari Frame, bukan glyph font dan bukan assetId. Uji Studio 18 Sep 2026:
+-- BuilderSans tidak punya "✥" (U+2725) maupun "▾" (U+25BE) -- keduanya jadi kotak kosong -- dan
+-- menebak id aset lebih berbahaya lagi. Garis membulat begini juga lebih rapi daripada huruf.
+local function iconBar(parent: Instance, w: number, h: number, rot: number, dx: number)
+	local f = Instance.new("Frame")
+	f.Name = "Line"
+	f.BackgroundColor3 = Tokens.Color.Text
+	f.BorderSizePixel = 0
+	f.AnchorPoint = Vector2.new(0.5, 0.5)
+	f.Position = UDim2.new(0.5, dx, 0.5, 0)
+	f.Size = UDim2.fromOffset(w, h)
+	f.Rotation = rot
+	f.ZIndex = Tokens.ZIndex.Hud + 3
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(1, 0)
+	corner.Parent = f
+	f.Parent = parent
+end
+
+-- "plus" | "minus" | "down" (sembunyikan kartu) | "up" (tampilkan lagi).
+-- Chevron = dua garis miring 45 derajat yang bertemu di tengah; jarak dari tengah = panjang * cos45.
+local function drawIcon(kind: string, parent: Instance)
+	local reach = ICON_CHEVRON * 0.35
+	if kind == "plus" then
+		iconBar(parent, ICON_SPAN, ICON_LINE, 0, 0)
+		iconBar(parent, ICON_LINE, ICON_SPAN, 0, 0)
+	elseif kind == "minus" then
+		iconBar(parent, ICON_SPAN, ICON_LINE, 0, 0)
+	elseif kind == "target" then
+		-- Reset tampilan: lingkaran tipis + titik di tengah -- "bawa kembali ke tengah".
+		local ring = Instance.new("Frame")
+		ring.Name = "Ring"
+		ring.BackgroundTransparency = 1
+		ring.AnchorPoint = Vector2.new(0.5, 0.5)
+		ring.Position = UDim2.fromScale(0.5, 0.5)
+		ring.Size = UDim2.fromOffset(ICON_RING, ICON_RING)
+		ring.ZIndex = Tokens.ZIndex.Hud + 3
+		local round = Instance.new("UICorner")
+		round.CornerRadius = UDim.new(1, 0)
+		round.Parent = ring
+		local edge = Instance.new("UIStroke")
+		edge.Color = Tokens.Color.Text
+		edge.Thickness = 1.5
+		edge.Parent = ring
+		ring.Parent = parent
+		local dot = Instance.new("Frame")
+		dot.Name = "Dot"
+		dot.BackgroundColor3 = Tokens.Color.Text
+		dot.BorderSizePixel = 0
+		dot.AnchorPoint = Vector2.new(0.5, 0.5)
+		dot.Position = UDim2.fromScale(0.5, 0.5)
+		dot.Size = UDim2.fromOffset(3, 3)
+		dot.ZIndex = Tokens.ZIndex.Hud + 3
+		local dotRound = Instance.new("UICorner")
+		dotRound.CornerRadius = UDim.new(1, 0)
+		dotRound.Parent = dot
+		dot.Parent = parent
+	elseif kind == "down" then
+		iconBar(parent, ICON_CHEVRON, ICON_LINE, 45, -reach)
+		iconBar(parent, ICON_CHEVRON, ICON_LINE, -45, reach)
+	else
+		iconBar(parent, ICON_CHEVRON, ICON_LINE, -45, -reach)
+		iconBar(parent, ICON_CHEVRON, ICON_LINE, 45, reach)
+	end
+end
+
+-- Kapsul kaca tempat tombol-tombol ditumpuk: SATU bentuk membulat, bukan tiga lingkaran.
+local function controlCapsule(name: string, cells: number, parent: Instance): Frame
+	local f = Instance.new("Frame")
+	f.Name = name
+	f.BackgroundColor3 = Tokens.Color.Background
+	f.BackgroundTransparency = 0.3
+	f.BorderSizePixel = 0
+	f.ClipsDescendants = true
+	f.Size = UDim2.fromOffset(ZOOM_BUTTON, ZOOM_BUTTON * cells)
+	f.ZIndex = Tokens.ZIndex.Hud + 2
+
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = Tokens.Radius.Pill
+	corner.Parent = f
+
+	local stroke = Instance.new("UIStroke")
+	stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	stroke.Color = Tokens.Color.Stroke
+	stroke.Transparency = 0.6
+	stroke.Parent = f
+
+	local list = Instance.new("UIListLayout")
+	list.FillDirection = Enum.FillDirection.Vertical
+	list.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	list.VerticalAlignment = Enum.VerticalAlignment.Center
+	list.SortOrder = Enum.SortOrder.LayoutOrder
+	list.Parent = f
+
+	f.Parent = parent
+	return f
+end
+
+-- Satu sel di dalam kapsul: latarnya sendiri tembus, jadi yang terlihat cuma ikonnya.
+-- `divider` = garis rambut pemisah dari sel berikutnya.
+local function capsuleButton(name: string, icon: string, order: number, divider: boolean, parent: Instance): TextButton
+	local b = Instance.new("TextButton")
+	b.Name = name
+	b.Text = ""
+	b.LayoutOrder = order
+	b.BackgroundTransparency = 1
+	b.BorderSizePixel = 0
+	b.AutoButtonColor = false
+	b.Size = UDim2.fromOffset(ZOOM_BUTTON, ZOOM_BUTTON)
+	b.ZIndex = Tokens.ZIndex.Hud + 2
+
+	drawIcon(icon, b)
+	if divider then
+		local line = Instance.new("Frame")
+		line.Name = "Divider"
+		line.BackgroundColor3 = Tokens.Color.Stroke
+		line.BackgroundTransparency = 0.7
+		line.BorderSizePixel = 0
+		line.AnchorPoint = Vector2.new(0.5, 1)
+		line.Position = UDim2.fromScale(0.5, 1)
+		line.Size = UDim2.new(0.55, 0, 0, 1)
+		line.ZIndex = Tokens.ZIndex.Hud + 2
+		line.Parent = b
+	end
+	b.Parent = parent
+	return b
+end
+
+-- Tombol bulat yang berdiri SENDIRI di atas kartu (sembunyikan / tampilkan).
+local function floatButton(name: string, icon: string, parent: Instance): TextButton
+	local b = Instance.new("TextButton")
+	b.Name = name
+	b.Text = ""
+	b.BackgroundColor3 = Tokens.Color.Background
+	b.BackgroundTransparency = 0.3
+	b.BorderSizePixel = 0
+	b.AutoButtonColor = true
+	b.Size = UDim2.fromOffset(ZOOM_BUTTON, ZOOM_BUTTON)
+	b.ZIndex = Tokens.ZIndex.Hud + 2
+
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = Tokens.Radius.Pill
+	corner.Parent = b
+
+	local stroke = Instance.new("UIStroke")
+	stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	stroke.Color = Tokens.Color.Stroke
+	stroke.Transparency = 0.6
+	stroke.Parent = b
+
+	drawIcon(icon, b)
 	b.Parent = parent
 	return b
 end
@@ -339,6 +514,12 @@ function App.mount(opts: Options?): App
 	previewCard.BackgroundColor3 = Tokens.Color.Panel
 	previewCard.BackgroundTransparency = 0 -- WAJIB pekat: kartu inilah yang menutupi avatar dunia
 	previewCard.BorderSizePixel = 0
+	-- Spike 18 Sep 2026: Frame BIASA tidak menyedot input (processed true=0 / false=32), jadi satu
+	-- drag memutar kartu DAN kamera dunia yang tersembunyi di belakangnya sekaligus. `Active = true`
+	-- menyedotnya penuh (true=40 / false=0) tanpa perlu ImageButton penutup; karena yang tersedot
+	-- adalah InputBegan-nya, TryOnCamera tidak pernah punya drag -- jari yang keluar kartu pun aman.
+	previewCard.Active = true
+	previewCard.ClipsDescendants = true
 	previewCard.Visible = false
 	previewCard.ZIndex = Tokens.ZIndex.Hud
 	previewCard.Parent = gui
@@ -366,6 +547,28 @@ function App.mount(opts: Options?): App
 	local portCorner = Instance.new("UICorner")
 	portCorner.CornerRadius = Tokens.Radius.Large
 	portCorner.Parent = previewPort
+
+	-- Kontrol MELAYANG di kanan bawah kartu. Yang dapat tombol hanya yang TIDAK punya gerakan
+	-- alami: zoom dan kembali ke tampilan awal. Putar & geser sudah punya drag dan dua jari.
+	local previewControls = controlCapsule("Controls", 3, previewCard)
+	previewControls.AnchorPoint = Vector2.new(1, 1)
+	previewControls.Position = UDim2.new(1, -ZOOM_INSET, 1, -ZOOM_INSET)
+
+	local zoomIn = capsuleButton("ZoomIn", "plus", 1, true, previewControls)
+	local zoomOut = capsuleButton("ZoomOut", "minus", 2, true, previewControls)
+	local resetView = capsuleButton("ResetView", "target", 3, false, previewControls)
+
+	-- Sembunyikan kartu: pojok kanan ATAS, sejauh mungkin dari kapsul supaya tidak tertekan
+	-- tanpa sengaja saat jempol sibuk di kanan bawah.
+	local hideButton = floatButton("Hide", "down", previewCard)
+	hideButton.AnchorPoint = Vector2.new(1, 0)
+	hideButton.Position = UDim2.new(1, -ZOOM_INSET, 0, ZOOM_INSET)
+
+	-- Tombol memunculkan kartu lagi. Anak `gui`, bukan kartu: kartunya sendiri sedang tersembunyi.
+	-- Letaknya persis di tempat tombol sembunyikan tadi, jadi jarinya tidak perlu berpindah.
+	local showButton = floatButton("ShowPreview", "up", gui)
+	showButton.AnchorPoint = Vector2.new(1, 0)
+	showButton.Visible = false
 
 	local livePreview = previews:mountCurrent(previewPort, { background = true })
 	-- true = panel detail item dibuka dari Saved Outfits -> Back kembali ke sana, bukan ke katalog.
@@ -482,8 +685,12 @@ function App.mount(opts: Options?): App
 		wardrobePanel = wardrobePanel,
 		previews = previews,
 		_previewCard = previewCard,
-		_hasBackground = false,
 		_live = livePreview,
+		_previewPort = previewPort,
+		_previewStroke = previewStroke,
+		_hasBackground = false,
+		_previewShow = showButton,
+		_previewMin = false,
 		leftRail = leftRail,
 		rightRail = rightRail,
 		toast = toast,
@@ -554,13 +761,13 @@ function App.mount(opts: Options?): App
 	table.insert(self._conns, { Disconnect = unsubscribe } :: any)
 
 	-- Latar area preview (AvatarBackground) -> SEMUA ViewportFrame preview sekaligus.
-	-- Latar dipakai -> kartu preview muncul (satu-satunya tempat latar bisa tergambar).
-	-- Tanpa latar kartu DISEMBUNYIKAN: avatar asli di dunia lebih hidup (cahaya, bayangan, animasi
-	-- idle), sedangkan isi ViewportFrame diam sampai PR animasi (Animator:StepAnimation).
+	-- Latar area preview (AvatarBackground) -> semua ViewportFrame preview sekaligus.
+	-- Kartu TIDAK lagi bergantung pada latar: ia selalu ada selama katalog terbuka (pemain bisa
+	-- menyembunyikannya lewat chevron), dan tanpa latar isinya berdiri di atas panggung sendiri.
 	local unBackground = outfit:onBackground(function(bg)
 		previews:setBackground(bg)
 		if self ~= nil then
-			self._hasBackground = bg ~= nil
+			self._hasBackground = bg ~= nil -- menentukan kartu tembus atau pekat
 			self:_refreshButtons()
 		end
 	end)
@@ -581,9 +788,196 @@ function App.mount(opts: Options?): App
 	cart:start()
 	panel:setCartCount(cart:count())
 
+	-- ===== Kontrol kartu preview =====
+	-- Satu jari / tombol kiri = PUTAR (mendatar) + DONGAK (tegak).
+	-- Dua jari / tombol kanan = GESER avatar di dalam bingkai -- tanpa tombol mode: sakelar "pan"
+	-- membuat orang harus mengingat kartu sedang dalam keadaan apa, dan itu yang bikin ribet.
+	-- Cubit / scroll / tombol bulat = ZOOM.
+	-- Gerakan lanjutan didengarkan lewat UserInputService supaya jari yang keluar kartu tidak
+	-- memutus putaran; TryOnCamera tetap diam karena InputBegan-nya tadi tersedot kartu.
+	local dragInput: InputObject? = nil
+	local dragMouse = false
+	local dragPan = false
+	local dragLast = Vector3.zero
+	local panLast = Vector2.zero
+	table.insert(
+		self._conns,
+		previewCard.InputBegan:Connect(function(input: InputObject)
+			local t = input.UserInputType
+			local pan = t == Enum.UserInputType.MouseButton2
+			if pan or t == Enum.UserInputType.MouseButton1 or t == Enum.UserInputType.Touch then
+				dragInput = input
+				dragMouse = not (t == Enum.UserInputType.Touch)
+				dragPan = pan
+				dragLast = input.Position
+			end
+		end)
+	)
+	table.insert(
+		self._conns,
+		UserInputService.InputChanged:Connect(function(input: InputObject)
+			local drag = dragInput
+			if drag == nil then
+				return
+			end
+			local t = input.UserInputType
+			local mine = if dragMouse then t == Enum.UserInputType.MouseMovement else input == drag
+			if not mine then
+				return
+			end
+			local delta = input.Position - dragLast
+			dragLast = input.Position
+			if dragPan then
+				self:_slide(delta.X, delta.Y)
+			else
+				self:_turn(delta.X, delta.Y)
+			end
+		end)
+	)
+	table.insert(
+		self._conns,
+		UserInputService.InputEnded:Connect(function(input: InputObject)
+			local drag = dragInput
+			if drag == nil then
+				return
+			end
+			local t = input.UserInputType
+			local mouseDone = t == Enum.UserInputType.MouseButton1 or t == Enum.UserInputType.MouseButton2
+			if if dragMouse then mouseDone else input == drag then
+				dragInput = nil
+			end
+		end)
+	)
+	-- Scroll di atas kartu = zoom KARTU (bukan jarak kamera dunia).
+	table.insert(
+		self._conns,
+		previewCard.InputChanged:Connect(function(input: InputObject)
+			if input.UserInputType == Enum.UserInputType.MouseWheel then
+				self:_zoomView(input.Position.Z)
+			end
+		end)
+	)
+	-- Dua jari di atas kartu: geser. `processed` di sini berarti jarinya memang di atas UI kita.
+	table.insert(
+		self._conns,
+		UserInputService.TouchPan:Connect(
+			function(
+				touches: { any },
+				translation: Vector2,
+				_velocity: Vector2,
+				state: Enum.UserInputState,
+				processed: boolean
+			)
+				if not processed or #touches < 2 then
+					return
+				end
+				if state == Enum.UserInputState.Begin then
+					panLast = translation
+					dragInput = nil -- dua jari: berhenti memutar
+					return
+				end
+				self:_slide(translation.X - panLast.X, translation.Y - panLast.Y)
+				panLast = translation
+			end
+		)
+	)
+	-- Cubit dua jari = zoom. `scale` dihitung dari awal gerakan, jadi selisihnyalah yang dipakai.
+	local pinchLast = 1
+	table.insert(
+		self._conns,
+		UserInputService.TouchPinch:Connect(
+			function(
+				_touches: { any },
+				scale: number,
+				_velocity: number,
+				state: Enum.UserInputState,
+				processed: boolean
+			)
+				if not processed then
+					return
+				end
+				if state == Enum.UserInputState.Begin then
+					pinchLast = scale
+					dragInput = nil
+					return
+				end
+				self:_zoomView((scale - pinchLast) * PINCH_ZOOM)
+				pinchLast = scale
+			end
+		)
+	)
+	table.insert(
+		self._conns,
+		hideButton.Activated:Connect(function()
+			self._previewMin = true
+			self:_refreshButtons()
+		end)
+	)
+	table.insert(
+		self._conns,
+		showButton.Activated:Connect(function()
+			self._previewMin = false
+			self:_refreshButtons()
+		end)
+	)
+	table.insert(
+		self._conns,
+		zoomIn.Activated:Connect(function()
+			self:_zoomView(1)
+		end)
+	)
+	table.insert(
+		self._conns,
+		zoomOut.Activated:Connect(function()
+			self:_zoomView(-1)
+		end)
+	)
+	table.insert(
+		self._conns,
+		resetView.Activated:Connect(function()
+			self:_resetView() -- sudut, jarak, dan geseran kembali seperti saat kartu dibuka
+		end)
+	)
+
 	refreshStrip()
 	self:_refreshButtons()
 	return self
+end
+
+-- Kontrol kartu menggerakkan kamera yang SEDANG dipakai kartu: kamera dunia saat kartu tembus,
+-- kamera kartu saat kartu pekat. Dipisah jadi method (bukan tabel closure) karena dipanggil tiap
+-- frame selama drag -- membuat tabel baru tiap gerakan jari itu sampah yang tidak perlu.
+function App._turn(self: App, dx: number, dy: number)
+	if self._hasBackground then
+		self._live.addYaw(-dx * DRAG_SENSITIVITY)
+		self._live.addPitch(-dy * DRAG_SENSITIVITY)
+	else
+		self.camera:turn(-dx * DRAG_SENSITIVITY, -dy * DRAG_SENSITIVITY)
+	end
+end
+
+function App._slide(self: App, dx: number, dy: number)
+	if self._hasBackground then
+		self._live.addPan(dx, dy)
+	else
+		self.camera:pan(dx, dy)
+	end
+end
+
+function App._zoomView(self: App, steps: number)
+	if self._hasBackground then
+		self._live.addZoom(steps)
+	else
+		self.camera:zoom(steps)
+	end
+end
+
+function App._resetView(self: App)
+	if self._hasBackground then
+		self._live.resetView()
+	else
+		self.camera:reset()
+	end
 end
 
 function App._refreshButtons(self: App)
@@ -608,9 +1002,26 @@ function App._refreshButtons(self: App)
 		rail:setCompact(L.compact)
 	end
 	local card = self._previewCard
-	local showCard = open and self._hasBackground
+	-- Disembunyikan pemain -> kartu hilang seluruhnya (avatar dunia kelihatan lagi) dan yang
+	-- tersisa hanya tombol bulat, PERSIS di tempat tombol sembunyikan tadi.
+	local mini = self._previewMin
+	local wanted = open
+	local showCard = wanted and not mini
+	-- DUA MODE. Tanpa item Background kartu dibuat TEMBUS: yang terlihat di dalamnya adalah dunia
+	-- sungguhan beserta karakter aslinya, dan yang digambar UI cuma bingkai membulatnya -- pola
+	-- kartu preview Catalog Avatar Creator. Begitu Background dipakai, gambar latar tidak mungkin
+	-- ditaruh di belakang karakter dunia, jadi kartu berubah pekat dan diisi SALINAN avatar.
+	local window = not self._hasBackground
+	card.BackgroundTransparency = if window then 1 else 0
+	self._previewPort.Visible = not window
+	-- Mode tembus: bingkainya pun dilepas. Menggambar kotak di atas dunia yang sudah terlihat utuh
+	-- hanya memotong pemandangan; yang tersisa cukup tombol-tombol melayang.
+	self._previewStroke.Enabled = not window
 	card.Position = UDim2.fromOffset(L.previewX, L.previewY)
 	card.Size = UDim2.fromOffset(L.previewW, L.previewH)
+	local show = self._previewShow
+	show.Position = UDim2.fromOffset(L.previewX + L.previewW - ZOOM_INSET, L.previewY + ZOOM_INSET)
+	show.Visible = wanted and mini
 	if showCard and not card.Visible then
 		card.Visible = true
 		local refresh = self._live.refresh
@@ -625,7 +1036,7 @@ function App._refreshButtons(self: App)
 	-- Hanya jalan selama kartu terlihat supaya tidak ada loop yang bekerja sia-sia.
 	local setLive = self._live.setLive
 	if setLive then
-		setLive(showCard)
+		setLive(showCard and not window) -- mode tembus: tidak ada salinan yang perlu dicerminkan
 	end
 	local bar = self.actions.instance
 	bar.Visible = open
