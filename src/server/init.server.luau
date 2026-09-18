@@ -321,6 +321,41 @@ local function loadPlayerData(player: Player)
 	end
 end
 
+-- 5e-2. Template makeup untuk PREVIEW 3D (kartu wardrobe, hover katalog, Community Outfits).
+-- Spike preview-rig: rig preview dibangun DI CLIENT dan meng-clone template Decal dari
+-- ReplicatedStorage/MakeupTemplates. Template hanya ada di sana kalau server pernah me-resolve-nya,
+-- jadi saat pemain join kita resolve dulu semua makeup yang dia punya (30 slot + look terakhir).
+-- YIELD ke InsertService -> WAJIB di task.spawn sendiri supaya tidak menahan restore look.
+local function prewarmPreviewMakeup(player: Player)
+	if playerData == nil then
+		return
+	end
+	local ids: { number } = {}
+	local function collect(rows: any)
+		if type(rows) ~= "table" then
+			return
+		end
+		for _, row in rows do
+			if type(row) == "table" and type(row.assetId) == "number" then
+				table.insert(ids, row.assetId)
+			end
+		end
+	end
+	collect(playerData:getLastMakeup(player))
+	local summaries = playerData:listOutfits(player)
+	if summaries then
+		for _, summary in summaries do
+			local _state, rows = playerData:getOutfitLook(player, summary.id)
+			collect(rows)
+		end
+	end
+	if #ids == 0 then
+		return
+	end
+	local ready = makeup:prewarm(ids) -- yield; id ganda & yang sudah punya template dilewati
+	log.info("prewarm makeup preview", ready, #ids, player.Name)
+end
+
 -- 5f. Sesi avatar per pemain. attach yield (ambil avatar asli) -> task.spawn.
 local function onPlayerAdded(player: Player)
 	makeup:attach(player) -- sebelum avatar: onApplied bisa terpanggil saat attach
@@ -332,6 +367,12 @@ local function onPlayerAdded(player: Player)
 	if not dOk then
 		log.error("data pemain gagal", dErr, player.Name)
 	end
+	task.spawn(function()
+		local pOk, pErr = pcall(prewarmPreviewMakeup, player)
+		if not pOk then
+			log.warn("prewarm makeup gagal", pErr, player.Name)
+		end
+	end)
 end
 Players.PlayerAdded:Connect(onPlayerAdded)
 for _, player in Players:GetPlayers() do
