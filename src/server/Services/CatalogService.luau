@@ -31,6 +31,12 @@ local BUSY_TIMEOUT = 15 -- detik menunggu permintaan lain pada kunci yang sama
 local FILTER_SORT = "MostFavorited"
 -- Item yang tidak bisa dipakai di avatar (muncul di CategoryFilter.Featured).
 local BLOCKED_ASSET_TYPES: { [string]: boolean } = { Gear = true }
+-- Nilai ItemRestrictions yang berarti "terbatas" (pita LIMITED + harga resale).
+local LIMITED_RESTRICTIONS: { [string]: boolean } = {
+	Collectible = true,
+	Limited = true,
+	LimitedUnique = true,
+}
 
 -- Urutan yang diizinkan (nama Enum.CatalogSortType).
 local SORTS: { [string]: boolean } = {
@@ -50,6 +56,13 @@ export type Request = {
 	page: number?,
 }
 
+-- Harga (spike 18 Sep 2026, tests/ItemPrice.studio): SearchCatalogAsync SUDAH memberi angka yang
+-- sama dengan GetItemDetailsAsync -> tidak perlu panggilan detail tambahan hanya untuk harga.
+--   Price/LowestPrice    : harga jual penerbit (0 = gratis / tidak dijual lagi)
+--   LowestResalePrice    : harga pasar item limited, hanya berarti bila HasResellers = true
+--   ItemRestrictions     : { "Collectible", "Limited", "LimitedUnique", ... } -> pita LIMITED
+--   PriceStatus          : "Free" | "No Resellers" | ... (teks dari Roblox)
+--   UnitsAvailableForConsumption : sisa stok item limited berstok
 export type ItemDto = {
 	id: number,
 	itemType: string, -- "Asset" | "Bundle"
@@ -57,7 +70,11 @@ export type ItemDto = {
 	bundleType: string?,
 	name: string,
 	creatorName: string?,
-	price: number?, -- nil = tidak dijual / gratis tidak diketahui
+	price: number?, -- harga penerbit; nil = tidak dijual
+	resalePrice: number?, -- harga pasar (limited yang punya penjual ulang)
+	limited: boolean?, -- true = item terbatas (pita LIMITED di kartu)
+	priceStatus: string?, -- mis. "Free", "No Resellers" (apa adanya dari Roblox)
+	unitsLeft: number?, -- sisa stok limited berstok
 }
 
 export type Response = {
@@ -130,6 +147,24 @@ local function toDto(raw: any): ItemDto?
 	if type(price) ~= "number" then
 		price = if type(raw.LowestPrice) == "number" then raw.LowestPrice else nil
 	end
+
+	local limited = false
+	if type(raw.ItemRestrictions) == "table" then
+		for _, r in raw.ItemRestrictions do
+			if LIMITED_RESTRICTIONS[tostring(r)] then
+				limited = true
+			end
+		end
+	end
+	-- Harga pasar hanya dipercaya kalau Roblox bilang ada penjual ulang.
+	local resale: number? = nil
+	if raw.HasResellers == true and type(raw.LowestResalePrice) == "number" and raw.LowestResalePrice > 0 then
+		resale = raw.LowestResalePrice
+	end
+	local units: number? = nil
+	if limited and type(raw.UnitsAvailableForConsumption) == "number" and raw.UnitsAvailableForConsumption > 0 then
+		units = raw.UnitsAvailableForConsumption
+	end
 	if type(raw.AssetType) == "string" and BLOCKED_ASSET_TYPES[raw.AssetType] then
 		return nil -- mis. Gear dari CategoryFilter.Featured: tidak bisa dipakai avatar
 	end
@@ -141,6 +176,10 @@ local function toDto(raw: any): ItemDto?
 		name = if type(raw.Name) == "string" then raw.Name else "",
 		creatorName = if type(raw.CreatorName) == "string" then raw.CreatorName else nil,
 		price = price,
+		resalePrice = resale,
+		limited = if limited then true else nil,
+		priceStatus = if type(raw.PriceStatus) == "string" then raw.PriceStatus else nil,
+		unitsLeft = units,
 	}
 end
 

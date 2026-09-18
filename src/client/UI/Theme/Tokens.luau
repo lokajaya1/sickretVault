@@ -3,28 +3,33 @@
 -- Komponen UI tidak boleh menulis angka/warna sendiri; ambil dari sini.
 --   local T = require(script.Parent.Theme.Tokens)
 --   frame.BackgroundColor3 = T.Color.Panel
+--
+-- TEMA (18 Sep 2026): HITAM + EMAS + PUTIH.
+--   latar hitam pekat, kartu abu gelap, aksen EMAS (tab aktif, tombol utama, harga),
+--   teks putih hangat. Garis tepi memakai emas dengan transparansi tinggi supaya tipis.
+--   Kontras yang dijaga: Text di Panel ~16:1, TextMuted di Panel ~7:1, AccentText di Accent ~9:1.
 
 local Tokens = {}
 
 Tokens.Color = {
-	Background = Color3.fromRGB(18, 18, 22), -- latar panel utama
-	Panel = Color3.fromRGB(28, 28, 34),
-	PanelRaised = Color3.fromRGB(40, 40, 48), -- kartu item, input
-	Stroke = Color3.fromRGB(255, 255, 255),
-	Text = Color3.fromRGB(255, 255, 255),
-	TextMuted = Color3.fromRGB(170, 170, 180),
-	Accent = Color3.fromRGB(0, 162, 255), -- tab aktif, tombol utama
-	AccentText = Color3.fromRGB(255, 255, 255),
-	Robux = Color3.fromRGB(0, 200, 120), -- harga
-	Danger = Color3.fromRGB(235, 70, 70),
-	Warning = Color3.fromRGB(255, 180, 40),
+	Background = Color3.fromRGB(10, 10, 12), -- latar paling gelap (dialog, overlay kartu)
+	Panel = Color3.fromRGB(16, 16, 19), -- panel besar
+	PanelRaised = Color3.fromRGB(26, 26, 30), -- kartu item, input, chip
+	Stroke = Color3.fromRGB(226, 183, 77), -- garis tepi (emas, dipakai dengan Transparency.Stroke)
+	Text = Color3.fromRGB(245, 245, 240), -- putih hangat
+	TextMuted = Color3.fromRGB(156, 156, 150),
+	Accent = Color3.fromRGB(226, 183, 77), -- EMAS: tab aktif, tombol utama, pita LIMITED
+	AccentText = Color3.fromRGB(14, 14, 16), -- teks/ikon di ATAS emas (hitam)
+	Robux = Color3.fromRGB(238, 206, 132), -- harga (emas muda, bukan hijau)
+	Danger = Color3.fromRGB(226, 86, 86),
+	Warning = Color3.fromRGB(240, 166, 60),
 }
 
 Tokens.Transparency = {
-	Panel = 0.15,
-	PanelRaised = 0.05,
-	Stroke = 0.85, -- garis tepi tipis
-	Overlay = 0.4,
+	Panel = 0.08, -- panel lebih pekat dari tema lama (0.15) supaya teks emas tetap terbaca
+	PanelRaised = 0.02,
+	Stroke = 0.85, -- garis tepi emas tipis
+	Overlay = 0.35,
 }
 
 Tokens.Radius = {
