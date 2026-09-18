@@ -1,12 +1,15 @@
 --!strict
 -- Render avatar 3D dari outfit tersimpan ke ViewportFrame (kartu Saved Outfits).
 --   local previews = OutfitPreview.new()
---   local handle = previews:mount(viewport, key, look, function() ... tampilkan cadangan ... end)
+--   local handle = previews:mount(viewport, key, look, function() ... end, { background = true })
 --   look = { outfit = <outfit ringkas>, makeup = { { assetId = n, slot = "face" }, ... } }
 --   Outfit ringkas polos juga diterima: makeup-nya dibaca dari field `mk` di dalamnya
 --   (Wardrobe.summarize mengirim outfit utuh), jadi kartu wardrobe tidak perlu diubah.
 --   handle.cancel()          -- kartu dihapus / dibangun ulang
---   previews:setBackground({ image = "rbxassetid://...", color = Color3? } | nil) -- latar SEMUA preview
+--   previews:setBackground({ image = "rbxassetid://...", color = Color3? } | nil)
+--   Latar hanya terpasang di mount yang MEMINTANYA (`{ background = true }`), yaitu preview yang
+--   mewakili avatar SEKARANG. Kartu Saved Outfits & halaman detail TIDAK memakainya: kartu itu
+--   menggambarkan look yang TERSIMPAN, sedangkan latar adalah pilihan pemain saat ini.
 --   previews:destroy()
 -- key = "<id>:<updatedAt>" -> model dibuat ulang hanya bila isi outfit berubah.
 -- Uji Studio 17 Sep 2026: Players:CreateHumanoidModelFromDescriptionAsync JALAN DI CLIENT (0.44s,
@@ -47,14 +50,22 @@ local MAKEUP_FOLDER = "MakeupTemplates"
 local MAKEUP_PREFIX = "CL_Makeup_"
 
 -- ===== Latar area preview (PR avatar-background, 18 Sep 2026) =====
--- Spike `S.backdrop()`: ImageLabel yang jadi ANAK ViewportFrame DIRENDER dan letaknya DI BELAKANG
--- rig -- jadi latar cukup dipasang di sini, pemakai (OutfitCard/WardrobePanel/OutfitDetailSheet)
--- tidak perlu menyediakan container apa pun. Syaratnya ViewportFrame tembus selama latar terpasang.
+-- KOREKSI UJI STUDIO: di spike panel ANAK (ImageLabel anak ViewportFrame) rig masih terlihat,
+-- TAPI di panel produksi gambar itu MENUTUPI rig -- kartu Saved Outfits jadi gradient polos tanpa
+-- avatar. Jadi latar dipasang sebagai SAUDARA tepat di belakang ViewportFrame (varian SAUDARA
+-- yang juga terbukti di spike): geometri disalin dari viewport, ZIndex satu tingkat di bawahnya,
+-- dan viewport dibuat tembus selama latar terpasang. Pemakai tetap tidak perlu diubah karena
+-- layanan ini sendiri yang menaruh ImageLabel di induk viewport (induknya tidak ber-UILayout).
 -- `Color` aset TIDAK dipakai sebagai tint (ImageColor3): di spike panel TINT tampak kusam.
 -- Ia dipakai sebagai warna DASAR di belakang gambar (berguna sebelum gambar termuat).
 local BACKDROP_NAME = "Backdrop"
 
-type Backdrop = { image: ImageLabel, viewport: ViewportFrame, original: number }
+type Backdrop = {
+	image: ImageLabel,
+	viewport: ViewportFrame,
+	original: number,
+	conns: { RBXScriptConnection },
+}
 
 local function applyBackdrop(entry: Backdrop, bg: any)
 	local image = if type(bg) == "table" then bg.image else nil
@@ -73,6 +84,49 @@ local function applyBackdrop(entry: Backdrop, bg: any)
 	end
 	entry.image.Visible = true
 	entry.viewport.BackgroundTransparency = 1 -- tanpa ini gambarnya tertutup latar viewport
+end
+
+-- ImageLabel saudara yang menempel persis di belakang viewport. nil = viewport belum punya induk
+-- GuiObject (tidak ada tempat menaruh latar) -> preview tetap jalan, cuma tanpa latar.
+local function newBackdrop(viewport: ViewportFrame): Backdrop?
+	local holder = viewport.Parent
+	if holder == nil or not holder:IsA("GuiObject") then
+		return nil
+	end
+	local image = Instance.new("ImageLabel")
+	image.Name = BACKDROP_NAME
+	image.BackgroundTransparency = 1
+	image.BorderSizePixel = 0
+	image.ScaleType = Enum.ScaleType.Crop
+	image.AnchorPoint = viewport.AnchorPoint
+	image.Position = viewport.Position
+	image.Size = viewport.Size
+	image.ZIndex = viewport.ZIndex - 1
+	image.Visible = false
+	local corner = viewport:FindFirstChildOfClass("UICorner")
+	if corner then
+		corner:Clone().Parent = image -- sudut membulat viewport ikut, supaya gambar tidak mencuat
+	end
+	image.Parent = holder
+	local entry: Backdrop = {
+		image = image,
+		viewport = viewport,
+		original = viewport.BackgroundTransparency,
+		conns = {},
+	}
+	-- Panel bisa mengubah ukuran/posisi viewport (mis. layout responsif) -> latar ikut.
+	for _, prop in { "AnchorPoint", "Position", "Size", "ZIndex" } do
+		table.insert(
+			entry.conns,
+			viewport:GetPropertyChangedSignal(prop):Connect(function()
+				image.AnchorPoint = viewport.AnchorPoint
+				image.Position = viewport.Position
+				image.Size = viewport.Size
+				image.ZIndex = viewport.ZIndex - 1
+			end)
+		)
+	end
+	return entry
 end
 
 local function makeupFolder(): Instance?
@@ -149,6 +203,9 @@ local function attachMakeup(model: Model, rows: any): () -> ()
 	end)
 	return disconnect
 end
+
+-- Opsi per-mount. `background = true` hanya untuk preview avatar SEKARANG (lihat catatan di atas).
+export type MountOptions = { background: boolean? }
 
 export type Handle = {
 	cancel: () -> (),
@@ -376,7 +433,8 @@ function OutfitPreview.mount(
 	viewport: ViewportFrame,
 	key: string,
 	look: any,
-	onFallback: (() -> ())?
+	onFallback: (() -> ())?,
+	opts: MountOptions?
 ): Handle
 	-- look = { outfit, makeup } ; outfit ringkas polos = look tanpa makeup (pemakai lama).
 	local isLook = type(look) == "table" and look.outfit ~= nil
@@ -390,19 +448,12 @@ function OutfitPreview.mount(
 	-- sama seperti gejala "anchor semua part" di PR #15. Di spike preview-rig rig di dalam
 	-- WorldModel memang bergerak sedikit, tapi di sini kamera dihitung dari bounding box + refit,
 	-- jadi tidak mengganggu. Makeup TETAP merender: yang menentukan adalah rig ada di ViewportFrame.
-	-- Latar DULU, sebelum WorldModel & Camera: ZIndex 0 + urutan anak = pasti di belakang rig.
-	local backdrop = Instance.new("ImageLabel")
-	backdrop.Name = BACKDROP_NAME
-	backdrop.Size = UDim2.fromScale(1, 1)
-	backdrop.BackgroundTransparency = 1
-	backdrop.BorderSizePixel = 0
-	backdrop.ScaleType = Enum.ScaleType.Crop
-	backdrop.ZIndex = 0
-	backdrop.Visible = false
-	backdrop.Parent = viewport
-	local entry: Backdrop = { image = backdrop, viewport = viewport, original = viewport.BackgroundTransparency }
-	self._backdrops[backdrop] = entry
-	applyBackdrop(entry, self._background)
+	local wantsBackdrop = type(opts) == "table" and opts.background == true
+	local entry = if wantsBackdrop then newBackdrop(viewport) else nil
+	if entry ~= nil then
+		self._backdrops[entry.image] = entry
+		applyBackdrop(entry, self._background)
+	end
 
 	local world = Instance.new("WorldModel")
 	world.Name = "Preview"
@@ -480,9 +531,14 @@ function OutfitPreview.mount(
 			if stopMakeup then
 				stopMakeup()
 			end
-			self._backdrops[backdrop] = nil
-			viewport.BackgroundTransparency = entry.original
-			backdrop:Destroy()
+			if entry ~= nil then
+				self._backdrops[entry.image] = nil
+				viewport.BackgroundTransparency = entry.original
+				for _, c in entry.conns do
+					c:Disconnect()
+				end
+				entry.image:Destroy()
+			end
 			world:Destroy()
 			camera:Destroy()
 		end,
