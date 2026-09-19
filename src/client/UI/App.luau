@@ -1432,6 +1432,7 @@ function App.mount(opts: Options?): App
 	-- Outfit berubah (dari server) -> perbarui sorotan kartu, panel detail & strip.
 	local unsubscribe = outfit:onChanged(function()
 		panel:refreshSelection()
+		panel:refreshBody()
 		detailPanel:refreshWorn()
 		refreshStrip()
 		local refresh = livePreview.refresh

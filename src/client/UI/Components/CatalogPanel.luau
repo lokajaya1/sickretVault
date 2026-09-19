@@ -870,6 +870,9 @@ function CatalogPanel.new(props: Props): CatalogPanel
 		table.insert(
 			conns,
 			b.Activated:Connect(function()
+				-- Sama seperti tab kategori: panel Color/Scale harus minggir dulu, kalau tidak Wearing
+				-- dibuka tapi yang terlihat tetap palet warna.
+				self:_showBodyPanel(nil)
 				self:_setWearing(true)
 			end)
 		)
@@ -1787,6 +1790,21 @@ function CatalogPanel.setCartCount(self: CatalogPanel, count: number)
 end
 
 -- Outfit berubah: tab Wearing -> gambar ulang daftar; tab lain -> perbarui sorotan kartu.
+-- Dipanggil setiap look berubah, termasuk Undo. Tanpa ini halaman Body hanya membaca state SAAT
+-- DIBUKA: menekan Undo selagi panel terbuka membuat diagram warna, slider, dan tombol rig
+-- menunjukkan keadaan lama, dan pemain berhak menganggap Undo-nya tidak bekerja.
+-- Diam saja kalau panel Body tidak sedang tampil -- ini dipanggil sesering look berubah.
+function CatalogPanel.refreshBody(self: CatalogPanel)
+	local body = self._body
+	if body == nil or self._bodySection == nil or not self.instance.Visible then
+		return
+	end
+	local getBody = self._props.getBody
+	if getBody ~= nil then
+		body:setState(getBody())
+	end
+end
+
 function CatalogPanel.refreshSelection(self: CatalogPanel)
 	if self._wearing then
 		self:_render(self._props.controller:getState())
