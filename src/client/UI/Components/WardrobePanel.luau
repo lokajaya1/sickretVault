@@ -13,6 +13,12 @@
 -- Dialog nama (NamePrompt) dipakai ulang: simpan outfit, folder baru, ganti nama folder.
 -- Dialog folder (FolderDialog): "manage" (kelola), "set" (Modify Folders satu outfit), "pick" (pindah massal).
 -- Kartu dipakai ulang selama id & updatedAt sama supaya model 3D tidak dibuat ulang.
+-- Tab "Roblox" (Outfit Loader) = outfit akun Roblox pemain, BUKAN slot wardrobe kita:
+-- read-only (tanpa favorit / folder / hapus) dan tap kartu langsung PAKAI. Daftarnya dari
+-- client (GetOutfits), state tiap outfit dari server (266 ms per id) -> diisi SATU PER SATU
+-- supaya tidak memberondong server dan tidak membangun 8 model 3D sekaligus (pelajaran #28).
+-- Di tab itu kotak Search berubah jadi "enter username.." (pola CAC): Enter -> kartu avatar yang
+-- SEDANG dipakai pemain itu. Outfit tersimpan milik orang lain tidak bisa diambil dari dalam game.
 
 local Shared = game:GetService("ReplicatedStorage"):WaitForChild("Shared")
 local OutfitSort = require(Shared.Domain.OutfitSort)
@@ -84,6 +90,12 @@ export type WardrobePanel = typeof(setmetatable(
 		_cards: { [number]: any }, -- id -> OutfitCard
 		_cardKey: { [number]: string }, -- id -> "<updatedAt>"
 		_armedId: number?,
+		_roblox: boolean, -- tab "Roblox" (Outfit Loader) sedang aktif
+		_robloxRows: { any }, -- baris outfit Roblox dalam bentuk Summary (outfit = nil sampai terisi)
+		_robloxStatus: string?, -- "loading" | kode gagal | nil
+		_robloxToken: number, -- pembatal pengisian state saat tab ditutup / dimuat ulang
+		_userRows: { any }, -- hasil cari username (kosong = daftar outfit sendiri)
+		_userStatus: string?, -- "loading" | kode gagal | nil
 		_snap: any?,
 		_searchToken: number,
 		_conns: { RBXScriptConnection },
@@ -567,6 +579,12 @@ function WardrobePanel.new(props: Props): WardrobePanel
 		_search = search,
 		_tabs = tabs,
 		_tabSig = "",
+		_roblox = false,
+		_robloxRows = {},
+		_robloxStatus = nil,
+		_robloxToken = 0,
+		_userRows = {},
+		_userStatus = nil,
 		_tabButtons = {},
 		_tabConns = {},
 		_sortButton = sortButton,
@@ -649,11 +667,28 @@ function WardrobePanel.new(props: Props): WardrobePanel
 			self._searchToken += 1
 			local token = self._searchToken
 			local text = search.Text
+			if self._roblox then
+				-- kotak username: kosong = kembali ke outfit sendiri, isinya baru dicari saat Enter
+				if text == "" and (#self._userRows > 0 or self._userStatus ~= nil) then
+					self._userRows = {}
+					self._userStatus = nil
+					self:_rerender()
+				end
+				return
+			end
 			task.delay(SEARCH_DEBOUNCE, function()
 				if self._searchToken == token then
 					ctl:setQuery(text)
 				end
 			end)
+		end)
+	)
+	table.insert(
+		conns,
+		search.FocusLost:Connect(function(enterPressed: boolean)
+			if enterPressed and self._roblox then
+				self:_loadUser(search.Text)
+			end
 		end)
 	)
 	table.insert(
@@ -700,6 +735,10 @@ function WardrobePanel.new(props: Props): WardrobePanel
 	table.insert(
 		conns,
 		retry.Activated:Connect(function()
+			if self._roblox then
+				self:_loadRoblox(true)
+				return
+			end
 			task.spawn(ctl.refresh, ctl)
 		end)
 	)
@@ -787,6 +826,7 @@ function WardrobePanel._syncTabs(self: WardrobePanel, snap: any)
 
 		local ctl = self._props.controller
 		local entries: { { key: string, text: string, value: any } } = {
+			{ key = "roblox", text = "Roblox", value = "roblox" },
 			{ key = "all", text = "All", value = OutfitSort.ALL },
 			{ key = "none", text = ("Not In Any Folders (%d)"):format(snap.unfiled), value = OutfitSort.NONE },
 		}
@@ -817,6 +857,11 @@ function WardrobePanel._syncTabs(self: WardrobePanel, snap: any)
 				self._tabConns,
 				tab.Activated:Connect(function()
 					self:_setSelecting(false)
+					if value == "roblox" then
+						self:_setRoblox(true)
+						return
+					end
+					self:_setRoblox(false)
 					ctl:setFolderFilter(value)
 				end)
 			)
@@ -845,9 +890,11 @@ function WardrobePanel._syncTabs(self: WardrobePanel, snap: any)
 	local active = snap.folderFilter
 	for key, tab in self._tabButtons do
 		local id = tonumber(key)
-		local on = (key == "all" and active == OutfitSort.ALL)
-			or (key == "none" and active == OutfitSort.NONE)
-			or (id ~= nil and active == id)
+		local on = if self._roblox
+			then key == "roblox"
+			else (key == "all" and active == OutfitSort.ALL)
+				or (key == "none" and active == OutfitSort.NONE)
+				or (id ~= nil and active == id)
 		tab.BackgroundColor3 = if on then Tokens.Color.Accent else Tokens.Color.PanelRaised
 		tab.BackgroundTransparency = if on then 0 else Tokens.Transparency.PanelRaised
 		tab.TextColor3 = if on then Tokens.Color.AccentText else Tokens.Color.Text
@@ -987,6 +1034,17 @@ function WardrobePanel._buildCard(self: WardrobePanel, outfit: any, order: numbe
 		previews = self._props.previews,
 		layoutOrder = order,
 		onActivated = function(o)
+			if self._roblox then
+				-- outfit Roblox read-only: tidak ada WEAR/VIEW, tap = pakai
+				local fromUser = (o :: any).fromUser == true
+				self:_act("wear", o.id, o.name, function()
+					if fromUser then
+						return ctl:wearRobloxUser(o.id)
+					end
+					return ctl:wearRoblox(o.id)
+				end)
+				return
+			end
 			self:_arm(o.id)
 		end,
 		onToggleSelect = function(o)
@@ -1019,6 +1077,9 @@ end
 function WardrobePanel._syncCards(self: WardrobePanel, visible: { any })
 	local seen: { [number]: boolean } = {}
 	for i, outfit in visible do
+		if outfit.outfit == nil then
+			continue -- state-nya belum datang; kartu dibuat setelah ada (OutfitPreview butuh isinya)
+		end
 		seen[outfit.id] = true
 		local key = tostring(outfit.updatedAt)
 		local card = self._cards[outfit.id]
@@ -1057,16 +1118,185 @@ function WardrobePanel._syncCards(self: WardrobePanel, visible: { any })
 	end
 end
 
+-- ===== Tab "Roblox" (Outfit Loader) =====
+
+-- Ubah baris GetOutfits jadi bentuk Summary yang dimengerti OutfitCard. `outfit` (OutfitState)
+-- sengaja kosong dulu: ia baru datang dari server, dan updatedAt dipakai sebagai kunci kartu
+-- (0 = belum ada state, 1 = sudah) supaya kartunya dibangun ulang begitu state-nya tiba.
+local function robloxRow(entry: any): any
+	return {
+		id = entry.id,
+		name = entry.name,
+		updatedAt = 0,
+		createdAt = 0,
+		favorite = false,
+		folders = {},
+		count = 0,
+		makeup = 0,
+		thumbs = {},
+		outfit = nil,
+	}
+end
+
+-- Gambar ulang dengan snapshot terakhir. Snapshot bisa BELUM ADA (panel belum pernah dirender,
+-- mis. tombol Outfit Loader ditekan sebelum daftar wardrobe datang) -> jangan memaksa render.
+function WardrobePanel._rerender(self: WardrobePanel)
+	if self._snap ~= nil then
+		self:_render(self._snap)
+	end
+end
+
+-- Isi state kartu SATU PER SATU (266 ms per id di server + ~425 ms per model 3D).
+function WardrobePanel._fillStates(self: WardrobePanel, rows: { any }, token: number)
+	local ctl = self._props.controller
+	for _, row in rows do
+		if token ~= self._robloxToken then
+			return -- tab sudah ditinggalkan / dimuat ulang
+		end
+		if row.outfit == nil then
+			local ok, state = ctl:robloxState(row.id)
+			if token ~= self._robloxToken then
+				return
+			end
+			if ok then
+				row.outfit = state
+				row.updatedAt = 1 -- kunci kartu berubah -> model 3D dibangun dengan state ini
+				if self._roblox then
+					self:_rerender()
+				end
+			end
+		end
+	end
+end
+
+function WardrobePanel._fillRobloxStates(self: WardrobePanel, token: number)
+	self:_fillStates(self._robloxRows, token)
+end
+
+function WardrobePanel._loadRoblox(self: WardrobePanel, force: boolean?)
+	local ctl = self._props.controller
+	self._robloxToken += 1
+	local token = self._robloxToken
+	self._robloxStatus = "loading"
+	self:_rerender()
+	task.spawn(function()
+		local ok, res = ctl:robloxOutfits(force)
+		if token ~= self._robloxToken then
+			return
+		end
+		if not ok then
+			self._robloxStatus = if type(res) == "string" then res else "FAILED"
+			self:_rerender()
+			return
+		end
+		local rows: { any } = {}
+		for _, entry in res do
+			table.insert(rows, robloxRow(entry))
+		end
+		self._robloxRows = rows
+		self._robloxStatus = nil
+		self:_rerender()
+		self:_fillRobloxStates(token)
+	end)
+end
+
+-- Cari username (kotak Search di tab Roblox). Hasilnya SATU kartu: avatar yang sedang ia pakai.
+function WardrobePanel._loadUser(self: WardrobePanel, raw: string)
+	local name = string.match(raw, "^%s*(.-)%s*$") or raw
+	if name == "" then
+		self._userRows = {}
+		self._userStatus = nil
+		self:_rerender()
+		return
+	end
+	local ctl = self._props.controller
+	self._robloxToken += 1 -- hentikan pengisian kartu outfit sendiri
+	local token = self._robloxToken
+	self._userStatus = "loading"
+	self._userRows = {}
+	self:_rerender()
+	task.spawn(function()
+		local ok, res = ctl:robloxUser(name)
+		if token ~= self._robloxToken then
+			return
+		end
+		if not ok or type(res) ~= "table" then
+			self._userStatus = if type(res) == "string" then res else "FAILED"
+			self:_rerender()
+			return
+		end
+		local row = robloxRow({ id = res.userId, name = name .. " (now)" })
+		row.outfit = res.state
+		row.updatedAt = 1
+		row.fromUser = true -- tap = pakai avatar pemain itu, bukan outfitId
+		self._userRows = { row }
+		self._userStatus = nil
+		self:_rerender()
+
+		-- Outfit TERSIMPAN orang itu: lewat proxy, jadi boleh gagal (429 / proxy mati) — kartu
+		-- "now" di atas tetap ada karena ia jalur engine, tidak lewat proxy sama sekali.
+		local okList, list = ctl:robloxUserOutfits(res.userId)
+		if token ~= self._robloxToken then
+			return
+		end
+		if not okList or type(list) ~= "table" or #list == 0 then
+			return
+		end
+		for _, entry in list do
+			table.insert(self._userRows, robloxRow(entry))
+		end
+		self:_fillStates(self._userRows, token)
+	end)
+end
+
+-- Pindah ke / dari tab Roblox. Kartu wardrobe & kartu Roblox memakai grid yang sama, jadi
+-- _syncCards yang membuang kartu yang tidak ada di daftar baru.
+function WardrobePanel._setRoblox(self: WardrobePanel, on: boolean)
+	if self._roblox == on then
+		if on and #self._robloxRows == 0 and self._robloxStatus == nil then
+			self:_loadRoblox()
+		end
+		return
+	end
+	self._roblox = on
+	self:_dismiss()
+	self._search.PlaceholderText = if on then "enter username.." else "Search…"
+	self._search.Text = ""
+	self._userRows = {}
+	self._userStatus = nil
+	self._grid.CanvasPosition = Vector2.zero
+	if on then
+		if #self._robloxRows == 0 then
+			self:_loadRoblox()
+			return
+		end
+	else
+		self._robloxToken += 1 -- hentikan pengisian state yang sedang jalan
+	end
+	self:_rerender()
+end
+
+-- Dipanggil App dari tombol "Outfit Loader" (kolom kiri, pola CAC).
+function WardrobePanel.openRoblox(self: WardrobePanel)
+	self:setOpen(true)
+	self:_setRoblox(true)
+end
+
 function WardrobePanel._render(self: WardrobePanel, snap: any)
 	self._snap = snap
 	self:_syncTabs(snap)
-	self:_syncCards(snap.visible)
+	local rows = if not self._roblox
+		then snap.visible
+		elseif #self._userRows > 0 or self._userStatus ~= nil then self._userRows
+		else self._robloxRows
+	self:_syncCards(rows)
 	self._dialog:setFolders(snap.folders, snap.foldersFull)
 
-	-- kartu "+" & tombol sibuk
+	-- kartu "+" & tombol sibuk. Tab Roblox read-only: tidak ada simpan & tidak ada pilih massal.
 	local busy = snap.busy
 	self._add.Text = if busy == "save" then "…" else "+"
-	self._add.Visible = not snap.isFull and snap.loaded and not self._selecting
+	self._add.Visible = not self._roblox and not snap.isFull and snap.loaded and not self._selecting
+	self._selectButton.Visible = not self._roblox
 	for id, card in self._cards do
 		card:setBusy(if busy ~= nil and snap.busyId == id then "…" else nil)
 	end
@@ -1084,13 +1314,52 @@ function WardrobePanel._render(self: WardrobePanel, snap: any)
 	self:_refreshSelection()
 
 	self._sortButton.Text = OutfitSort.labelOf(snap.sortKey) .. " ▼"
-	if self._search.Text ~= snap.query and not self._search:IsFocused() then
+	if not self._roblox and self._search.Text ~= snap.query and not self._search:IsFocused() then
 		self._search.Text = snap.query
 	end
 
 	-- status
-	local n = #snap.visible
+	local n = #rows
 	local showStatus = false
+	if self._roblox then
+		if self._userStatus ~= nil then
+			showStatus = true -- cabang ini hanya untuk "sedang mencari" / gagal
+			if self._userStatus == "loading" then
+				self._statusTitle.Text = "Looking up that player…"
+				self._statusHint.Text = ""
+			elseif self._userStatus == "NO_USER" or self._userStatus == "BAD_NAME" then
+				self._statusTitle.Text = "No player with that username"
+				self._statusHint.Text = "Check the spelling, or clear the box for your own outfits."
+			else
+				self._statusTitle.Text = "Couldn't load that player"
+				self._statusHint.Text = ""
+			end
+			self._retry.Visible = false
+			self._status.Visible = showStatus
+			return
+		end
+		if self._robloxStatus == "loading" then
+			showStatus = true
+			self._statusTitle.Text = "Loading your Roblox outfits…"
+			self._statusHint.Text = ""
+			self._retry.Visible = false
+		elseif self._robloxStatus ~= nil then
+			showStatus = true
+			local denied = self._robloxStatus == "DENIED"
+			self._statusTitle.Text = if denied
+				then "Roblox needs your permission"
+				else "Couldn't load your Roblox outfits"
+			self._statusHint.Text = if denied then "Tap Retry and allow the inventory prompt." else ""
+			self._retry.Visible = true
+		elseif n == 0 then
+			showStatus = true
+			self._statusTitle.Text = "No Roblox outfits found"
+			self._statusHint.Text = "Outfits you save on Roblox show up here."
+			self._retry.Visible = true
+		end
+		self._status.Visible = showStatus
+		return
+	end
 	if not snap.loaded then
 		showStatus = true
 		if snap.loading or snap.error == nil then
@@ -1138,6 +1407,8 @@ end
 function WardrobePanel.setOpen(self: WardrobePanel, open: boolean)
 	self.instance.Visible = open
 	if open then
+		self._roblox = false -- openRoblox() yang menyalakannya lagi
+		self._robloxToken += 1
 		self._grid.CanvasPosition = Vector2.zero
 		local ctl = self._props.controller
 		task.spawn(ctl.refresh, ctl)

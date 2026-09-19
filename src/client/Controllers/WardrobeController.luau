@@ -13,12 +13,21 @@
 --   local ok, code, res = wardrobe:bulkDelete({ 1, 2 })   -- res.removed
 --   local ok, code, res = wardrobe:bulkFolder({ 1, 2 }, folderId, true) -- res.changed / res.skipped
 --   local ok, data = wardrobe:items(id)         -- YIELD; { items = { {id,name,price,...} }, total, missing }
+--   local ok, code = wardrobe:saveToRoblox("avatar")   -- YIELD; prompt Roblox ("outfit" = buat outfit baru)
+--   local ok, list = wardrobe:robloxOutfits()          -- YIELD; { { id, name, editable } } (Outfit Loader)
+--   local ok, state = wardrobe:robloxState(outfitId)   -- YIELD; OutfitState untuk kartu loader (di-cache)
+--   local ok, code = wardrobe:wearRoblox(outfitId)     -- YIELD; pakai outfit Roblox itu
+--   local ok, res = wardrobe:robloxUser("nama")        -- YIELD; avatar pemain lain { userId, state }
+--   local ok, code = wardrobe:wearRobloxUser(userId)   -- YIELD; pakai avatar pemain itu
+--   local ok, list = wardrobe:robloxUserOutfits(uid)   -- YIELD; outfit tersimpan pemain itu (proxy)
 -- Semua aksi YIELD (InvokeServer) -> panggil dari task.spawn di UI.
 -- Satu aksi pada satu waktu (busy); aksi lain saat busy -> (false, "BUSY") tanpa memanggil server.
 -- Kode gagal: kode server (NOT_LOADED, FULL, FILTERED, ...) atau "NETWORK" (invoke error).
 -- `invoke` bisa diganti saat test (tanpa remote).
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local AvatarEditorService = game:GetService("AvatarEditorService")
+local Players = game:GetService("Players")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Log = require(Shared.Util.Log)
@@ -31,6 +40,14 @@ export type Folder = {
 	name: string,
 	createdAt: number,
 	count: number,
+}
+
+-- Satu baris daftar outfit akun Roblox (AvatarEditorService:GetOutfits). BUKAN slot wardrobe kita:
+-- tidak punya folder/favorit, dan tidak memakan kuota 30 slot.
+export type RobloxOutfit = {
+	id: number,
+	name: string,
+	editable: boolean, -- IsEditable=false = preset bawaan Roblox ("ROBLOX Boy")
 }
 
 export type Summary = {
@@ -64,6 +81,7 @@ export type Snapshot = {
 	isFull: boolean,
 	foldersFull: boolean,
 	restoreOutfit: boolean?, -- nil = belum diketahui
+	robloxBusy: string?, -- aksi akun Roblox yang sedang jalan: saveAvatar | createOutfit | list | wear
 }
 
 export type Invoke = (request: { [string]: any }) -> any
@@ -90,6 +108,10 @@ export type WardrobeController = typeof(setmetatable(
 		_items: { [string]: any },
 		_itemsBusy: { [string]: boolean },
 		_listeners: { (Snapshot) -> () },
+		_robloxBusy: string?,
+		_robloxOutfits: { RobloxOutfit }?,
+		_robloxStates: { [number]: any },
+		_inventoryOk: boolean,
 	},
 	WardrobeController
 ))
@@ -128,6 +150,10 @@ function WardrobeController.new(invoke: Invoke?): WardrobeController
 		_items = {},
 		_itemsBusy = {},
 		_listeners = {},
+		_robloxBusy = nil,
+		_robloxOutfits = nil,
+		_robloxStates = {},
+		_inventoryOk = false,
 	}, WardrobeController)
 end
 
@@ -165,6 +191,7 @@ function WardrobeController.getSnapshot(self: WardrobeController): Snapshot
 		isFull = #self._outfits >= self._max,
 		foldersFull = #self._folders >= self._maxFolders,
 		restoreOutfit = self._restore,
+		robloxBusy = self._robloxBusy,
 	}
 end
 
@@ -418,6 +445,285 @@ function WardrobeController.items(self: WardrobeController, id: number): (boolea
 	end
 	self._items[key] = data
 	return true, data
+end
+
+-- ===== Akun Roblox (di luar wardrobe kita) =====
+-- Spike 19 Sep 2026: prompt AvatarEditorService & GetOutfits HANYA jalan di client
+-- (di server: "This method can only be called on the client"), sedangkan
+-- GetHumanoidDescriptionFromOutfitId jalan di dua-duanya -> description diambil di SERVER
+-- lewat remote RobloxOutfit supaya server tetap sumber kebenaran.
+-- Prompt TIDAK yield (0-1 ms) dan hasilnya datang lewat event ~2,9 detik kemudian, jadi di sini
+-- dibungkus jadi panggilan yang YIELD supaya UI tinggal task.spawn + toast.
+
+local PROMPT_TIMEOUT = 90 -- detik; manusia harus sempat membaca dialog Roblox
+local PROMPT_POLL = 0.1
+local MAX_OUTFIT_PAGES = 4 -- 8 entri per halaman; lebih dari ini tidak muat di panel
+
+-- Jalankan prompt lalu tunggu hasilnya. Return (true, "OK") | (false, "DENIED"|"FAILED"|"TIMEOUT").
+local function awaitPrompt(signal: any, run: () -> ()): (boolean, string)
+	local done = false
+	local result: any = nil
+	local conn: RBXScriptConnection? = nil
+	conn = signal:Connect(function(res: any)
+		if done then
+			return
+		end
+		done = true
+		result = res
+		if conn then
+			conn:Disconnect()
+		end
+	end)
+	local okCall, err = pcall(run)
+	if not okCall then
+		if conn then
+			conn:Disconnect()
+		end
+		log.warn("prompt Roblox gagal dipanggil", err)
+		return false, "FAILED"
+	end
+	local waited = 0
+	while not done and waited < PROMPT_TIMEOUT do
+		waited += task.wait(PROMPT_POLL)
+	end
+	if not done then
+		if conn then
+			conn:Disconnect()
+		end
+		return false, "TIMEOUT"
+	end
+	if result == Enum.AvatarPromptResult.Success then
+		return true, "OK"
+	end
+	if result == Enum.AvatarPromptResult.PermissionDenied then
+		return false, "DENIED"
+	end
+	return false, "FAILED"
+end
+
+-- Look yang SEDANG dipakai karakter. Tidak perlu remote: karakternya sudah memakai look-nya.
+local function appliedDescription(): (any?, any?)
+	local player = Players.LocalPlayer
+	local character = if player then player.Character else nil
+	local humanoid = if character then character:FindFirstChildOfClass("Humanoid") else nil
+	if humanoid == nil then
+		return nil, nil
+	end
+	local ok, desc = pcall(function()
+		return humanoid:GetAppliedDescription()
+	end)
+	if not ok then
+		log.warn("GetAppliedDescription gagal", desc)
+		return nil, nil
+	end
+	return desc, humanoid.RigType
+end
+
+local function robloxInvoke(request: { [string]: any }): any
+	local Remotes = require(Shared.Net.Remotes)
+	local RemoteNames = require(Shared.Net.RemoteNames)
+	return Remotes.func(RemoteNames.Functions.RobloxOutfit):InvokeServer(request)
+end
+
+-- Daftar GetOutfits campur: ada OutfitType "DynamicHead" (Man Face, Stevie Standard) yang BUKAN
+-- outfit. Nilainya datang sebagai string, tapi diterima juga kalau suatu saat jadi EnumItem.
+local function isAvatarOutfit(value: any): boolean
+	if value == nil then
+		return true -- field tidak ada -> jangan buang datanya
+	end
+	return tostring(value):match("Avatar$") ~= nil
+end
+
+function WardrobeController._setRobloxBusy(self: WardrobeController, op: string?)
+	self._robloxBusy = op
+	self:_emit()
+end
+
+-- YIELD. Simpan look sekarang ke akun Roblox.
+--   kind = "avatar" -> PromptSaveAvatar (mengganti avatar akun)
+--   kind = "outfit" -> PromptCreateOutfit (menambah outfit baru di akun)
+-- Roblox sendiri yang menampilkan daftar item yang akan dipasang, jadi UI tidak perlu konfirmasi.
+-- Item yang belum dimiliki TIDAK membuat prompt gagal (spike: tetap Success).
+function WardrobeController.saveToRoblox(self: WardrobeController, kind: string?): (boolean, string?)
+	if self._robloxBusy then
+		return false, "BUSY"
+	end
+	local desc, rig = appliedDescription()
+	if desc == nil then
+		return false, "NOT_READY"
+	end
+	local makeOutfit = kind == "outfit"
+	self:_setRobloxBusy(if makeOutfit then "createOutfit" else "saveAvatar")
+	local rigType = rig or Enum.HumanoidRigType.R15
+	local ok, code
+	if makeOutfit then
+		ok, code = awaitPrompt(AvatarEditorService.PromptCreateOutfitCompleted, function()
+			AvatarEditorService:PromptCreateOutfit(desc, rigType)
+		end)
+	else
+		ok, code = awaitPrompt(AvatarEditorService.PromptSaveAvatarCompleted, function()
+			AvatarEditorService:PromptSaveAvatar(desc, rigType)
+		end)
+	end
+	if ok and makeOutfit then
+		self._robloxOutfits = nil -- daftar loader kedaluwarsa: ada outfit baru
+	end
+	self:_setRobloxBusy(nil)
+	return ok, if ok then nil else code
+end
+
+-- YIELD. Daftar outfit akun Roblox untuk Outfit Loader. Izin baca inventory berlaku PER SESI (#28),
+-- jadi promptnya hanya muncul sekali. Return (true, { RobloxOutfit }) | (false, kode).
+function WardrobeController.robloxOutfits(self: WardrobeController, force: boolean?): (boolean, any)
+	if self._robloxOutfits ~= nil and not force then
+		return true, self._robloxOutfits
+	end
+	if self._robloxBusy then
+		return false, "BUSY"
+	end
+	self:_setRobloxBusy("list")
+	if not self._inventoryOk then
+		local okPerm, codePerm = awaitPrompt(AvatarEditorService.PromptAllowInventoryReadAccessCompleted, function()
+			AvatarEditorService:PromptAllowInventoryReadAccess()
+		end)
+		if not okPerm then
+			self:_setRobloxBusy(nil)
+			return false, codePerm
+		end
+		self._inventoryOk = true
+	end
+	local okPages, pages = pcall(function()
+		return AvatarEditorService:GetOutfits()
+	end)
+	if not okPages or pages == nil then
+		log.warn("GetOutfits gagal", pages)
+		self:_setRobloxBusy(nil)
+		return false, "FAILED"
+	end
+	local list: { RobloxOutfit } = {}
+	for _ = 1, MAX_OUTFIT_PAGES do
+		local okPage, entries = pcall(function()
+			return pages:GetCurrentPage()
+		end)
+		if not okPage or type(entries) ~= "table" then
+			break
+		end
+		for _, entry in entries do
+			if type(entry) == "table" and type(entry.Id) == "number" and isAvatarOutfit(entry.OutfitType) then
+				table.insert(list, {
+					id = entry.Id,
+					name = if type(entry.Name) == "string" and entry.Name ~= "" then entry.Name else "Outfit",
+					editable = entry.IsEditable == true,
+				})
+			end
+		end
+		if pages.IsFinished then
+			break
+		end
+		local okNext = pcall(function()
+			pages:AdvanceToNextPageAsync()
+		end)
+		if not okNext then
+			break
+		end
+	end
+	self._robloxOutfits = list
+	self:_setRobloxBusy(nil)
+	return true, list
+end
+
+-- YIELD. OutfitState satu outfit Roblox (untuk menggambar kartu). 266 ms per id di server ->
+-- hasilnya di-cache, dan UI memanggilnya satu per satu (antrean), bukan sekaligus.
+function WardrobeController.robloxState(self: WardrobeController, outfitId: number): (boolean, any)
+	local cached = self._robloxStates[outfitId]
+	if cached ~= nil then
+		return true, cached
+	end
+	local ok, res = pcall(robloxInvoke, { op = "state", outfitId = outfitId })
+	if not ok or type(res) ~= "table" then
+		log.warn("RobloxOutfit state gagal", res)
+		return false, "NETWORK"
+	end
+	if res.ok ~= true or type(res.state) ~= "table" then
+		return false, if type(res.code) == "string" then res.code else "FAILED"
+	end
+	self._robloxStates[outfitId] = res.state
+	return true, res.state
+end
+
+-- YIELD. Pakai outfit Roblox itu (server yang memasang; bisa di-Undo seperti slot wardrobe).
+function WardrobeController.wearRoblox(self: WardrobeController, outfitId: number): (boolean, string?)
+	if self._robloxBusy then
+		return false, "BUSY"
+	end
+	self:_setRobloxBusy("wear")
+	local ok, res = pcall(robloxInvoke, { op = "wear", outfitId = outfitId })
+	self:_setRobloxBusy(nil)
+	if not ok or type(res) ~= "table" then
+		log.warn("RobloxOutfit wear gagal", res)
+		return false, "NETWORK"
+	end
+	if res.ok ~= true then
+		return false, if type(res.code) == "string" then res.code else "FAILED"
+	end
+	if type(res.state) == "table" then
+		self._robloxStates[outfitId] = res.state
+	end
+	return true, nil
+end
+
+-- YIELD. Avatar yang SEDANG dipakai pemain lain (Outfit Loader mencari username — pola CAC).
+-- Daftar outfit TERSIMPAN milik orang lain tidak bisa diambil dari dalam game: GetOutfits hanya
+-- untuk pemain sendiri. Jadi yang ditawarkan cuma avatar yang sedang ia pakai.
+-- Return (true, { userId, state }) | (false, "NO_USER" | "BAD_NAME" | kode lain).
+function WardrobeController.robloxUser(self: WardrobeController, name: string): (boolean, any)
+	if self._robloxBusy then
+		return false, "BUSY"
+	end
+	self:_setRobloxBusy("user")
+	local ok, res = pcall(robloxInvoke, { op = "user", name = name })
+	self:_setRobloxBusy(nil)
+	if not ok or type(res) ~= "table" then
+		log.warn("RobloxOutfit user gagal", res)
+		return false, "NETWORK"
+	end
+	if res.ok ~= true or type(res.userId) ~= "number" then
+		return false, if type(res.code) == "string" then res.code else "FAILED"
+	end
+	return true, { userId = res.userId, state = res.state }
+end
+
+-- YIELD. Pakai avatar pemain lain itu (server yang memasang; bisa di-Undo).
+function WardrobeController.wearRobloxUser(self: WardrobeController, userId: number): (boolean, string?)
+	if self._robloxBusy then
+		return false, "BUSY"
+	end
+	self:_setRobloxBusy("wear")
+	local ok, res = pcall(robloxInvoke, { op = "wearUser", userId = userId })
+	self:_setRobloxBusy(nil)
+	if not ok or type(res) ~= "table" then
+		log.warn("RobloxOutfit wearUser gagal", res)
+		return false, "NETWORK"
+	end
+	if res.ok ~= true then
+		return false, if type(res.code) == "string" then res.code else "FAILED"
+	end
+	return true, nil
+end
+
+-- YIELD. Outfit TERSIMPAN milik pemain lain (server mengambilnya lewat proxy — GetOutfits engine
+-- hanya untuk pemain sendiri). Gagal itu WAJAR (proxy publik sering 429) -> pemanggil cukup
+-- menyembunyikan daftarnya; kartu "Current Avatar" tidak bergantung pada ini.
+function WardrobeController.robloxUserOutfits(_self: WardrobeController, userId: number): (boolean, any)
+	local ok, res = pcall(robloxInvoke, { op = "userOutfits", userId = userId })
+	if not ok or type(res) ~= "table" then
+		log.warn("RobloxOutfit userOutfits gagal", res)
+		return false, "NETWORK"
+	end
+	if res.ok ~= true or type(res.outfits) ~= "table" then
+		return false, if type(res.code) == "string" then res.code else "FAILED"
+	end
+	return true, res.outfits
 end
 
 -- Setting "pakai outfit terakhir saat join".
