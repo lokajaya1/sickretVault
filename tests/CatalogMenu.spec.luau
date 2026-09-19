@@ -123,12 +123,14 @@ return function()
 	local mkA = CatalogMenu.searchTypes("makeup")
 	eq(#mkA, 5, "MAKEUP: eye/lip/face makeup + eyelash + eyebrow")
 
-	-- 9b. BODY bukan daftar item: kartunya membuka halaman Body sendiri (warna kulit + skala),
-	-- jadi ia tetap tanpa kategori dan tanpa chip -- tapi TIDAK lagi ditandai soon.
+	-- 9b. grup "Soon" (BODY): tidak punya kategori & tidak punya chip
 	local body = CatalogMenu.byId.body
-	eq(body.soon, nil, "BODY tidak Soon lagi: kartunya membuka halaman Body")
-	eq(#CatalogMenu.categoryIds("body"), 0, "BODY tanpa kategori")
-	eq(#CatalogMenu.chips("body"), 0, "BODY tanpa chip")
+	eq(body.soon, true, "BODY ditandai Soon")
+	eq(#CatalogMenu.categoryIds("body"), 0, "grup Soon tanpa kategori")
+	eq(#CatalogMenu.chips("body"), 0, "grup Soon tanpa chip")
+	-- BODY tetap `soon` (tidak punya daftar item), tapi kartunya BISA diketuk: `page` menandai
+	-- bahwa ia membuka halaman sendiri. Tanpa ini CategoryMenu menahannya di flash "Soon".
+	eq(body.page, "body", "BODY membuka halaman sendiri")
 
 	-- 10. FEATURED punya CategoryFilter sendiri; grup lain tidak
 	eq(CatalogMenu.byId.featured.categoryFilter, "Featured", "FEATURED pakai CategoryFilter.Featured")

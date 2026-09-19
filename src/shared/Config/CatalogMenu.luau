@@ -39,6 +39,9 @@ export type Group = {
 	tone: number, -- 0..1 tingkat aksen kartu (warna dari Tokens, bukan pelangi CAC)
 	categoryFilter: string?, -- nama Enum.CatalogCategoryFilter untuk chip grup (mis. "Featured")
 	soon: boolean?, -- true = belum ada isinya (kartu redup + flash "Soon", tidak bisa dibuka)
+	-- Grup yang membuka HALAMAN SENDIRI di panel, bukan daftar item katalog. `soon` tetap true
+	-- untuk grup begini: ia memang tidak punya kategori maupun chip pencarian.
+	page: string?,
 }
 
 export type Chip = {
@@ -162,6 +165,8 @@ local list: { Group } = {
 		span = { x = 2, y = 6, w = 2, h = 2 },
 		spanCompact = { x = 0, y = 12, w = 2, h = 2 },
 		tone = 0.3,
+		soon = true,
+		page = "body",
 	},
 }
 

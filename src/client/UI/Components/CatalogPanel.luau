@@ -1825,7 +1825,7 @@ end
 
 -- Buka halaman daftar item sebuah grup mozaik; tab = kategori milik grup itu.
 function CatalogPanel.openGroup(self: CatalogPanel, group: CatalogMenu.Group)
-	if group.id == "body" then
+	if group.page == "body" then
 		self:openBody()
 		return
 	end

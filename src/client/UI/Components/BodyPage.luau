@@ -304,7 +304,9 @@ function BodyPage.new(props: Props): BodyPage
 				label = s.label,
 				min = lim.min,
 				max = lim.max,
-				value = lim.default,
+				-- SCALE_LIMITS boleh saja tidak punya `default` (tabelnya ditulis min/max saja).
+				-- Tanpa cadangan ini Slider menerima nil dan meledak di string.format.
+				value = lim.default or math.clamp(1, lim.min, lim.max),
 				onChange = function(v, final)
 					if final then
 						props.onScale(s.slot, v)

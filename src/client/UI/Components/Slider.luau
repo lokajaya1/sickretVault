@@ -71,6 +71,8 @@ function Slider.new(props: Props): Slider
 	local fmt = props.format or function(v: number): string
 		return string.format("%.2f", v)
 	end
+	-- Nilai awal wajib angka: pemanggil yang mengambilnya dari tabel batas bisa saja menyerahkan nil.
+	local start = if type(props.value) == "number" then props.value else props.min
 
 	local text = make("TextLabel", {
 		Name = "Value",
@@ -81,7 +83,7 @@ function Slider.new(props: Props): Slider
 		TextSize = if compact then Tokens.TextSize.Caption else Tokens.TextSize.Body,
 		TextColor3 = Tokens.Color.Accent,
 		TextXAlignment = Enum.TextXAlignment.Right,
-		Text = fmt(props.value),
+		Text = fmt(start),
 	})
 
 	local fill = make("Frame", {
@@ -149,7 +151,7 @@ function Slider.new(props: Props): Slider
 		_min = props.min,
 		_max = props.max,
 		_step = props.step or 0.01,
-		_v = props.value,
+		_v = start,
 		_fmt = fmt,
 		_on = props.onChange,
 		_conns = {},

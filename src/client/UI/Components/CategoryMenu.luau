@@ -166,7 +166,7 @@ function CategoryMenu.new(props: Props): CategoryMenu
 			Parent = card,
 		})
 
-		if group.soon then
+		if group.soon and group.page == nil then
 			labels[group.id].TextColor3 = Tokens.Color.TextMuted
 		end
 
@@ -174,7 +174,7 @@ function CategoryMenu.new(props: Props): CategoryMenu
 		table.insert(
 			conns,
 			card.Activated:Connect(function()
-				if group.soon then
+				if group.soon and group.page == nil then
 					self:_flashSoon(group)
 					return
 				end
