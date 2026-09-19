@@ -252,6 +252,27 @@ function OutfitState.cleanHex(hex: any): string?
 	return string.upper(body)
 end
 
+-- Slot yang sah untuk intent setColor / setScale. Diekspor supaya IntentValidator tidak
+-- menyalin ulang daftarnya: dua salinan pasti berbeda suatu hari.
+function OutfitState.isColorSlot(slot: any): boolean
+	if type(slot) ~= "string" then
+		return false
+	end
+	if slot == "all" then
+		return true
+	end
+	for _, k in Map.ColorSlots do
+		if k == slot then
+			return true
+		end
+	end
+	return false
+end
+
+function OutfitState.isScaleSlot(slot: any): boolean
+	return type(slot) == "string" and OutfitState.SCALE_LIMITS[slot] ~= nil
+end
+
 -- Warna satu bagian badan, atau SELURUHNYA bila slot = "all" (itulah palet warna kulit di CAC:
 -- satu ketukan mewarnai enam bagian sekaligus; "Advanced Colors" barulah per bagian).
 -- Return (state baru, berapa slot yang BERUBAH). 0 = tidak ada yang berubah -> pemanggil membalas

@@ -378,6 +378,21 @@ function AvatarService.handle(self: AvatarService, player: any, intent: Types.In
 		end
 		commit(self, player, session, nextState, nextMakeup)
 		return true, nil
+	elseif op == "setColor" or op == "setScale" then
+		-- Satu geseran slider / satu ketukan petak warna = satu commit = satu Undo. Nol slot
+		-- berubah -> NOTHING, jadi menekan warna yang SEDANG dipakai tidak menumpuk riwayat undo
+		-- (pola removeKind).
+		local nextState, changed
+		if op == "setColor" then
+			nextState, changed = OutfitState.setColor(session.state, i.slot, i.hex)
+		else
+			nextState, changed = OutfitState.setScale(session.state, i.slot, i.value)
+		end
+		if changed == 0 then
+			return false, "NOTHING"
+		end
+		commit(self, player, session, nextState)
+		return true, nil
 	elseif op == "reset" then
 		if sameLook(session.state, session.baseline) and Makeup.isEmpty(session.makeup) then
 			return false, "NOTHING"

@@ -97,5 +97,27 @@ return function()
 	rejects({ op = "removeKind", kind = "hair" }, E.UNKNOWN_FIELD, "bentuk lama ditolak")
 	rejects({ op = "removeKind" }, E.BAD_KIND, "daftar hilang")
 
+	-- Halaman Body: setColor / setScale
+	local c = V.validate({ op = "setColor", slot = "all", hex = "#ff00aa" })
+	eq(c and c.hex, "FF00AA", "hex dinormalkan di validator")
+	eq(c and c.slot, "all", "slot all = palet kulit")
+	eq((V.validate({ op = "setColor", slot = "HeadColor", hex = "a3a2a5" }) or {}).hex, "A3A2A5", "slot per bagian")
+	rejects({ op = "setColor", slot = "NoseColor", hex = "ffffff" }, E.BAD_SLOT, "slot warna ngawur")
+	rejects({ op = "setColor", slot = "HeightScale", hex = "ffffff" }, E.BAD_SLOT, "slot skala bukan slot warna")
+	rejects({ op = "setColor", hex = "ffffff" }, E.BAD_SLOT, "slot wajib ada")
+	rejects({ op = "setColor", slot = "all", hex = "xyz" }, E.BAD_HEX, "hex ngawur")
+	rejects({ op = "setColor", slot = "all", hex = 16711680 }, E.BAD_HEX, "hex bukan string")
+
+	local sc = V.validate({ op = "setScale", slot = "HeightScale", value = 1.02 })
+	eq(sc and sc.value, 1.02, "nilai skala lolos apa adanya")
+	-- Nilai ujung HARUS lolos validator; yang menjepit adalah domain. Slider yang ditolak di ujung
+	-- terasa macet, dan engine sendiri tidak menjepit apa pun (spike 19 Sep 2026: kirim 9 -> dapat 9).
+	eq((V.validate({ op = "setScale", slot = "HeightScale", value = 99 }) or {}).value, 99, "nilai ujung diterima")
+	rejects({ op = "setScale", slot = "HeadColor", value = 1 }, E.BAD_SLOT, "slot warna bukan slot skala")
+	rejects({ op = "setScale", slot = "HeightScale", value = "1" }, E.BAD_VALUE, "nilai string")
+	rejects({ op = "setScale", slot = "HeightScale", value = 0 / 0 }, E.BAD_VALUE, "NaN")
+	rejects({ op = "setScale", slot = "HeightScale", value = math.huge }, E.BAD_VALUE, "tak terhingga")
+	rejects({ op = "setScale", slot = "HeightScale", value = 1, hex = "ffffff" }, E.UNKNOWN_FIELD, "field asing")
+
 	print("PASS IntentValidator.spec")
 end

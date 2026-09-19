@@ -22,17 +22,20 @@ for _, k in OutfitState.KINDS do
 	KINDS[k] = true
 end
 
-local SCHEMA: { [string]: { [string]: "id" | "ids?" | "bool?" | "order" | "kinds" } } = {
-	wear = { assetId = "id" },
-	remove = { assetId = "id" },
-	wearBundle = { bundleId = "id", partIds = "ids?", useBundleScales = "bool?" },
-	removeBundle = { bundleId = "id" },
-	setLayerOrder = { assetId = "id", order = "order" },
-	removeKind = { kinds = "kinds" },
-	undo = {},
-	redo = {},
-	reset = {},
-}
+local SCHEMA: { [string]: { [string]: "id" | "ids?" | "bool?" | "order" | "kinds" | "colorSlot" | "scaleSlot" | "hex" | "scale" } } =
+	{
+		wear = { assetId = "id" },
+		remove = { assetId = "id" },
+		wearBundle = { bundleId = "id", partIds = "ids?", useBundleScales = "bool?" },
+		removeBundle = { bundleId = "id" },
+		setLayerOrder = { assetId = "id", order = "order" },
+		removeKind = { kinds = "kinds" },
+		setColor = { slot = "colorSlot", hex = "hex" },
+		setScale = { slot = "scaleSlot", value = "scale" },
+		undo = {},
+		redo = {},
+		reset = {},
+	}
 
 local IntentValidator = {}
 
@@ -46,6 +49,9 @@ IntentValidator.Errors = {
 	BAD_BOOL = "BAD_BOOL",
 	BAD_ORDER = "BAD_ORDER",
 	BAD_KIND = "BAD_KIND",
+	BAD_SLOT = "BAD_SLOT",
+	BAD_HEX = "BAD_HEX",
+	BAD_VALUE = "BAD_VALUE",
 }
 local E = IntentValidator.Errors
 
@@ -163,6 +169,27 @@ function IntentValidator.validate(raw: any): (Intent?, string?)
 		elseif kind == "bool?" then
 			if v ~= nil and type(v) ~= "boolean" then
 				return nil, E.BAD_BOOL
+			end
+			out[field] = v
+		elseif kind == "colorSlot" or kind == "scaleSlot" then
+			local known = if kind == "colorSlot" then OutfitState.isColorSlot(v) else OutfitState.isScaleSlot(v)
+			if not known then
+				return nil, E.BAD_SLOT
+			end
+			out[field] = v
+		elseif kind == "hex" then
+			-- Dinormalkan DI SINI ("#ff00aa" -> "FF00AA") supaya state, undo, dan DescriptionBuilder
+			-- melihat satu bentuk saja; domain tidak perlu menebak bentuk kiriman client.
+			local clean = OutfitState.cleanHex(v)
+			if clean == nil then
+				return nil, E.BAD_HEX
+			end
+			out[field] = clean
+		elseif kind == "scale" then
+			-- Angka terhingga saja. Penjepitan ke batas slot dilakukan domain, bukan di sini:
+			-- nilai ujung slider HARUS diterima, bukan ditolak.
+			if type(v) ~= "number" or v ~= v or v == math.huge or v == -math.huge then
+				return nil, E.BAD_VALUE
 			end
 			out[field] = v
 		elseif kind == "ids?" then

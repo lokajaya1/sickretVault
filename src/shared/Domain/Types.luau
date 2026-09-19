@@ -61,6 +61,10 @@ export type Intent =
 	-- Item Removal: BEBERAPA kategori sekaligus (OutfitState.KINDS). Satu intent, satu commit,
 	-- jadi satu Undo mengembalikan seluruhnya -- bukan satu Undo per kategori.
 	| { op: "removeKind", kinds: { string } }
+	-- Halaman Body. Pada setColor, slot "all" = petak palet kulit (enam bagian sekaligus);
+	-- nama slot tunggal = Advanced Colors. Satu perubahan = satu commit = satu Undo.
+	| { op: "setColor", slot: string, hex: string }
+	| { op: "setScale", slot: string, value: number }
 	| { op: "undo" }
 	| { op: "redo" }
 	| { op: "reset" }
