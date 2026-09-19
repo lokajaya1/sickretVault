@@ -162,7 +162,6 @@ local list: { Group } = {
 		span = { x = 2, y = 6, w = 2, h = 2 },
 		spanCompact = { x = 0, y = 12, w = 2, h = 2 },
 		tone = 0.3,
-		soon = true,
 	},
 }
 

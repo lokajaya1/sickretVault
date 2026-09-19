@@ -58,6 +58,8 @@ local OPT_FOOT_H = 34 -- baris tombol Reset / Apply
 local OPT_SLIDE = 8 -- jarak melorot popover saat dibuka (piksel)
 -- Tipe pencipta yang bisa dipilih di popover. "All" = properti CreatorType TIDAK diset:
 -- Enum.CreatorTypeFilter tidak punya anggota yang berarti "semua" (spike 19 Sep 2026 tes 14).
+local BodyPage = require(script.Parent.BodyPage)
+
 local CREATOR_KINDS = { { label = "All" }, { label = "User", kind = "User" }, { label = "Group", kind = "Group" } }
 
 export type Props = {
@@ -79,6 +81,11 @@ export type Props = {
 	getWearing: (() -> { any })?, -- daftar item terpakai untuk tab Wearing (nil = tab tidak ditampilkan)
 	-- link/ID ditempel di kotak cari lalu Enter; id = nil bila teks mirip link tapi tidak valid
 	onLink: ((id: number?, kind: ("Asset" | "Bundle")?) -> ())?,
+	-- Halaman Body (warna kulit & skala). bodyLimits nil = kartu BODY tetap tidak bisa dibuka.
+	bodyLimits: BodyPage.Limits?,
+	onColor: ((string, string) -> ())?,
+	onScale: ((string, number) -> ())?,
+	getBody: (() -> ({ [string]: string }?, { [string]: number }?))?,
 }
 
 -- Keadaan popover yang BELUM diterapkan. Dipisah dari state controller supaya mengetik di kotak
@@ -127,7 +134,8 @@ export type CatalogPanel = typeof(setmetatable(
 		_groupHoldUntil: number,
 		_tabHoldUntil: number, -- os.clock() sampai kapan posisi geser dijaga (lihat _keepTabScroll)
 		_tabScroll: number, -- posisi geser baris kedua (dipulihkan setelah render ulang)
-		_page: "menu" | "list",
+		_page: "menu" | "list" | "body",
+		_body: BodyPage.BodyPage?,
 		_group: CatalogMenu.Group?,
 		_hasError: boolean,
 		_innerW: number,
@@ -1764,7 +1772,45 @@ function CatalogPanel.refreshSelection(self: CatalogPanel)
 end
 
 -- Halaman aktif: "menu" (mozaik kategori) atau "list" (daftar item).
-function CatalogPanel.page(self: CatalogPanel): "menu" | "list"
+-- Halaman Body dibuat saat PERTAMA dibuka, bukan di .new: pemain yang tidak pernah
+-- menyentuh kartu BODY tidak perlu membayar 24 petak warna + 5 slider.
+function CatalogPanel._ensureBody(self: CatalogPanel)
+	if self._body ~= nil then
+		return
+	end
+	local limits = self._props.bodyLimits
+	if limits == nil then
+		return
+	end
+	self._body = BodyPage.new({
+		parent = self.instance,
+		limits = limits,
+		onColor = function(slot, hex)
+			if self._props.onColor then
+				self._props.onColor(slot, hex)
+			end
+		end,
+		onScale = function(slot, value)
+			if self._props.onScale then
+				self._props.onScale(slot, value)
+			end
+		end,
+	})
+end
+
+function CatalogPanel.openBody(self: CatalogPanel)
+	self:disarm()
+	self:_ensureBody()
+	if self._body == nil then
+		return
+	end
+	self._page = "body"
+	self._group = nil
+	self._creatorName = nil
+	self:_applyPage()
+end
+
+function CatalogPanel.page(self: CatalogPanel): "menu" | "list" | "body"
 	return self._page
 end
 
@@ -1779,6 +1825,10 @@ end
 
 -- Buka halaman daftar item sebuah grup mozaik; tab = kategori milik grup itu.
 function CatalogPanel.openGroup(self: CatalogPanel, group: CatalogMenu.Group)
+	if group.id == "body" then
+		self:openBody()
+		return
+	end
 	if group.soon then
 		return -- grup belum punya isi (kartu mozaik hanya berkedip "Soon")
 	end
@@ -1826,15 +1876,20 @@ end
 
 -- Tampilkan bagian yang sesuai halaman aktif (dipanggil applyLayout & saat halaman berganti).
 function CatalogPanel._applyPage(self: CatalogPanel)
-	local isMenu = self._page == "menu"
+	-- `isMenu` di bawah berarti "BUKAN halaman daftar item": halaman Body juga tidak punya kotak
+	-- cari, tab, grid, zoom, maupun gear, jadi seluruh chrome daftar ikut disembunyikan.
+	local isMenu = self._page ~= "list"
 	local group = self._group
-	self._menu:setVisible(isMenu)
+	self._menu:setVisible(self._page == "menu")
+	if self._body then
+		self._body:setVisible(self._page == "body")
+	end
 	self._search.Visible = not isMenu
 	self._optButton.Visible = not isMenu
 	if isMenu then
 		self:_setOptionsOpen(false)
 	end
-	self._back.Visible = not isMenu
+	self._back.Visible = self._page ~= "menu"
 	self._tabBar.Visible = not isMenu
 	self._groupBar.Visible = not isMenu
 	for gid, b in self._groupTabs do
@@ -1850,13 +1905,22 @@ function CatalogPanel._applyPage(self: CatalogPanel)
 	end
 	self._status.Visible = not isMenu
 	self._retry.Visible = not isMenu and self._hasError
-	self._title.Text = if isMenu
-		then "Catalog"
+	self._title.Text = if self._page == "body"
+		then "Body"
+		elseif isMenu then "Catalog"
 		elseif self._creatorName then "By " .. self._creatorName
 		elseif group == nil then "Catalog"
 		else group.label
 
 	if isMenu then
+		if self._page == "body" then
+			local body = self._body :: any
+			body:setArea(0, self._contentTop, self._innerW, self._innerH - self._contentTop)
+			if self._props.getBody then
+				body:setState(self._props.getBody())
+			end
+			return
+		end
 		self._menu:setArea(0, self._contentTop, self._innerW, self._innerH - self._contentTop)
 		self:_loadMenuThumbs()
 		return

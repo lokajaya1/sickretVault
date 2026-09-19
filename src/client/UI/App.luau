@@ -652,6 +652,20 @@ function App.mount(opts: Options?): App
 	local panel = CatalogPanel.new({
 		controller = catalog,
 		parent = gui,
+		bodyLimits = OutfitState.SCALE_LIMITS,
+		onColor = function(slot, hex)
+			outfit:send({ op = "setColor", slot = slot, hex = hex })
+		end,
+		onScale = function(slot, value)
+			outfit:send({ op = "setScale", slot = slot, value = value })
+		end,
+		getBody = function()
+			local s = outfit:getState()
+			if s == nil then
+				return nil, nil
+			end
+			return s.colors, s.scales
+		end,
 		-- Tap kartu -> overlay di kartu (CatalogPanel); aksinya di bawah.
 		onItemActivated = function(item)
 			-- Overlay dibuka: ambil status favoritnya kalau izin inventory SUDAH ada (quiet =
