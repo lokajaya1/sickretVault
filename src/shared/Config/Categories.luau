@@ -17,7 +17,7 @@ export type Category = {
 	bundleTypes: { string }?,
 	-- Kategori yang isinya PART SATUAN dari bundle: dicari sebagai bundle, lalu tiap bundle
 	-- dimekarkan dan hanya part bertipe ini yang jadi kartu (lihat CatalogService._expandParts).
-	partType: string?, -- nama Enum.BundleType
+	partTypes: { string }?, -- nama Enum.BundleType
 }
 
 local list: { Category } = {
@@ -84,12 +84,17 @@ local list: { Category } = {
 	-- jadi pencarian per tipe aset sudah mengembalikannya satu per satu dan pemain bisa memakai
 	-- SATU bagian saja. Menambahkan bundleTypes di sini justru memunculkan bundle utuhnya --
 	-- itu sudah punya kategorinya sendiri (`bodies`, `heads`) di grup CHARACTERS.
-	{ id = "head_shapes", label = "Head", bundleTypes = { "BodyParts", "DynamicHead" }, partType = "Head" },
-	{ id = "torso", label = "Torso", bundleTypes = { "BodyParts" }, partType = "Torso" },
-	{ id = "left_arm", label = "LeftArm", bundleTypes = { "BodyParts" }, partType = "LeftArm" },
-	{ id = "right_arm", label = "RightArm", bundleTypes = { "BodyParts" }, partType = "RightArm" },
-	{ id = "left_leg", label = "LeftLeg", bundleTypes = { "BodyParts" }, partType = "LeftLeg" },
-	{ id = "right_leg", label = "RightLeg", bundleTypes = { "BodyParts" }, partType = "RightLeg" },
+	{
+		id = "head_shapes",
+		label = "Head",
+		bundleTypes = { "BodyParts", "DynamicHead" },
+		partTypes = { "Head", "DynamicHead" },
+	},
+	{ id = "torso", label = "Torso", bundleTypes = { "BodyParts" }, partTypes = { "Torso" } },
+	{ id = "left_arm", label = "LeftArm", bundleTypes = { "BodyParts" }, partTypes = { "LeftArm" } },
+	{ id = "right_arm", label = "RightArm", bundleTypes = { "BodyParts" }, partTypes = { "RightArm" } },
+	{ id = "left_leg", label = "LeftLeg", bundleTypes = { "BodyParts" }, partTypes = { "LeftLeg" } },
+	{ id = "right_leg", label = "RightLeg", bundleTypes = { "BodyParts" }, partTypes = { "RightLeg" } },
 }
 
 local byId: { [string]: Category } = {}

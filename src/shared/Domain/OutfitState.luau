@@ -286,6 +286,32 @@ function OutfitState.isRig(rig: any): boolean
 	return type(rig) == "string" and OutfitState.RIGS[rig] == true
 end
 
+local BODY_SLOT: { [string]: boolean } = {}
+for _, k in Map.BodyPartSlots do
+	BODY_SLOT[k] = true
+end
+
+function OutfitState.isBodySlot(slot: any): boolean
+	return type(slot) == "string" and BODY_SLOT[slot] == true
+end
+
+-- Kosongkan SATU slot bagian tubuh (tombol "None" di Head Shapes / Torso / Arms / Legs).
+-- Sengaja TIDAK kembali ke baseline seperti `remove`: "None" berarti bentuk BAWAAN, bukan bentuk
+-- yang kebetulan dipakai avatar akun. `removeKind` membuang SEMUA bagian tubuh sekaligus, jadi ia
+-- bukan pengganti yang tepat untuk satu tombol per slot.
+function OutfitState.removeSlot(state: OutfitState, slot: any): (OutfitState, number)
+	if not OutfitState.isBodySlot(slot) then
+		return state, 0
+	end
+	local current = state.bodyParts[slot :: string]
+	if current == nil or current.id == 0 then
+		return state, 0
+	end
+	local s = deepCopy(state)
+	s.bodyParts[slot :: string] = { id = 0 }
+	return s, 1
+end
+
 function OutfitState.isScaleSlot(slot: any): boolean
 	return type(slot) == "string" and OutfitState.SCALE_LIMITS[slot] ~= nil
 end

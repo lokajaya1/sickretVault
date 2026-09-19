@@ -24,7 +24,17 @@ end
 
 local SCHEMA: {
 	[string]: {
-		[string]: "id" | "ids?" | "bool?" | "order" | "kinds" | "colorSlot" | "scaleSlot" | "hex" | "scale" | "rig",
+		[string]: "id"
+			| "ids?"
+			| "bool?"
+			| "order"
+			| "kinds"
+			| "colorSlot"
+			| "scaleSlot"
+			| "bodySlot"
+			| "hex"
+			| "scale"
+			| "rig",
 	},
 } =
 	{
@@ -37,6 +47,7 @@ local SCHEMA: {
 		setColor = { slot = "colorSlot", hex = "hex" },
 		setScale = { slot = "scaleSlot", value = "scale" },
 		setRig = { rig = "rig" },
+		removeSlot = { slot = "bodySlot" },
 		undo = {},
 		redo = {},
 		reset = {},
@@ -58,6 +69,7 @@ IntentValidator.Errors = {
 	BAD_HEX = "BAD_HEX",
 	BAD_VALUE = "BAD_VALUE",
 	BAD_RIG = "BAD_RIG",
+	BAD_BODY_SLOT = "BAD_BODY_SLOT",
 }
 local E = IntentValidator.Errors
 
@@ -191,6 +203,11 @@ function IntentValidator.validate(raw: any): (Intent?, string?)
 				return nil, E.BAD_HEX
 			end
 			out[field] = clean
+		elseif kind == "bodySlot" then
+			if not OutfitState.isBodySlot(v) then
+				return nil, E.BAD_BODY_SLOT
+			end
+			out[field] = v
 		elseif kind == "rig" then
 			if not OutfitState.isRig(v) then
 				return nil, E.BAD_RIG

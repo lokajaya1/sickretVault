@@ -66,6 +66,7 @@ export type Intent =
 	| { op: "setColor", slot: string, hex: string }
 	| { op: "setScale", slot: string, value: number }
 	| { op: "setRig", rig: string }
+	| { op: "removeSlot", slot: string }
 	| { op: "undo" }
 	| { op: "redo" }
 	| { op: "reset" }

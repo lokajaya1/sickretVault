@@ -386,6 +386,13 @@ function AvatarService.handle(self: AvatarService, player: any, intent: Types.In
 		end
 		commit(self, player, session, nextState, nextMakeup)
 		return true, nil
+	elseif op == "removeSlot" then
+		local nextState, changed = OutfitState.removeSlot(session.state, i.slot)
+		if changed == 0 then
+			return false, "NOTHING"
+		end
+		commit(self, player, session, nextState)
+		return true, nil
 	elseif op == "setRig" then
 		local nextState, changed = OutfitState.setRig(session.state, i.rig)
 		if changed == 0 then

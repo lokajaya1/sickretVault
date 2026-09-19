@@ -201,5 +201,17 @@ return function()
 		assert(not okSame, "nilai yang sama bukan perubahan")
 	end
 
+	-- removeSlot: satu slot bagian tubuh -> bawaan (id 0), BUKAN baseline
+	local bs = OS.empty()
+	bs.bodyParts.Head = { id = 777 }
+	eq(select(2, OS.removeSlot(bs, "Head")), 1, "kepala dikosongkan")
+	eq(OS.removeSlot(bs, "Head").bodyParts.Head.id, 0, "id 0 = bentuk bawaan")
+	eq(bs.bodyParts.Head.id, 777, "state lama tidak berubah")
+	eq(select(2, OS.removeSlot(bs, "Torso")), 0, "slot yang sudah kosong -> 0")
+	eq(select(2, OS.removeSlot(bs, "Kepala")), 0, "slot ngawur -> 0")
+	eq(select(2, OS.removeSlot(bs, "HeadColor")), 0, "slot warna bukan slot bagian tubuh")
+	eq(OS.isBodySlot("Head"), true, "isBodySlot")
+	eq(OS.isBodySlot("HeightScale"), false, "isBodySlot menolak slot skala")
+
 	print("PASS OutfitState.spec")
 end

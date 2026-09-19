@@ -119,5 +119,11 @@ return function()
 	rejects({ op = "setScale", slot = "HeightScale", value = math.huge }, E.BAD_VALUE, "tak terhingga")
 	rejects({ op = "setScale", slot = "HeightScale", value = 1, hex = "ffffff" }, E.UNKNOWN_FIELD, "field asing")
 
+	-- removeSlot
+	eq((V.validate({ op = "removeSlot", slot = "Head" }) or {}).slot, "Head", "slot bagian tubuh")
+	rejects({ op = "removeSlot", slot = "HeadColor" }, E.BAD_BODY_SLOT, "slot warna ditolak")
+	rejects({ op = "removeSlot", slot = "Kepala" }, E.BAD_BODY_SLOT, "slot ngawur ditolak")
+	rejects({ op = "removeSlot" }, E.BAD_BODY_SLOT, "slot wajib ada")
+
 	print("PASS IntentValidator.spec")
 end
