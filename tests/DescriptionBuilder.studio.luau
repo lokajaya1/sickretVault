@@ -26,6 +26,7 @@
 --     require(game.ReplicatedStorage.Tests["DescriptionBuilder.studio"]).outfits()
 --     require(game.ReplicatedStorage.Tests["DescriptionBuilder.studio"]).load()
 --     require(game.ReplicatedStorage.Tests["DescriptionBuilder.studio"]).own()   -- #30, jalur B
+--     require(game.ReplicatedStorage.Tests["DescriptionBuilder.studio"]).anim()  -- #30 Langkah 5
 --   tab SERVER (pembanding: HARUS ditolak / atau justru jalan — itulah yang diukur):
 --     require(game.ReplicatedStorage.Tests["DescriptionBuilder.studio"]).caps()
 --     require(game.ReplicatedStorage.Tests["DescriptionBuilder.studio"]).save()
@@ -692,6 +693,129 @@ function M.db(userId: number?, spawnModels: boolean?)
 		print("[DescriptionBuilder] cek visual: DB_Original (kiri) vs DB_Rebuilt (kanan)")
 	end
 	print("[DescriptionBuilder] LULUS")
+end
+
+-- (c) SPIKE PRATINJAU ITEM REMOVAL (#30 Langkah 5). Dialog tong sampah harus menampilkan avatar
+-- yang BERGERAK dengan animasi yang dipakai pemain, sekaligus menunjukkan hasil pencentangan
+-- (item yang dicopot). Dua hal itu selama ini saling meniadakan di kode kita:
+--   * `OutfitPreview.mount` membangun model dari HumanoidDescription -> bisa memakai look apa pun,
+--     TAPI modelnya tidak bersendi (temuan #28: tanpa Motor6D) -> tidak bisa dianimasikan.
+--   * `OutfitPreview.mountAnimated` menyalin KARAKTER pemain -> bersendi dan bisa menari, TAPI ia
+--     memakai look yang sedang dipakai, bukan look hasil pencentangan.
+-- Jalan ketiga yang belum pernah diuji: salin karakter (bersendi), lalu PAKAIKAN description baru
+-- lewat Humanoid:ApplyDescription di dalam ViewportFrame.
+-- Yang harus dijawab SEBELUM kode produksi:
+--   A1. ApplyDescription jalan dari CLIENT untuk clone di dalam ViewportFrame? Berapa ms, error apa?
+--   A2. Sesudahnya rig masih bersendi (Motor6D) -- atau ApplyDescription membangun ulang badan dan
+--       mematikan animasinya?
+--   A3. Animasi benar-benar MENGGERAKKAN part di ViewportFrame (bukan cuma track.IsPlaying = true)?
+-- clipId boleh diisi id klip animasi milikmu; bawaannya idle R15 klasik.
+function M.anim(clipId: string?)
+	local desc, player = appliedDescription()
+	if desc == nil or player == nil then
+		return
+	end
+	local character = player.Character
+	if character == nil then
+		return say("[anim] karakter belum ada (%s)", where())
+	end
+
+	local gui = player:FindFirstChild("PlayerGui")
+	if gui == nil then
+		return say("[anim] PlayerGui tidak ada -- jalankan dari tab CLIENT")
+	end
+	local old = gui:FindFirstChild("AnimSpike")
+	if old then
+		old:Destroy()
+	end
+	local screen = Instance.new("ScreenGui")
+	screen.Name = "AnimSpike"
+	screen.ResetOnSpawn = false
+	screen.Parent = gui
+	local viewport = Instance.new("ViewportFrame")
+	viewport.Size = UDim2.fromOffset(260, 340)
+	viewport.Position = UDim2.fromOffset(24, 120)
+	viewport.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
+	viewport.Parent = screen
+	local world = Instance.new("WorldModel")
+	world.Parent = viewport
+	local camera = Instance.new("Camera")
+	camera.Parent = viewport
+	viewport.CurrentCamera = camera
+
+	character.Archivable = true
+	local clone = character:Clone()
+	-- Skrip Animate bawaan ikut tersalin dan MEMUTAR idle pemain di dalam viewport (temuan #28
+	-- no. 6); kalau dibiarkan, tidak ketahuan mana gerakan dari klip kita.
+	for _, d in clone:GetDescendants() do
+		if d:IsA("BaseScript") then
+			d:Destroy()
+		end
+	end
+	local function motors(): number
+		local n = 0
+		for _, d in clone:GetDescendants() do
+			if d:IsA("Motor6D") then
+				n += 1
+			end
+		end
+		return n
+	end
+	local before = motors()
+	clone.Parent = world
+	local humanoid = clone:FindFirstChildOfClass("Humanoid")
+	if humanoid == nil then
+		return say("[anim] clone tanpa Humanoid")
+	end
+	local root = clone:FindFirstChild("HumanoidRootPart")
+	if root ~= nil and root:IsA("BasePart") then
+		root.Anchored = true -- hanya root: part lain WAJIB bebas supaya animasi bisa menggerakkannya
+		camera.CFrame = CFrame.lookAt(root.Position + Vector3.new(0, 1, 9), root.Position + Vector3.new(0, 1, 0))
+	end
+
+	-- A1 & A2: pakaikan look yang BERBEDA dari avatar asli (rambut dicopot) -- kalau viewport-nya
+	-- berubah, berarti jalur ini cukup untuk pratinjau Item Removal.
+	local wanted = desc:Clone()
+	pcall(function()
+		wanted.HairAccessory = ""
+	end)
+	local t0 = os.clock()
+	local okApply, applyErr = pcall(function()
+		(humanoid :: Humanoid):ApplyDescription(wanted)
+	end)
+	say("[anim] A1 ApplyDescription ok=%s %d ms err=%s", tostring(okApply), ms(t0), tostring(applyErr))
+	say("[anim] A2 Motor6D sebelum=%d sesudah=%d", before, motors())
+
+	-- A3: animasi harus benar-benar menggerakkan part, bukan sekadar mengaku Playing.
+	local animator = humanoid:FindFirstChildOfClass("Animator")
+	if animator == nil then
+		animator = Instance.new("Animator")
+		animator.Parent = humanoid
+	end
+	for _, t in (animator :: Animator):GetPlayingAnimationTracks() do
+		t:Stop(0)
+	end
+	local animation = Instance.new("Animation")
+	animation.AnimationId = clipId or "rbxassetid://507766388"
+	local okLoad, track = pcall(function()
+		return (animator :: Animator):LoadAnimation(animation)
+	end)
+	say("[anim] A3 LoadAnimation ok=%s err=%s", tostring(okLoad), if okLoad then "-" else tostring(track))
+	if okLoad and track ~= nil then
+		local playing: AnimationTrack = track
+		playing.Looped = true
+		playing:Play()
+		local hand = clone:FindFirstChild("RightHand") or clone:FindFirstChild("Right Arm")
+		local p0 = if hand ~= nil and hand:IsA("BasePart") then hand.Position else Vector3.zero
+		task.wait(1.5)
+		local p1 = if hand ~= nil and hand:IsA("BasePart") then hand.Position else Vector3.zero
+		say(
+			"[anim] A3 IsPlaying=%s tangan bergeser %.3f stud (0.000 = rig tidak bergerak)",
+			tostring(playing.IsPlaying),
+			(p1 - p0).Magnitude
+		)
+	end
+	say("[anim] viewport ada di kiri layar. Hapus: game.Players.LocalPlayer.PlayerGui.AnimSpike:Destroy()")
 end
 
 return M

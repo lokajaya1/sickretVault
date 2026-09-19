@@ -163,6 +163,107 @@ local ICON_SPAN = 13 -- panjang garis plus/minus
 local ICON_CHEVRON = 10 -- panjang satu sisi chevron
 local ICON_RING = 13 -- garis tengah lingkaran ikon reset
 
+-- LATAR 3D kartu Item Removal: ruang abu gelap berisi balok-balok, meniru latar editor avatar
+-- bawaan Roblox. Dicari dulu di dokumentasi & forum (19 Sep 2026): latar itu BUKAN aset yang bisa
+-- dimuat dari dalam game -- ia scene yang ikut di dalam aplikasi Roblox sendiri (`Mobile.rbxl`,
+-- lihat "Custom Avatar Editor Background" di DevForum), dan "id latar avatar editor" yang beredar
+-- di forum cuma tangkapan layar yang diunggah ulang orang -- bisa hilang kapan saja. Jadi ruangnya
+-- DIBANGUN SENDIRI dari part: itu sebabnya ia hidup di WorldModel, bukan gambar datar.
+local ROOM_WALL = Color3.fromRGB(34, 34, 40)
+local ROOM_BLOCK = Color3.fromRGB(43, 43, 50)
+local ROOM_FLOOR = Color3.fromRGB(116, 116, 124)
+-- x, y (alas), z, lebar, tinggi, tebal. Baloknya BESAR dan DEKAT -- di rujukan, balok terdekat
+-- setinggi bahu avatar dan terpotong tepi layar; balok kecil di kejauhan membuat ruangnya terbaca
+-- seperti taman miniatur, bukan ruang tempat avatar berdiri.
+local ROOM_BLOCKS: { { number } } = {
+	{ -11, -3, -6, 7, 9, 7 },
+	{ 11, -3, -7, 8, 6, 7 },
+	{ -6, -3, -14, 9, 14, 8 },
+	{ 7, -3, -15, 8, 11, 8 },
+	{ -17, -3, -12, 8, 8, 8 },
+	{ 17, -3, -13, 7, 12, 8 },
+	{ 0, -3, -22, 12, 17, 8 },
+	{ -13, -3, -24, 10, 10, 8 },
+	{ 13, -3, -25, 9, 13, 8 },
+}
+
+local function buildRoom(world: WorldModel)
+	local function block(x: number, y: number, z: number, sx: number, sy: number, sz: number, color: Color3)
+		local part = Instance.new("Part")
+		part.Anchored = true
+		part.CanCollide = false
+		part.CastShadow = false
+		part.Material = Enum.Material.SmoothPlastic
+		part.Color = color
+		part.Size = Vector3.new(sx, sy, sz)
+		part.CFrame = CFrame.new(x, y + sy / 2, z)
+		part.Parent = world
+		return part
+	end
+	-- Lantai JAUH lebih terang daripada dinding: itu yang membuat avatar terlihat BERDIRI, bukan
+	-- melayang, dan itu pula yang paling menonjol di rujukan -- bidang terang di bawah, gelap di
+	-- sekelilingnya.
+	block(0, -4, -6, 90, 1, 70, ROOM_FLOOR)
+	block(0, -3, -30, 110, 46, 2, ROOM_WALL)
+	for _, b in ROOM_BLOCKS do
+		block(b[1], b[2], b[3], b[4], b[5], b[6], ROOM_BLOCK)
+	end
+end
+
+-- Sejauh mana avatar digeser ke kanan di dalam kartu Item Removal (piksel geser layar, sama
+-- satuannya dengan cubitan jari). Kira-kira separuh lebar daftar centang: cukup untuk keluar
+-- dari balik tulisan, tidak sampai terpotong tepi kartu.
+local REMOVE_PAN_X = 96
+
+-- Pratinjau Item Removal: kategori CAC -> Instance mana yang dibuang dari SALINAN karakter.
+-- `Accessory.AccessoryType` sudah membedakan rambut, wajah, dan pakaian berlapis, jadi tidak perlu
+-- menebak dari nama atau mencocokkan assetId. Pakaian klasik adalah Instance tersendiri (Shirt /
+-- Pants / ShirtGraphic), wajah klasik sebuah Decal bernama "face" di Head, dan Decal lain di Head
+-- adalah makeup kita -- yang ikut kategori Face.
+local LAYERED_ACCESSORY: { [string]: boolean } = {
+	TShirt = true,
+	Shirt = true,
+	Pants = true,
+	Jacket = true,
+	Sweater = true,
+	Shorts = true,
+	LeftShoe = true,
+	RightShoe = true,
+	DressSkirt = true,
+}
+local FACE_ACCESSORY: { [string]: boolean } = { Face = true, Eyebrow = true, Eyelash = true }
+
+local function stripFilter(drop: { [string]: boolean }): (Instance) -> boolean
+	return function(x: Instance): boolean
+		if x:IsA("Accessory") then
+			local kind = x.AccessoryType.Name
+			if kind == "Hair" then
+				return drop.hair == true
+			end
+			if FACE_ACCESSORY[kind] then
+				return drop.face == true
+			end
+			if LAYERED_ACCESSORY[kind] then
+				return drop.layered == true
+			end
+			-- Topi, kalung, sayap, dan aksesori lawas yang tipenya "Unknown" masuk sini.
+			return drop.accessories == true
+		end
+		if x:IsA("Shirt") or x:IsA("Pants") or x:IsA("ShirtGraphic") then
+			return drop.classic == true
+		end
+		if x:IsA("Decal") then
+			-- Wajah klasik ada di grup `classic` DAN ikut terbuang oleh kategori "face"
+			-- (OutfitState.removeKind memperlakukannya persis begitu).
+			if x.Name == "face" then
+				return drop.classic == true or drop.face == true
+			end
+			return drop.face == true -- makeup
+		end
+		return false
+	end
+end
+
 -- Kategori yang jumlahnya dihitung untuk dialog Item Removal. Sengaja TANPA "all": barisnya
 -- di dialog melepas semuanya dan tidak butuh angka, dan menghitungnya berarti menjumlah
 -- kategori lain dua kali.
@@ -208,6 +309,7 @@ export type App = typeof(setmetatable(
 		_saveChooser: NamePrompt.NamePrompt, -- "How would you like to save your outfit?" (#30)
 		_saveReview: SaveReviewPanel.SaveReviewPanel, -- panel Owned / Unowned sebelum menyimpan
 		_removeDialog: RemoveDialog.RemoveDialog, -- Item Removal per kategori (ikon tong sampah)
+		_removeToken: number, -- penanda sesi dialog; masuk ke kunci cache pratinjau
 		_reviewToken: number, -- jawaban kepemilikan yang datang terlambat dibuang
 		_reviewUnowned: { [number]: boolean }, -- assetId yang belum dimiliki (dicopot saat menyimpan)
 		_chromeCatalog: boolean, -- katalog tadinya terbuka saat panel simpan muncul -> dibuka lagi
@@ -496,7 +598,15 @@ function App.mount(opts: Options?): App
 			elseif op == "cart" then
 				self:openCart()
 			elseif op == "reset" then
-				outfit:send({ op = "reset" })
+				-- Reset membuang SELURUH hasil coba-coba dan mengembalikan avatar akun. Ia tidak
+				-- boleh berjalan dari satu ketukan tanpa pertanyaan -- pola CAC: kartu yang sama,
+				-- avatar terlihat, No / Yes.
+				-- Penanda sesi dinaikkan juga di sini: kunci cache pratinjau memuatnya, dan avatar
+				-- asli akun harus dibangun ulang kalau panelnya dibuka lagi setelah look berubah.
+				self._removeToken += 1
+				self._removeDialog:openConfirm("Reset to Roblox Avatar?", function()
+					outfit:send({ op = "reset" })
+				end)
 			elseif op == "trash" then
 				self:openRemoveDialog()
 			end
@@ -946,6 +1056,110 @@ function App.mount(opts: Options?): App
 			-- commit, jadi satu Undo mengembalikan seluruhnya -- bukan satu Undo per kategori.
 			outfit:send({ op = "removeKind", kinds = kinds })
 		end,
+		-- Pratinjau HASIL pencentangan (pola CAC): state sekarang dikurangi kategori yang dicentang,
+		-- dihitung dengan fungsi domain yang sama dengan yang nanti dipakai server. Ini cuma
+		-- gambar -- tidak ada intent yang dikirim sampai Remove ditekan.
+		-- Avatar di dialog ini memakai FUNGSI YANG SAMA dengan kartu avatar di kolom kiri
+		-- (`mountCurrent` + latar + `setLive`), bukan jalur lain: clone karakter asli, jadi ia
+		-- bergerak persis mengikuti animasi yang sedang dipakai dan tidak pernah tercabik.
+		-- Konsekuensinya jujur: yang tampil adalah avatar SEKARANG, bukan ramalan hasil centang --
+		-- hasilnya terlihat begitu Remove ditekan (kartu ini memperbarui dirinya sendiri), dan satu
+		-- Undo mengembalikannya.
+		preview = function(kinds, viewport, confirmMode)
+			-- MODE TANYA (Reset to Roblox Avatar?): yang diperlihatkan adalah avatar ASLI AKUN --
+			-- hasil yang akan didapat kalau Yes ditekan -- bukan look yang sedang dicoba. Ia look
+			-- yang tidak sedang dipakai siapa pun, jadi dibangun dari description: berlatar dan
+			-- beruang 3D sama seperti kartu lain, tapi DIAM -- tidak ada karakter hidup untuk ditiru
+			-- posenya.
+			if confirmMode then
+				local baseline = outfit:getBaseline()
+				if baseline == nil then
+					-- Server belum sempat mengirim avatar asli (sesi belum siap saat GetState dijawab).
+					-- Kartu kosong terbaca seperti panel rusak, jadi yang ditampilkan avatar sekarang --
+					-- dan barisnya dicatat, karena ini seharusnya tidak pernah terjadi.
+					log.warn("avatar asli belum diterima; panel reset memakai avatar sekarang")
+					local fallback = previews:mountCurrent(viewport, {
+						background = true,
+						scene = if outfit:getBackground() == nil then buildRoom else nil,
+					})
+					local setLive = fallback.setLive
+					if setLive ~= nil then
+						setLive(true)
+					end
+					fallback.addPan(REMOVE_PAN_X, 0)
+					return fallback.cancel
+				end
+				-- Tidak digeser ke kanan seperti mode daftar: di mode tanya kaki kartu cuma dua tombol,
+				-- jadi avatarnya berdiri di tengah.
+				local handle = previews:mount(
+					viewport,
+					("baseline:%d"):format(self._removeToken),
+					{ outfit = PlayerData.encodeOutfit(baseline), makeup = {} },
+					function()
+						log.warn("pratinjau avatar asli tidak jadi")
+					end,
+					{
+						focus = "full",
+						background = true,
+						scene = if outfit:getBackground() == nil then buildRoom else nil,
+					}
+				)
+				return handle.cancel
+			end
+			local drop: { [string]: boolean } = {}
+			for _, kind in kinds do
+				drop[kind] = true
+			end
+			-- KARTU YANG SAMA dengan kolom kiri (mountCurrent + latar + setLive) juga untuk pratinjau
+			-- "sesudah dibuang": salinan karakternya disaring lebih dulu, jadi ia tetap bersendi,
+			-- tetap ikut animasi, tetap berlatar. Mencentang Animations mematikan peniruan pose --
+			-- avatar berhenti, persis yang akan terjadi setelah animasinya dibuang.
+			if not (drop.bodyParts or drop.all) then
+				-- Memakai item Background -> ruang 3D TIDAK dibangun. Latarnya sudah gambar pilihan
+				-- pemain; balok-balok kita akan berdiri di DEPAN gambar itu dan merusaknya.
+				local plain = outfit:getBackground() == nil
+				local live = previews:mountCurrent(viewport, {
+					background = true,
+					strip = if #kinds > 0 then stripFilter(drop) else nil,
+					scene = if plain then buildRoom else nil,
+				})
+				local setLive = live.setLive
+				if setLive ~= nil then
+					setLive(not drop.animations)
+				end
+				-- Dunia avatar memenuhi kartu, daftar centang menempati sisi kirinya: kameranya
+				-- digeser supaya avatar berdiri di sisa ruang kanan, bukan di belakang tulisan.
+				live.addPan(REMOVE_PAN_X, 0)
+				return live.cancel
+			end
+			-- Body Parts (dan All, yang memuatnya) TIDAK bisa disaring dari salinan: badan bukan item
+			-- yang bisa dicabut, ia harus dibangun ulang dari description. Untuk dua kasus itu saja
+			-- dipakai previews:mount -- diam, tapi tepat.
+			local state = outfit:getState()
+			if state == nil then
+				return nil
+			end
+			local look = state
+			for _, kind in kinds do
+				look = (OutfitState.removeKind(look, kind))
+			end
+			-- Kunci cache memuat penanda sesi: tanpa itu, membuka dialog lagi setelah look berubah
+			-- akan memakai ulang model lama (OutfitPreview menyimpan model per kunci).
+			local key = ("remove:%d:%s"):format(self._removeToken, table.concat(kinds, ","))
+			local handle = previews:mount(
+				viewport,
+				key,
+				-- Jalur ini hanya untuk Body Parts / All, dan keduanya membuang makeup juga.
+				{ outfit = PlayerData.encodeOutfit(look), makeup = if drop.all then {} else outfit:makeupRows() },
+				function()
+					log.warn("pratinjau Item Removal tidak jadi")
+				end,
+				-- background = true juga di jalur ini: tanpa itu kartu kehilangan latarnya persis saat
+				-- avatar paling polos (semua item dibuang), dan yang tersisa cuma badan di atas hitam.
+				{ focus = "full", background = true, scene = if outfit:getBackground() == nil then buildRoom else nil }
+			)
+			return handle.cancel
+		end,
 	})
 
 	local livePreview = previews:mountCurrent(previewPort, { background = true })
@@ -1143,6 +1357,7 @@ function App.mount(opts: Options?): App
 		_saveChooser = saveChooser,
 		_saveReview = saveReview,
 		_removeDialog = removeDialog,
+		_removeToken = 0,
 		_reviewToken = 0,
 		_reviewUnowned = {},
 		_chromeCatalog = false,
@@ -1709,6 +1924,15 @@ function App.openRemoveDialog(self: App)
 		local _, n = OutfitState.removeKind(state, kind)
 		counts[kind] = n
 	end
+	-- Makeup tidak punya barisnya sendiri (CAC tidak punya, dan daftar ini mengikuti CAC): ia ikut
+	-- kategori FACE, tempatnya memang di wajah. Dihitung terpisah karena makeup bukan bagian
+	-- OutfitState (Decal di Head), jadi OutfitState.removeKind selalu menjawab 0 untuknya.
+	local makeup = self.outfit:makeupCount()
+	counts.face += makeup
+	-- Baris "All" juga butuh angkanya sendiri, kalau tidak ia ikut redup dan tak bisa dicentang.
+	local _, nAll = OutfitState.removeKind(state, "all")
+	counts.all = nAll + makeup
+	self._removeToken += 1
 	self._removeDialog:open(counts)
 end
 

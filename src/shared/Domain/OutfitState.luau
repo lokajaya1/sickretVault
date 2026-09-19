@@ -239,6 +239,11 @@ OutfitState.KINDS = {
 	"animations",
 }
 
+-- CATATAN MAKEUP: makeup TIDAK punya kategori sendiri di sini. Ia hidup di luar OutfitState (Decal
+-- yang ditempel ke Head, spike #18) dan ikut kategori "face" -- sama seperti daftar Item Removal
+-- milik Catalog Avatar Creator, yang juga tidak punya baris Makeup. Yang membuangnya AvatarService,
+-- di commit yang sama dengan kategori lain, supaya satu Undo mengembalikan semuanya sekaligus.
+
 local FACE_ACCESSORIES = {
 	FaceAccessory = true,
 	EyebrowAccessory = true,

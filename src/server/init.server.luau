@@ -260,6 +260,9 @@ Remotes.func(RemoteNames.Functions.GetState).OnServerInvoke = function(player: P
 	return {
 		ok = true,
 		state = state,
+		-- Avatar asli akun: dipakai panel "Reset to Roblox Avatar?" untuk memperlihatkan apa yang
+		-- akan didapat pemain SEBELUM ia menekan Yes. Tidak berubah sepanjang sesi.
+		baseline = avatar:getBaseline(player),
 		makeup = Makeup.toDto(avatar:getMakeup(player)),
 		background = background,
 	}

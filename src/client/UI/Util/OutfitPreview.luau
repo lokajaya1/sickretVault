@@ -221,7 +221,19 @@ local function attachMakeup(model: Model, rows: any): () -> ()
 end
 
 -- Opsi per-mount. `background = true` hanya untuk preview avatar SEKARANG (lihat catatan di atas).
-export type MountOptions = { background: boolean?, focus: string? }
+-- strip = penyaring isi SALINAN karakter (hanya mountCurrent): Instance yang dijawab `true`
+-- dibuang sebelum kartu dipasang. Dipakai pratinjau Item Removal: kartunya tetap kartu yang
+-- sama -- bersendi, ikut animasi, berlatar -- cuma isinya yang dikurangi. Kategori apa yang
+-- masuk mana TIDAK diputuskan di sini; pemanggil yang mengirim aturannya.
+-- scene = pemanggil boleh menambahkan part ke WorldModel sebelum avatarnya masuk: dipakai untuk
+-- LATAR 3D (ruang editor avatar). Dipanggil sekali, saat viewport dibangun. Part yang ditaruh
+-- di situ TIDAK ikut menghitung bingkai kamera -- bingkai dihitung dari model avatarnya saja.
+export type MountOptions = {
+	background: boolean?,
+	focus: string?,
+	strip: ((Instance) -> boolean)?,
+	scene: ((world: WorldModel) -> ())?,
+}
 
 export type Handle = {
 	cancel: () -> (),
@@ -565,6 +577,15 @@ function OutfitPreview.mount(
 	local world = Instance.new("WorldModel")
 	world.Name = "Preview"
 	world.Parent = viewport
+	-- Latar 3D opsional (ruang editor avatar). Dibungkus pcall: latar yang gagal tidak boleh
+	-- menjatuhkan preview-nya -- avatar lebih penting daripada dindingnya.
+	local scene = if type(opts) == "table" then opts.scene else nil
+	if scene ~= nil then
+		local okScene, errScene = pcall(scene, world)
+		if not okScene then
+			log.warn("latar 3D preview gagal", errScene)
+		end
+	end
 	local camera = Instance.new("Camera")
 	camera.FieldOfView = FOV
 	camera.Parent = viewport
@@ -847,6 +868,15 @@ function OutfitPreview.mountCurrent(self: OutfitPreview, viewport: ViewportFrame
 	local world = Instance.new("WorldModel")
 	world.Name = "Preview"
 	world.Parent = viewport
+	-- Latar 3D opsional (ruang editor avatar). Dibungkus pcall: latar yang gagal tidak boleh
+	-- menjatuhkan preview-nya -- avatar lebih penting daripada dindingnya.
+	local scene = if type(opts) == "table" then opts.scene else nil
+	if scene ~= nil then
+		local okScene, errScene = pcall(scene, world)
+		if not okScene then
+			log.warn("latar 3D preview gagal", errScene)
+		end
+	end
 	local camera = Instance.new("Camera")
 	camera.FieldOfView = FOV
 	camera.Parent = viewport
@@ -890,6 +920,22 @@ function OutfitPreview.mountCurrent(self: OutfitPreview, viewport: ViewportFrame
 			return -- karakter belum ada; CharacterAdded akan memanggil lagi
 		end
 		prepare(fresh)
+		-- Disaring SEBELUM dipasang: membuang sesudahnya berarti pemain sempat melihat item yang
+		-- katanya sudah dibuang. Dikumpulkan dulu, baru dihapus -- menghapus sambil menelusuri bisa
+		-- ikut membawa anak-anaknya dan melewatkan sisanya.
+		local strip = if type(opts) == "table" then opts.strip else nil
+		if strip ~= nil then
+			local doomed: { Instance } = {}
+			for _, x in fresh:GetDescendants() do
+				local okStrip, wanted = pcall(strip, x)
+				if okStrip and wanted then
+					table.insert(doomed, x)
+				end
+			end
+			for _, x in doomed do
+				x:Destroy()
+			end
+		end
 		-- Pose diatur PENUH oleh kita (cermin), jadi semua part di-anchor: weld/constraint tidak
 		-- boleh menarik balik CFrame yang disetel tiap frame.
 		for _, x in fresh:GetDescendants() do

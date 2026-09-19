@@ -236,6 +236,14 @@ function AvatarService.getState(self: AvatarService, player: any): State?
 	return if session and session.ready then session.state else nil
 end
 
+-- Avatar ASLI akun pemain (tempat `reset` kembali). Ia tidak berubah sepanjang sesi, jadi client
+-- cukup menerimanya sekali lewat GetState. Disalin supaya pemanggil tidak bisa mengubah baseline
+-- sesi dari luar.
+function AvatarService.getBaseline(self: AvatarService, player: any): State?
+	local session = self._sessions[player]
+	return if session and session.ready then OutfitState.clone(session.baseline) else nil
+end
+
 -- ===== Intent =====
 
 -- Ada part bundle yang bisa dipakai (tipe dikenal & termasuk partIds bila diberikan)?
@@ -349,8 +357,18 @@ function AvatarService.handle(self: AvatarService, player: any, intent: Types.In
 		-- kebetulan kosong tidak membatalkan yang lain; yang membatalkan hanya kalau TIDAK ADA
 		-- satu pun item terbuang -> NOTHING (timeline undo tidak disentuh).
 		local nextState = session.state
+		local nextMakeup = session.makeup
 		local removed = 0
 		for _, kind in i.kinds do
+			-- Makeup bukan bagian OutfitState (Decal di Head), jadi ia dibuang di sini dan bukan di
+			-- OutfitState.removeKind. Dilaporkan user 19 Sep 2026: sebagian makeup tidak muncul di
+			-- strip "Wearing", jadi satu-satunya jalan melepasnya dulu cuma Reset -- yang juga
+			-- mengembalikan seluruh look ke avatar asli. Ia ikut kategori FACE (daftar kategori
+			-- mengikuti Catalog Avatar Creator, yang tidak punya baris Makeup).
+			if kind == "face" or kind == "all" then
+				removed += Makeup.count(nextMakeup)
+				nextMakeup = Makeup.empty()
+			end
 			local after, n = OutfitState.removeKind(nextState, kind)
 			nextState = after
 			removed += n
@@ -358,7 +376,7 @@ function AvatarService.handle(self: AvatarService, player: any, intent: Types.In
 		if removed == 0 then
 			return false, "NOTHING"
 		end
-		commit(self, player, session, nextState, session.makeup)
+		commit(self, player, session, nextState, nextMakeup)
 		return true, nil
 	elseif op == "reset" then
 		if sameLook(session.state, session.baseline) and Makeup.isEmpty(session.makeup) then

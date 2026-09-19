@@ -153,6 +153,13 @@ return function()
 		assert(next(all.accessories) == nil, "semua aksesori harus hilang")
 		assert(all.classic.Shirt.id == 0 and all.bodyParts.Torso.id == 0, "slot harus kosong")
 
+		-- Makeup BUKAN kategori tersendiri: ia ikut "face", dan yang membuangnya AvatarService
+		-- (makeup hidup di luar OutfitState). Kalau suatu saat "makeup" muncul di KINDS, UI akan
+		-- mengirim kategori yang tidak pernah membuang apa pun -> tombolnya diam tanpa sebab.
+		for _, k in OS.KINDS do
+			assert(k ~= "makeup", "makeup tidak boleh jadi kategori sendiri -- ia ikut face")
+		end
+
 		local _, nEmpty = OS.removeKind(OS.empty(), "all")
 		assert(nEmpty == 0, "state kosong tidak membuang apa pun")
 
