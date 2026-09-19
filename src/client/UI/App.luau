@@ -40,6 +40,7 @@ local ItemDetailPanel = require(script.Parent.Components.ItemDetailPanel)
 local CartPanel = require(script.Parent.Components.CartPanel)
 local WardrobePanel = require(script.Parent.Components.WardrobePanel)
 local SideRail = require(script.Parent.Components.SideRail)
+local NamePrompt = require(script.Parent.Components.NamePrompt)
 local OutfitPreview = require(script.Parent.Util.OutfitPreview)
 local CatalogController = require(script.Parent.Parent.Controllers.CatalogController)
 local OutfitController = require(script.Parent.Parent.Controllers.OutfitController)
@@ -189,6 +190,7 @@ export type App = typeof(setmetatable(
 		rightRail: SideRail.SideRail,
 		toast: Toast.Toast,
 		actions: ActionBar.ActionBar,
+		_saveChooser: NamePrompt.NamePrompt, -- "How would you like to save your outfit?" (#30)
 		strip: WornStrip.WornStrip,
 		camera: TryOnCamera.TryOnCamera,
 		_catalogButton: TextButton,
@@ -445,11 +447,22 @@ function App.mount(opts: Options?): App
 	--   roblox = simpan look ini ke akun Roblox; cart = keranjang; reset = kembali ke avatar
 	--   sendiri (server, lewat OutfitController); trash = Item Removal per kategori.
 	-- Undo sekarang panah di pojok kartu preview, Redo dibuang.
+	-- Dialog pilihan cara menyimpan (pola CAC): dua kartu, menumpang NamePrompt mode "saveTarget".
+	-- Ia selayar penuh (anak `gui`, bukan panel) karena dipanggil dari DUA tempat: bar aksi saat
+	-- katalog terbuka, dan kluster ikon kiri bawah saat katalog tertutup.
+	local saveChooser = NamePrompt.new({
+		parent = gui,
+		zIndex = Tokens.ZIndex.Popup + 5, -- di atas panel & popover, di bawah Toast
+		onConfirm = function(_mode, kind)
+			self:saveToRoblox(kind)
+		end,
+	})
+
 	local actions = ActionBar.new({
 		parent = gui,
 		onAction = function(op)
 			if op == "roblox" then
-				self:saveToRoblox()
+				self:openSaveChooser()
 			elseif op == "cart" then
 				self:openCart()
 			elseif op == "reset" then
@@ -921,7 +934,7 @@ function App.mount(opts: Options?): App
 		},
 		onActivated = function(key)
 			if key == "saveRoblox" then
-				self:saveToRoblox()
+				self:openSaveChooser()
 			else
 				self.bottomRail:flash(key, "Soon", SOON_SECONDS)
 			end
@@ -1064,6 +1077,7 @@ function App.mount(opts: Options?): App
 		rightRail = rightRail,
 		toast = toast,
 		actions = actions,
+		_saveChooser = saveChooser,
 		strip = strip,
 		camera = camera,
 		_catalogButton = catalogButton,
@@ -1558,6 +1572,12 @@ end
 -- Promptnya milik Roblox (ia sendiri yang mendaftar item yang akan dipasang), jadi di sini cuma
 -- toast hasil. YIELD -> thread sendiri. Item yang belum dimiliki tidak membuatnya gagal
 -- (spike 19 Sep 2026: tetap Success).
+-- Tanya dulu: outfit Roblox BARU, atau timpa avatar akun? (#29 langsung menimpa tanpa bertanya.)
+-- Dialognya sendiri yang memanggil saveToRoblox lewat onConfirm; tap di luar kartu = batal.
+function App.openSaveChooser(self: App)
+	self._saveChooser:open("saveTarget")
+end
+
 function App.saveToRoblox(self: App, kind: string?)
 	task.spawn(function()
 		local ok, code = self.wardrobe:saveToRoblox(kind)
@@ -1568,7 +1588,13 @@ function App.saveToRoblox(self: App, kind: string?)
 			)
 			return
 		end
-		local text = ROBLOX_SAVE_TEXT[code or "FAILED"] or ROBLOX_SAVE_TEXT.FAILED
+		-- Diukur 19 Sep 2026 (Command Bar, melewati seluruh kode kita): PromptCreateOutfit menjawab
+		-- Failed untuk look berisi item yang BELUM DIMILIKI, dan Success untuk avatar asli akun --
+		-- sedangkan PromptSaveAvatar tetap Success (temuan #29 no. 4). Jadi "Failed" di jalur
+		-- outfit hampir selalu soal kepemilikan, bukan gangguan sesaat: jangan suruh "try again".
+		local text = if kind == "outfit" and code == "FAILED"
+			then "Roblox only saves outfits made of items you own"
+			else ROBLOX_SAVE_TEXT[code or "FAILED"] or ROBLOX_SAVE_TEXT.FAILED
 		self.toast:show(text, if code == "DENIED" or code == "BUSY" then "info" else "warning")
 	end)
 end
@@ -1599,6 +1625,7 @@ function App.destroy(self: App)
 	self.panel:destroy()
 	self.toast:destroy()
 	self.actions:destroy()
+	self._saveChooser:destroy()
 	self.strip:destroy()
 	self.gui:Destroy()
 end
