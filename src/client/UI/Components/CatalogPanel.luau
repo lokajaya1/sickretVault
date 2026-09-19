@@ -58,6 +58,8 @@ local OPT_FOOT_H = 34 -- baris tombol Reset / Apply
 local OPT_SLIDE = 8 -- jarak melorot popover saat dibuka (piksel)
 -- Tipe pencipta yang bisa dipilih di popover. "All" = properti CreatorType TIDAK diset:
 -- Enum.CreatorTypeFilter tidak punya anggota yang berarti "semua" (spike 19 Sep 2026 tes 14).
+local BodyPage = require(script.Parent.BodyPage)
+
 local CREATOR_KINDS = { { label = "All" }, { label = "User", kind = "User" }, { label = "Group", kind = "Group" } }
 
 export type Props = {
@@ -79,6 +81,12 @@ export type Props = {
 	getWearing: (() -> { any })?, -- daftar item terpakai untuk tab Wearing (nil = tab tidak ditampilkan)
 	-- link/ID ditempel di kotak cari lalu Enter; id = nil bila teks mirip link tapi tidak valid
 	onLink: ((id: number?, kind: ("Asset" | "Bundle")?) -> ())?,
+	-- Halaman Body (warna kulit & skala). bodyLimits nil = kartu BODY tetap tidak bisa dibuka.
+	bodyLimits: BodyPage.Limits?,
+	onColor: ((string, string) -> ())?,
+	onScale: ((string, number) -> ())?,
+	onRig: ((string) -> ())?,
+	getBody: (() -> ({ [string]: string }?, { [string]: number }?, string?))?,
 }
 
 -- Keadaan popover yang BELUM diterapkan. Dipisah dari state controller supaya mengetik di kotak
@@ -123,11 +131,14 @@ export type CatalogPanel = typeof(setmetatable(
 		_groupBar: ScrollingFrame,
 		_groupTabs: { [string]: TextButton },
 		_filterTabs: { [string]: TextButton },
+		_panelTabs: { [string]: TextButton },
 		_groupScroll: number, -- posisi geser baris grup (baris pertama)
 		_groupHoldUntil: number,
 		_tabHoldUntil: number, -- os.clock() sampai kapan posisi geser dijaga (lihat _keepTabScroll)
 		_tabScroll: number, -- posisi geser baris kedua (dipulihkan setelah render ulang)
 		_page: "menu" | "list",
+		_bodySection: string?, -- chip panel yang sedang tampil di grup BODY (nil = grid biasa)
+		_body: BodyPage.BodyPage?,
 		_group: CatalogMenu.Group?,
 		_hasError: boolean,
 		_innerW: number,
@@ -826,6 +837,23 @@ function CatalogPanel.new(props: Props): CatalogPanel
 		)
 	end
 
+	-- Chip PANEL (Color / Scale) menggantikan All/Free/Limited pada grup berhalaman (BODY).
+	-- Dibuat sekali di sini, sama seperti chip filter; yang berubah per grup cuma yang mana
+	-- yang terlihat -- membangun ulang baris chip tiap kali grup dibuka berarti kehilangan
+	-- posisi geser dan koneksi tombolnya.
+	local panelTabs: { [string]: TextButton } = {}
+	for i, f in CatalogMenu.PANELS do
+		local b = stripTab("Pnl_" .. f.id, f.label, i - #CatalogMenu.PANELS - 1, tabBar, false)
+		b.Visible = false
+		panelTabs[f.id] = b
+		table.insert(
+			conns,
+			b.Activated:Connect(function()
+				self:_setFilter(f.id)
+			end)
+		)
+	end
+
 	-- Baris 1: grup mozaik; selalu lengkap supaya bisa pindah grup tanpa kembali ke menu.
 	for i, group in CatalogMenu.list do
 		local b = stripTab("Group_" .. group.id, group.label, i, groupBar, true)
@@ -842,6 +870,9 @@ function CatalogPanel.new(props: Props): CatalogPanel
 		table.insert(
 			conns,
 			b.Activated:Connect(function()
+				-- Sama seperti tab kategori: panel Color/Scale harus minggir dulu, kalau tidak Wearing
+				-- dibuka tapi yang terlihat tetap palet warna.
+				self:_showBodyPanel(nil)
 				self:_setWearing(true)
 			end)
 		)
@@ -853,6 +884,8 @@ function CatalogPanel.new(props: Props): CatalogPanel
 			b.Activated:Connect(function()
 				self:_setWearing(false)
 				self:_keepTabScroll()
+				-- Kembali ke grid: tanpa ini panel Color/Scale tetap menutupi daftar item.
+				self:_showBodyPanel(nil)
 				spawnCall(ctl.setCategory, ctl, cat.id)
 			end)
 		)
@@ -971,6 +1004,7 @@ function CatalogPanel.new(props: Props): CatalogPanel
 		_groupBar = groupBar,
 		_groupTabs = groupTabs,
 		_filterTabs = filterTabs,
+		_panelTabs = panelTabs,
 		_tabScroll = 0,
 		_tabHoldUntil = 0,
 		_groupScroll = 0,
@@ -1574,6 +1608,9 @@ function CatalogPanel._render(self: CatalogPanel, state: any)
 	for id, b in self._filterTabs do
 		setTabActive(b, id == active)
 	end
+	for id, b in self._panelTabs do
+		setTabActive(b, id == self._bodySection)
+	end
 
 	if self._wearing then
 		local getWearing = self._props.getWearing
@@ -1753,6 +1790,21 @@ function CatalogPanel.setCartCount(self: CatalogPanel, count: number)
 end
 
 -- Outfit berubah: tab Wearing -> gambar ulang daftar; tab lain -> perbarui sorotan kartu.
+-- Dipanggil setiap look berubah, termasuk Undo. Tanpa ini halaman Body hanya membaca state SAAT
+-- DIBUKA: menekan Undo selagi panel terbuka membuat diagram warna, slider, dan tombol rig
+-- menunjukkan keadaan lama, dan pemain berhak menganggap Undo-nya tidak bekerja.
+-- Diam saja kalau panel Body tidak sedang tampil -- ini dipanggil sesering look berubah.
+function CatalogPanel.refreshBody(self: CatalogPanel)
+	local body = self._body
+	if body == nil or self._bodySection == nil or not self.instance.Visible then
+		return
+	end
+	local getBody = self._props.getBody
+	if getBody ~= nil then
+		body:setState(getBody())
+	end
+end
+
 function CatalogPanel.refreshSelection(self: CatalogPanel)
 	if self._wearing then
 		self:_render(self._props.controller:getState())
@@ -1764,6 +1816,68 @@ function CatalogPanel.refreshSelection(self: CatalogPanel)
 end
 
 -- Halaman aktif: "menu" (mozaik kategori) atau "list" (daftar item).
+-- Halaman Body dibuat saat PERTAMA dibuka, bukan di .new: pemain yang tidak pernah
+-- menyentuh kartu BODY tidak perlu membayar 24 petak warna + 5 slider.
+function CatalogPanel._ensureBody(self: CatalogPanel)
+	if self._body ~= nil then
+		return
+	end
+	local limits = self._props.bodyLimits
+	if limits == nil then
+		return
+	end
+	self._body = BodyPage.new({
+		parent = self.instance,
+		limits = limits,
+		onColor = function(slot, hex)
+			if self._props.onColor then
+				self._props.onColor(slot, hex)
+			end
+		end,
+		onScale = function(slot, value)
+			if self._props.onScale then
+				self._props.onScale(slot, value)
+			end
+		end,
+		onRig = function(rig)
+			if self._props.onRig then
+				self._props.onRig(rig)
+			end
+		end,
+	})
+end
+
+-- Menampilkan PANEL (Color/Scale) menggantikan grid, atau mengembalikan grid bila section = nil.
+function CatalogPanel._showBodyPanel(self: CatalogPanel, section: string?)
+	if section == nil then
+		self._bodySection = nil
+		for _, b in self._panelTabs do
+			setTabActive(b, false)
+		end
+		if self._body then
+			self._body:setVisible(false)
+		end
+		self._grid.Visible = self._page ~= "menu"
+		return
+	end
+	self:_ensureBody()
+	local body = self._body
+	if body == nil then
+		return
+	end
+	self._bodySection = section
+	for id, b in self._panelTabs do
+		setTabActive(b, id == section)
+	end
+	self._grid.Visible = false
+	body:setVisible(true)
+	body:setSection(section)
+	body:setArea(0, self._gridTop, self._innerW, self._innerH - self._gridTop)
+	if self._props.getBody then
+		body:setState(self._props.getBody())
+	end
+end
+
 function CatalogPanel.page(self: CatalogPanel): "menu" | "list"
 	return self._page
 end
@@ -1793,6 +1907,12 @@ function CatalogPanel.openGroup(self: CatalogPanel, group: CatalogMenu.Group)
 	self._tabBar.CanvasPosition = Vector2.zero
 	self:_keepGroupScroll() -- baris grup tetap di posisi pemain (dulu dipaksa ke 0 di sini)
 	self:_applyPage()
+	if group.page ~= nil then
+		-- Grup berhalaman (BODY): chip pertama adalah panel, jadi tidak ada pencarian yang dikirim.
+		self:_setFilter("color")
+		return
+	end
+	self:_showBodyPanel(nil)
 	spawnCall(self._props.controller.setFilter, self._props.controller, group.id, "all")
 end
 
@@ -1816,6 +1936,12 @@ function CatalogPanel._setFilter(self: CatalogPanel, filterId: string)
 	if group == nil then
 		return
 	end
+	-- Chip Color/Scale di grup BODY membuka PANEL, bukan pencarian katalog.
+	if filterId == "color" or filterId == "scale" then
+		self:_showBodyPanel(filterId)
+		return
+	end
+	self:_showBodyPanel(nil)
 	self:disarm()
 	self._wearing = false
 	self._lastCount = 0
@@ -1840,7 +1966,13 @@ function CatalogPanel._applyPage(self: CatalogPanel)
 	for gid, b in self._groupTabs do
 		setTabActive(b, group ~= nil and gid == group.id)
 	end
-	self._grid.Visible = not isMenu
+	self._grid.Visible = not isMenu and self._bodySection == nil
+	if self._body then
+		self._body:setVisible(not isMenu and self._bodySection ~= nil)
+		if not isMenu and self._bodySection ~= nil then
+			self._body:setArea(0, self._gridTop, self._innerW, self._innerH - self._gridTop)
+		end
+	end
 	self._linkBox.Visible = not isMenu and self._hasLink
 	self._zoomIn.Visible = not isMenu
 	self._zoomOut.Visible = not isMenu
@@ -1864,8 +1996,13 @@ function CatalogPanel._applyPage(self: CatalogPanel)
 
 	-- Chip filter berlaku di semua grup -> selalu tampil di halaman daftar item, KECUALI di hasil
 	-- satu pencipta (di sana tidak ada grup yang bisa disaring).
+	-- Grup berhalaman (BODY) tidak memakai All/Free/Limited: chipnya Color & Scale.
+	local isPage = group ~= nil and group.page ~= nil
 	for _, b in self._filterTabs do
-		b.Visible = self._creatorName == nil
+		b.Visible = self._creatorName == nil and not isPage
+	end
+	for _, b in self._panelTabs do
+		b.Visible = isPage
 	end
 
 	-- Tab: hanya kategori milik grup ini (Wearing tetap di paling kiri bila ada).

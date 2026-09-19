@@ -114,5 +114,104 @@ return function()
 		eq(ms.accessories["123"], nil, ty .. " tidak tersimpan")
 	end
 
+	-- removeKind: kategori dibuang sekaligus, dan jumlahnya dilaporkan
+	do
+		local rk = OS.empty()
+		rk.accessories["1"] = { assetId = 1, assetType = "HairAccessory", isLayered = false }
+		rk.accessories["2"] = { assetId = 2, assetType = "Hat", isLayered = false }
+		rk.accessories["3"] = { assetId = 3, assetType = "JacketAccessory", isLayered = true, order = 7 }
+		rk.accessories["4"] = { assetId = 4, assetType = "EyebrowAccessory", isLayered = false }
+		rk.classic.Shirt = { id = 10 }
+		rk.bodyParts.Torso = { id = 11 }
+		rk.animations.IdleAnimation = { id = 12 }
+
+		local hair, nHair = OS.removeKind(rk, "hair")
+		assert(nHair == 1 and hair.accessories["1"] == nil, "hair harus terbuang")
+		assert(hair.accessories["2"] ~= nil, "topi tidak boleh ikut terbuang oleh kategori hair")
+
+		local acc, nAcc = OS.removeKind(rk, "accessories")
+		assert(nAcc == 1 and acc.accessories["2"] == nil, "accessories = rigid selain rambut/wajah")
+		assert(acc.accessories["1"] ~= nil and acc.accessories["4"] ~= nil, "rambut & alis terpisah")
+
+		local lay, nLay = OS.removeKind(rk, "layered")
+		assert(nLay == 1 and lay.accessories["3"] == nil, "layered harus terbuang")
+
+		local face, nFace = OS.removeKind(rk, "face")
+		assert(nFace == 1 and face.accessories["4"] == nil, "alis termasuk kategori face")
+
+		local cls, nCls = OS.removeKind(rk, "classic")
+		assert(nCls == 1 and cls.classic.Shirt.id == 0, "classic harus dikosongkan")
+
+		local body, nBody = OS.removeKind(rk, "bodyParts")
+		assert(nBody == 1 and body.bodyParts.Torso.id == 0, "bodyParts harus dikosongkan")
+
+		local anim, nAnim = OS.removeKind(rk, "animations")
+		assert(nAnim == 1 and anim.animations.IdleAnimation.id == 0, "animations harus dikosongkan")
+
+		local all, nAll = OS.removeKind(rk, "all")
+		assert(nAll == 7, "all harus membuang semuanya, dapat " .. tostring(nAll))
+		assert(next(all.accessories) == nil, "semua aksesori harus hilang")
+		assert(all.classic.Shirt.id == 0 and all.bodyParts.Torso.id == 0, "slot harus kosong")
+
+		-- Makeup BUKAN kategori tersendiri: ia ikut "face", dan yang membuangnya AvatarService
+		-- (makeup hidup di luar OutfitState). Kalau suatu saat "makeup" muncul di KINDS, UI akan
+		-- mengirim kategori yang tidak pernah membuang apa pun -> tombolnya diam tanpa sebab.
+		for _, k in OS.KINDS do
+			assert(k ~= "makeup", "makeup tidak boleh jadi kategori sendiri -- ia ikut face")
+		end
+
+		local _, nEmpty = OS.removeKind(OS.empty(), "all")
+		assert(nEmpty == 0, "state kosong tidak membuang apa pun")
+
+		-- state asal TIDAK boleh ikut berubah (semua fungsi domain immutable)
+		assert(rk.accessories["1"] ~= nil and rk.classic.Shirt.id == 10, "state asal tidak disentuh")
+	end
+
+	-- 8. Badan: warna kulit & skala (halaman Body)
+	do
+		local skin = OS.empty()
+
+		assert(OS.cleanHex("#a3a2a5") == "A3A2A5", "hex dinormalkan: '#' dibuang, huruf dibesarkan")
+		assert(OS.cleanHex("A3A2A") == nil, "hex kependekan ditolak")
+		assert(OS.cleanHex("GGGGGG") == nil, "bukan heksadesimal ditolak")
+		assert(OS.cleanHex(123456) == nil, "bukan string ditolak")
+
+		local all, nAll = OS.setColor(skin, "all", "ff0000")
+		assert(nAll == 6, "palet kulit mewarnai ENAM bagian, dapat " .. tostring(nAll))
+		assert(all.colors.HeadColor == "FF0000" and all.colors.LeftLegColor == "FF0000", "semua slot ikut")
+		assert(skin.colors.HeadColor == "A3A2A5", "state asal tidak disentuh")
+
+		local one, nOne = OS.setColor(all, "HeadColor", "00FF00")
+		assert(nOne == 1 and one.colors.HeadColor == "00FF00", "Advanced Colors mewarnai satu bagian")
+		assert(one.colors.TorsoColor == "FF0000", "bagian lain tidak ikut berubah")
+
+		local _, nSame = OS.setColor(all, "all", "FF0000")
+		assert(nSame == 0, "warna yang sama tidak menghitung perubahan")
+		local _, nBad = OS.setColor(all, "NoseColor", "FF0000")
+		assert(nBad == 0, "slot ngawur ditolak")
+
+		local tall, okTall = OS.setScale(skin, "HeightScale", 1.02)
+		assert(okTall and tall.scales.HeightScale == 1.02, "skala sah tersimpan")
+		local capped, okCap = OS.setScale(skin, "HeightScale", 9)
+		-- DIJEPIT, bukan ditolak: engine pun menjepit, dan slider yang menolak terasa macet.
+		assert(okCap and capped.scales.HeightScale == OS.SCALE_LIMITS.HeightScale.max, "skala dijepit ke batas")
+		local _, okBadSlot = OS.setScale(skin, "NoseScale", 1)
+		assert(not okBadSlot, "slot skala ngawur ditolak")
+		local _, okSame = OS.setScale(skin, "HeightScale", 1)
+		assert(not okSame, "nilai yang sama bukan perubahan")
+	end
+
+	-- removeSlot: satu slot bagian tubuh -> bawaan (id 0), BUKAN baseline
+	local bs = OS.empty()
+	bs.bodyParts.Head = { id = 777 }
+	eq(select(2, OS.removeSlot(bs, "Head")), 1, "kepala dikosongkan")
+	eq(OS.removeSlot(bs, "Head").bodyParts.Head.id, 0, "id 0 = bentuk bawaan")
+	eq(bs.bodyParts.Head.id, 777, "state lama tidak berubah")
+	eq(select(2, OS.removeSlot(bs, "Torso")), 0, "slot yang sudah kosong -> 0")
+	eq(select(2, OS.removeSlot(bs, "Kepala")), 0, "slot ngawur -> 0")
+	eq(select(2, OS.removeSlot(bs, "HeadColor")), 0, "slot warna bukan slot bagian tubuh")
+	eq(OS.isBodySlot("Head"), true, "isBodySlot")
+	eq(OS.isBodySlot("HeightScale"), false, "isBodySlot menolak slot skala")
+
 	print("PASS OutfitState.spec")
 end

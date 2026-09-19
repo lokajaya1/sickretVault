@@ -14,7 +14,10 @@ export type Category = {
 	id: string,
 	label: string,
 	assetTypes: { string }?, -- nama Enum.AvatarAssetType
-	bundleTypes: { string }?, -- nama Enum.BundleType
+	bundleTypes: { string }?,
+	-- Kategori yang isinya PART SATUAN dari bundle: dicari sebagai bundle, lalu tiap bundle
+	-- dimekarkan dan hanya part bertipe ini yang jadi kartu (lihat CatalogService._expandParts).
+	partTypes: { string }?, -- nama Enum.BundleType
 }
 
 local list: { Category } = {
@@ -75,6 +78,23 @@ local list: { Category } = {
 
 	-- BACKGROUNDS
 	{ id = "backgrounds", label = "Backgrounds", assetTypes = { "AvatarBackground" } },
+
+	-- BODY. Yang ditampilkan adalah PART SATUAN, bukan bundle: part bundle (mis. "Korblox
+	-- Deathspeaker - Torso") adalah aset tersendiri dengan AvatarAssetType Torso/LeftArm/dst,
+	-- jadi pencarian per tipe aset sudah mengembalikannya satu per satu dan pemain bisa memakai
+	-- SATU bagian saja. Menambahkan bundleTypes di sini justru memunculkan bundle utuhnya --
+	-- itu sudah punya kategorinya sendiri (`bodies`, `heads`) di grup CHARACTERS.
+	{
+		id = "head_shapes",
+		label = "Head",
+		bundleTypes = { "BodyParts", "DynamicHead" },
+		partTypes = { "Head", "DynamicHead" },
+	},
+	{ id = "torso", label = "Torso", bundleTypes = { "BodyParts" }, partTypes = { "Torso" } },
+	{ id = "left_arm", label = "LeftArm", bundleTypes = { "BodyParts" }, partTypes = { "LeftArm" } },
+	{ id = "right_arm", label = "RightArm", bundleTypes = { "BodyParts" }, partTypes = { "RightArm" } },
+	{ id = "left_leg", label = "LeftLeg", bundleTypes = { "BodyParts" }, partTypes = { "LeftLeg" } },
+	{ id = "right_leg", label = "RightLeg", bundleTypes = { "BodyParts" }, partTypes = { "RightLeg" } },
 }
 
 local byId: { [string]: Category } = {}

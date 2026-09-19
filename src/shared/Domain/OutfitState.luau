@@ -225,6 +225,239 @@ function OutfitState.remove(state: OutfitState, assetId: number, baseline: Outfi
 	return s
 end
 
+-- ===== BADAN: warna kulit & skala (halaman "Body", pola Catalog Avatar Creator) =====
+
+-- Batas skala mengikuti editor avatar Roblox untuk R15. PERINGATAN: ini BUKAN janji. Engine masih
+-- bisa menjepit lebih ketat lewat setelan tempat (StarterPlayer.AvatarMinScale/MaxScale), dan
+-- `ApplyDescription` melakukannya DIAM-DIAM -- tanpa error, tanpa kabar. Tabel ini menjaga UI &
+-- intent tetap masuk akal; nilai yang benar-benar diterima harus diukur di Studio.
+OutfitState.SCALE_LIMITS = {
+	HeightScale = { min = 0.9, max = 1.05 },
+	WidthScale = { min = 0.7, max = 1 },
+	DepthScale = { min = 0.9, max = 1.05 },
+	HeadScale = { min = 0.95, max = 1 },
+	BodyTypeScale = { min = 0, max = 1 },
+	ProportionScale = { min = 0, max = 1 },
+}
+
+-- "RRGGBB" huruf besar tanpa '#'. nil = bukan warna yang sah -> pemanggil menolak, bukan menebak.
+function OutfitState.cleanHex(hex: any): string?
+	if type(hex) ~= "string" then
+		return nil
+	end
+	local body = string.gsub(hex, "^#", "")
+	if #body ~= 6 or string.match(body, "^%x%x%x%x%x%x$") == nil then
+		return nil
+	end
+	return string.upper(body)
+end
+
+-- Slot yang sah untuk intent setColor / setScale. Diekspor supaya IntentValidator tidak
+-- menyalin ulang daftarnya: dua salinan pasti berbeda suatu hari.
+function OutfitState.isColorSlot(slot: any): boolean
+	if type(slot) ~= "string" then
+		return false
+	end
+	if slot == "all" then
+		return true
+	end
+	for _, k in Map.ColorSlots do
+		if k == slot then
+			return true
+		end
+	end
+	return false
+end
+
+OutfitState.RIGS = { R6 = true, R15 = true }
+
+-- R6 / R15. Bukan skala, tapi tempatnya sama di UI (satu halaman Scale) dan aturannya sama:
+-- nilai tak dikenal tidak mengubah apa pun, 0 = NOTHING.
+function OutfitState.setRig(state: OutfitState, rig: any): (OutfitState, number)
+	if not OutfitState.isRig(rig) or state.rig == rig then
+		return state, 0
+	end
+	local s = deepCopy(state)
+	s.rig = rig
+	return s, 1
+end
+
+function OutfitState.isRig(rig: any): boolean
+	return type(rig) == "string" and OutfitState.RIGS[rig] == true
+end
+
+local BODY_SLOT: { [string]: boolean } = {}
+for _, k in Map.BodyPartSlots do
+	BODY_SLOT[k] = true
+end
+
+function OutfitState.isBodySlot(slot: any): boolean
+	return type(slot) == "string" and BODY_SLOT[slot] == true
+end
+
+-- Kosongkan SATU slot bagian tubuh (tombol "None" di Head Shapes / Torso / Arms / Legs).
+-- Sengaja TIDAK kembali ke baseline seperti `remove`: "None" berarti bentuk BAWAAN, bukan bentuk
+-- yang kebetulan dipakai avatar akun. `removeKind` membuang SEMUA bagian tubuh sekaligus, jadi ia
+-- bukan pengganti yang tepat untuk satu tombol per slot.
+function OutfitState.removeSlot(state: OutfitState, slot: any): (OutfitState, number)
+	if not OutfitState.isBodySlot(slot) then
+		return state, 0
+	end
+	local current = state.bodyParts[slot :: string]
+	if current == nil or current.id == 0 then
+		return state, 0
+	end
+	local s = deepCopy(state)
+	s.bodyParts[slot :: string] = { id = 0 }
+	return s, 1
+end
+
+function OutfitState.isScaleSlot(slot: any): boolean
+	return type(slot) == "string" and OutfitState.SCALE_LIMITS[slot] ~= nil
+end
+
+-- Warna satu bagian badan, atau SELURUHNYA bila slot = "all" (itulah palet warna kulit di CAC:
+-- satu ketukan mewarnai enam bagian sekaligus; "Advanced Colors" barulah per bagian).
+-- Return (state baru, berapa slot yang BERUBAH). 0 = tidak ada yang berubah -> pemanggil membalas
+-- NOTHING dan tidak menyentuh timeline undo, sama seperti `removeKind`.
+function OutfitState.setColor(state: OutfitState, slot: string, hex: string): (OutfitState, number)
+	local clean = OutfitState.cleanHex(hex)
+	if clean == nil then
+		return state, 0
+	end
+	local slots: { string }
+	if slot == "all" then
+		slots = Map.ColorSlots
+	else
+		local known = false
+		for _, k in Map.ColorSlots do
+			if k == slot then
+				known = true
+			end
+		end
+		if not known then
+			return state, 0
+		end
+		slots = { slot }
+	end
+	local s = deepCopy(state)
+	local changed = 0
+	for _, k in slots do
+		if s.colors[k] ~= clean then
+			s.colors[k] = clean
+			changed += 1
+		end
+	end
+	if changed == 0 then
+		return state, 0 -- state ASAL dikembalikan: tidak ada salinan sia-sia
+	end
+	return s, changed
+end
+
+-- Satu slot skala. Nilai di luar batas DIJEPIT, bukan ditolak: slider yang menolak nilai ujung
+-- terasa macet, sedangkan menjepit persis seperti yang dilakukan engine.
+function OutfitState.setScale(state: OutfitState, slot: string, value: number): (OutfitState, boolean)
+	local limit = OutfitState.SCALE_LIMITS[slot]
+	if limit == nil or type(value) ~= "number" or value ~= value then
+		return state, false
+	end
+	local wanted = math.clamp(value, limit.min, limit.max)
+	if state.scales[slot] == wanted then
+		return state, false
+	end
+	local s = deepCopy(state)
+	s.scales[slot] = wanted
+	return s, true
+end
+
+-- Kategori yang bisa dihapus sekaligus (pola "Item Removal" CAC). Dipakai UI tong sampah.
+-- "all" = lepas semua yang sedang dipakai (badan kembali ke bawaan), BUKAN kembali ke avatar asli
+-- pemain — itu tugas `reset`.
+OutfitState.KINDS = {
+	"all",
+	"accessories", -- rigid SELAIN rambut & wajah (keduanya punya kategori sendiri, seperti CAC)
+	"hair",
+	"classic", -- Shirt / Pants / TShirt / Face klasik
+	"layered", -- pakaian berlapis
+	"face", -- FaceAccessory / alis / bulu mata + Face klasik
+	"bodyParts",
+	"animations",
+}
+
+-- CATATAN MAKEUP: makeup TIDAK punya kategori sendiri di sini. Ia hidup di luar OutfitState (Decal
+-- yang ditempel ke Head, spike #18) dan ikut kategori "face" -- sama seperti daftar Item Removal
+-- milik Catalog Avatar Creator, yang juga tidak punya baris Makeup. Yang membuangnya AvatarService,
+-- di commit yang sama dengan kategori lain, supaya satu Undo mengembalikan semuanya sekaligus.
+
+local FACE_ACCESSORIES = {
+	FaceAccessory = true,
+	EyebrowAccessory = true,
+	EyelashAccessory = true,
+}
+
+-- Apakah aksesori ini termasuk kategori `kind`?
+local function accessoryInKind(a: Accessory, kind: string): boolean
+	if kind == "all" then
+		return true
+	end
+	if kind == "layered" then
+		return a.isLayered == true or Map.Layered[a.assetType] == true
+	end
+	if kind == "hair" then
+		return a.assetType == "HairAccessory"
+	end
+	if kind == "face" then
+		return FACE_ACCESSORIES[a.assetType] == true
+	end
+	if kind == "accessories" then
+		return a.isLayered ~= true
+			and Map.Layered[a.assetType] ~= true
+			and a.assetType ~= "HairAccessory"
+			and FACE_ACCESSORIES[a.assetType] ~= true
+	end
+	return false
+end
+
+-- Hapus semua item satu kategori sekaligus. Return (state baru, berapa yang dibuang).
+-- Jumlah 0 = tidak ada yang berubah -> pemanggil membalas "NOTHING" tanpa menyentuh timeline undo.
+function OutfitState.removeKind(state: OutfitState, kind: string): (OutfitState, number)
+	local s = deepCopy(state)
+	local removed = 0
+
+	for key, a in s.accessories do
+		if accessoryInKind(a, kind) then
+			s.accessories[key] = nil
+			removed += 1
+		end
+	end
+
+	-- Kosongkan slot sebuah grup (id 0 = bawaan); `only` membatasi slot mana yang disentuh.
+	local function clearGroup(group: { [string]: Types.SlotValue }, only: { [string]: boolean }?)
+		for slot, v in group do
+			if (only == nil or only[slot] == true) and v.id ~= 0 then
+				group[slot] = { id = 0 }
+				removed += 1
+			end
+		end
+	end
+
+	if kind == "all" then
+		clearGroup(s.classic)
+		clearGroup(s.bodyParts)
+		clearGroup(s.animations)
+	elseif kind == "classic" then
+		clearGroup(s.classic)
+	elseif kind == "face" then
+		clearGroup(s.classic, { [Map.Classic.Face] = true })
+	elseif kind == "bodyParts" then
+		clearGroup(s.bodyParts)
+	elseif kind == "animations" then
+		clearGroup(s.animations)
+	end
+
+	return s, removed
+end
+
 -- Pakai sebagian / seluruh bagian bundle.
 -- partIds = nil -> semua part. Part dengan kind "unknown" diabaikan.
 function OutfitState.wearBundle(

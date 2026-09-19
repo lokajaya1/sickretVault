@@ -76,6 +76,35 @@ local function str(v: any): string?
 	return if type(v) == "string" and v ~= "" then v else nil
 end
 
+-- Aturan HARGA dari respons katalog Roblox, di SATU tempat supaya panel detail dan panel review
+-- Save to Roblox tidak punya versi sendiri-sendiri:
+--   * 999999999 bukan harga (spike 19 Sep 2026) -> nil
+--   * harga pasar item limited hanya dipercaya bila HasResellers = true
+--   * off-sale datang dengan Price = 0 -> tanpa penanda ini ia terbaca "Free"
+-- Return (price, resalePrice, limited, offSale, hasResellers). `resalePrice` sengaja TIDAK
+-- disaring HasResellers: panel detail menampilkannya apa adanya, sedangkan KARTU hanya boleh
+-- memercayainya bila ada penjual ulang -- jadi penyaringnya ikut dikembalikan, bukan diputuskan
+-- di sini.
+function ItemDetail.priceFields(raw: any): (number?, number?, boolean, boolean, boolean)
+	if type(raw) ~= "table" then
+		return nil, nil, false, false, false
+	end
+	local price = priceValue(raw.Price)
+	if price == nil then
+		price = priceValue(raw.LowestPrice)
+	end
+	local resale = priceValue(raw.LowestResalePrice)
+	local limited = false
+	if type(raw.ItemRestrictions) == "table" then
+		for _, r in raw.ItemRestrictions do
+			if r == "Limited" or r == "LimitedUnique" or r == "Collectible" then
+				limited = true
+			end
+		end
+	end
+	return price, resale, limited, raw.IsOffSale == true, raw.HasResellers == true
+end
+
 -- itemType: tipe yang DIMINTA ("Asset" | "Bundle"); dipakai bila respons tidak menyebutkannya.
 function ItemDetail.fromRaw(raw: any, itemType: string): Detail?
 	if type(raw) ~= "table" or not isId(raw.Id) then
@@ -86,20 +115,7 @@ function ItemDetail.fromRaw(raw: any, itemType: string): Detail?
 		return nil
 	end
 
-	local price = priceValue(raw.Price)
-	local resale = priceValue(raw.LowestResalePrice)
-	-- Off-sale datang dengan Price = 0, jadi tanpa penanda ini panel menulis "Free" dan tombol
-	-- belinya menyala. Field IsOffSale ABSEN untuk item yang masih dijual, bukan false.
-	local offSale = raw.IsOffSale == true
-	local restrictions = raw.ItemRestrictions
-	local isLimited = false
-	if type(restrictions) == "table" then
-		for _, r in restrictions do
-			if r == "Limited" or r == "LimitedUnique" or r == "Collectible" then
-				isLimited = true
-			end
-		end
-	end
+	local price, resale, isLimited, offSale = ItemDetail.priceFields(raw)
 	-- Stok limited. `units = 0` dengan TotalQuantity besar berarti SOLD OUT, jadi nol TIDAK dibuang;
 	-- yang dibuang hanya angka untuk item non-limited (di sana 0/0 memang berarti 'tidak berlaku').
 	local unitsLeft: number? = nil

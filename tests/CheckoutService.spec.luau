@@ -100,5 +100,68 @@ return function()
 		eq(ok, false, "enum hilang -> assert")
 	end
 
+	-- 6. owned(): kepemilikan aset & bundle, cache, dan panggilan yang error
+	do
+		local asked: { string } = {}
+		local market = {}
+		function market.PlayerOwnsAsset(_self: any, _player: any, id: number): boolean
+			table.insert(asked, "a" .. tostring(id))
+			if id == 99 then
+				error("HTTP 429")
+			end
+			return id == 1 or id == 2
+		end
+		function market.PlayerOwnsBundle(_self: any, _player: any, id: number): boolean
+			table.insert(asked, "b" .. tostring(id))
+			return id == 7
+		end
+		-- Lune tidak punya `task`: kerjakan serentaknya secara berurutan, tunggunya tidak perlu.
+		local svc = CheckoutService.new({
+			marketplace = market,
+			toEnum = fakeEnum,
+			spawn = function(fn: () -> ())
+				fn()
+			end,
+			wait = function() end,
+		})
+		local p2 = { Name = "P2", UserId = 42 }
+
+		local assets, bundles = svc:owned(p2, { 1, 2, 3, 99 }, { 7, 8 })
+		eq(assets[1], true, "1 dimiliki")
+		eq(assets[3], false, "3 tidak dimiliki")
+		eq(assets[99], false, "panggilan error -> dianggap belum dimiliki")
+		eq(bundles[7], true, "bundle 7 dimiliki")
+		eq(bundles[8], false, "bundle 8 tidak")
+		eq(#asked, 6, "satu panggilan per id")
+
+		-- yang TERBUKTI dimiliki di-cache; yang belum ditanya ulang (mungkin baru dibeli)
+		table.clear(asked)
+		local assets2 = svc:owned(p2, { 1, 3 }, nil)
+		eq(assets2[1], true, "dari cache")
+		eq(assets2[3], false, "ditanya ulang")
+		eq(#asked, 1, "hanya yang belum dimiliki ditanya lagi")
+		eq(asked[1], "a3", "yang ditanya ulang id 3")
+
+		-- id ngawur dibuang, duplikat dihitung sekali
+		table.clear(asked)
+		svc:owned(p2, { 3, 3, -1, 0, 1.5, "x" }, nil)
+		eq(#asked, 1, "duplikat & id ngawur tidak menambah panggilan")
+
+		-- pemain keluar -> cache hilang
+		table.clear(asked)
+		svc:forget(p2)
+		svc:owned(p2, { 1 }, nil)
+		eq(#asked, 1, "sesudah forget, ditanya lagi")
+
+		-- batas: lebih dari MAX_OWNED_ASSETS dipotong
+		table.clear(asked)
+		local many = {}
+		for i = 1, CheckoutService.MAX_OWNED_ASSETS + 5 do
+			many[i] = 1000 + i
+		end
+		svc:owned(p2, many, nil)
+		eq(#asked, CheckoutService.MAX_OWNED_ASSETS, "dipotong di batas")
+	end
+
 	print("PASS CheckoutService.spec")
 end

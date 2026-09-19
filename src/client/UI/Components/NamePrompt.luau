@@ -1,6 +1,10 @@
 --!strict
 -- Dialog kecil "isi nama" yang dipakai ulang di panel Saved Outfits:
 -- simpan outfit ("save"), buat folder ("folderNew"), ganti nama folder ("folderRename").
+-- Sejak #30 ia juga dipakai sebagai dialog PILIHAN tanpa kotak teks: mode "saveTarget"
+-- ("How would you like to save your outfit?") menyembunyikan kotak & hint, lalu mengubah dua
+-- tombol di bawah menjadi dua KARTU sejajar. Jawabannya datang lewat `name`: "outfit" (kartu
+-- kiri) atau "avatar" (kartu kanan) -- jadi tidak perlu file dialog baru.
 --   local prompt = NamePrompt.new({
 --   	parent = wardrobePanel.instance,
 --   	onConfirm = function(mode, name, folderId) ... end, -- name nil = kotak dikosongkan
@@ -10,16 +14,38 @@
 -- mode folder TIDAK boleh kosong -> tombol confirm diabaikan bila kosong (dialog tetap terbuka).
 -- Panjang teks dipotong sesuai batas modenya (server tetap memvalidasi).
 
+local Lighting = game:GetService("Lighting")
+
 local Tokens = require(script.Parent.Parent.Theme.Tokens)
+local SideRail = require(script.Parent.SideRail)
 
 local PROMPT_W = 320
 local PROMPT_H = 168
+local CHOICE_W = 420 -- mode pilihan: dua kartu sejajar butuh lebih lebar
+local CHOICE_H = 216 -- judul + baris syarat + dua kartu
+local CHOICE_ROW_H = 104 -- tinggi kartu pilihan
+local ROW_H = 34 -- tinggi baris tombol biasa
+local BLUR_SIZE = 18 -- mode pilihan: dunia di belakang diburamkan, selubung hitamnya dibuang
 local MAX_NAME = 32 -- sama dengan Wardrobe.MAX_NAME
 local MAX_FOLDER_NAME = 24 -- sama dengan OutfitFolders.MAX_NAME
 
-export type Mode = string -- "save" | "folderNew" | "folderRename"
+export type Mode = string -- "save" | "folderNew" | "folderRename" | "saveTarget"
 
-type Text = { title: string, hint: string, placeholder: string, confirm: string, max: number }
+-- `choice` = mode pilihan (tanpa kotak teks): `cancel`/`confirm` jadi dua kartu, dan `cancelValue`
+-- /`confirmValue` adalah jawaban yang dikirim lewat argumen `name` di onConfirm.
+type Text = {
+	title: string,
+	hint: string,
+	placeholder: string,
+	confirm: string,
+	max: number,
+	cancel: string?,
+	note: string?, -- baris kedua kartu kiri
+	confirmNote: string?, -- baris kedua kartu kanan
+	choice: boolean?,
+	cancelValue: string?,
+	confirmValue: string?,
+}
 
 local TEXT: { [string]: Text } = {
 	save = {
@@ -43,12 +69,30 @@ local TEXT: { [string]: Text } = {
 		confirm = "Save",
 		max = MAX_FOLDER_NAME,
 	},
+	-- Pola CAC: dua kartu, bukan tombol OK/Cancel. Keluar tanpa memilih = tap di luar kartu.
+	saveTarget = {
+		title = "How would you like to save your outfit?",
+		-- Diukur 19 Sep 2026: PromptCreateOutfit menolak look berisi item yang belum dimiliki
+		-- (Failed), sementara PromptSaveAvatar menerimanya. Dua kartu itu TIDAK setara, jadi
+		-- syaratnya ditulis sejak awal -- bukan baru muncul sebagai pesan gagal.
+		hint = "New outfits only work if you own every item you're wearing.",
+		placeholder = "",
+		confirm = "My Roblox Avatar",
+		confirmNote = "Replaces the avatar you wear on Roblox",
+		cancel = "New Roblox Outfit",
+		note = "Saves this look as a new saved outfit",
+		choice = true,
+		cancelValue = "outfit",
+		confirmValue = "avatar",
+		max = MAX_NAME,
+	},
 }
 
 export type Props = {
-	parent: GuiObject,
+	parent: Instance, -- GuiObject, atau ScreenGui bila dialog dipakai selayar penuh (#30)
 	zIndex: number, -- lapisan dasar (dialog dipasang di atasnya)
 	onConfirm: (mode: Mode, name: string?, folderId: number?) -> (),
+	onClose: (() -> ())?, -- dialog ditutup (batal, tap di luar, atau sesudah confirm)
 }
 
 local NamePrompt = {}
@@ -61,7 +105,13 @@ export type NamePrompt = typeof(setmetatable(
 		_title: TextLabel,
 		_hint: TextLabel,
 		_box: TextBox,
+		_card: TextButton,
+		_cardSize: UISizeConstraint,
+		_row: Frame,
+		_closeButton: TextButton,
+		_cancelButton: TextButton,
 		_confirmButton: TextButton,
+		_blur: BlurEffect?,
 		_mode: Mode,
 		_folderId: number?,
 		_conns: { RBXScriptConnection },
@@ -91,6 +141,22 @@ local function clean(text: string): string?
 	return if trimmed == "" then nil else trimmed
 end
 
+-- Kartu pilihan: nama tebal + keterangan kecil di baris kedua (RichText, bukan dua TextLabel --
+-- tombolnya tetap satu benda yang bisa ditekan di mana saja).
+local function twoLine(title: string, note: string?): string
+	if note == nil or note == "" then
+		return title
+	end
+	local c = Tokens.Color.TextMuted
+	return ('%s\n<font size="12" color="rgb(%d,%d,%d)">%s</font>'):format(
+		title,
+		math.round(c.R * 255),
+		math.round(c.G * 255),
+		math.round(c.B * 255),
+		note
+	)
+end
+
 function NamePrompt.new(props: Props): NamePrompt
 	local pad = Tokens.Space.M
 	local gap = Tokens.Space.S
@@ -110,6 +176,9 @@ function NamePrompt.new(props: Props): NamePrompt
 		Parent = props.parent,
 	}, { make("UICorner", { CornerRadius = Tokens.Radius.Large }) })
 
+	-- Batas ukuran kartu dipegang: mode pilihan memakai kartu yang lebih lebar & tinggi.
+	local cardSize: UISizeConstraint = make("UISizeConstraint", { MaxSize = Vector2.new(PROMPT_W, PROMPT_H) })
+
 	-- TextButton (bukan Frame) supaya klik di dalam kartu tidak menutup dialog.
 	local card: TextButton = make("TextButton", {
 		Name = "Card",
@@ -124,7 +193,7 @@ function NamePrompt.new(props: Props): NamePrompt
 		Parent = root,
 	}, {
 		make("UICorner", { CornerRadius = Tokens.Radius.Large }),
-		make("UISizeConstraint", { MaxSize = Vector2.new(PROMPT_W, PROMPT_H) }),
+		cardSize,
 		make("UIPadding", {
 			PaddingTop = UDim.new(0, pad),
 			PaddingBottom = UDim.new(0, pad),
@@ -147,6 +216,37 @@ function NamePrompt.new(props: Props): NamePrompt
 		ZIndex = Z + 1,
 		Parent = card,
 	})
+	-- Tombol tutup di pojok kanan atas kartu. Ia anak JUDUL, bukan anak kartu: kartu memakai
+	-- UIListLayout, yang akan menyusun tombol ini jadi satu baris sendiri di bawah judul. Anak
+	-- sebuah TextLabel tidak ikut disusun, jadi ia bisa melayang di kanan atas tanpa Frame
+	-- pembungkus tambahan. Hanya untuk mode pilihan: mode isian nama sudah punya tombol Cancel,
+	-- sedangkan mode pilihan (sejak selubung hitamnya dibuang) tidak lagi terlihat bisa ditutup.
+	local closeButton: TextButton = make("TextButton", {
+		Name = "Close",
+		Text = "",
+		BackgroundColor3 = Tokens.Color.PanelRaised,
+		BackgroundTransparency = Tokens.Transparency.PanelRaised,
+		BorderSizePixel = 0,
+		AutoButtonColor = true,
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.fromScale(1, 0.5),
+		Size = UDim2.fromOffset(28, 28),
+		Visible = false,
+		ZIndex = Z + 2,
+		Parent = title,
+	}, { make("UICorner", { CornerRadius = Tokens.Radius.Pill }) })
+	SideRail.drawIcon(
+		"close",
+		make("Frame", {
+			Name = "Icon",
+			BackgroundTransparency = 1,
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Position = UDim2.fromScale(0.5, 0.5),
+			Size = UDim2.fromOffset(11, 11),
+			ZIndex = Z + 2,
+			Parent = closeButton,
+		})
+	)
 	local hint: TextLabel = make("TextLabel", {
 		Name = "Hint",
 		Text = TEXT.save.hint,
@@ -186,7 +286,7 @@ function NamePrompt.new(props: Props): NamePrompt
 		Name = "Actions",
 		BackgroundTransparency = 1,
 		LayoutOrder = 4,
-		Size = UDim2.new(1, 0, 0, 34),
+		Size = UDim2.new(1, 0, 0, ROW_H),
 		ZIndex = Z + 1,
 		Parent = card,
 	}, {
@@ -197,9 +297,12 @@ function NamePrompt.new(props: Props): NamePrompt
 		}),
 	})
 	local half = UDim2.new(0.5, -gap / 2, 1, 0)
+	-- RichText: mode pilihan menulis dua baris (nama + keterangan kecil) di dalam satu tombol.
 	local cancel: TextButton = make("TextButton", {
 		Name = "Cancel",
 		Text = "Cancel",
+		RichText = true,
+		TextWrapped = true,
 		FontFace = Tokens.Font.Bold,
 		TextSize = Tokens.TextSize.Body,
 		TextColor3 = Tokens.Color.Text,
@@ -210,10 +313,21 @@ function NamePrompt.new(props: Props): NamePrompt
 		Size = half,
 		ZIndex = Z + 1,
 		Parent = row,
-	}, { make("UICorner", { CornerRadius = Tokens.Radius.Pill }) })
+	}, {
+		make("UICorner", { CornerRadius = Tokens.Radius.Pill }),
+		make("UIStroke", {
+			Name = "Edge",
+			ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+			Color = Tokens.Color.Stroke,
+			Transparency = Tokens.Transparency.Stroke,
+			Enabled = false,
+		}),
+	})
 	local confirm: TextButton = make("TextButton", {
 		Name = "Confirm",
 		Text = TEXT.save.confirm,
+		RichText = true,
+		TextWrapped = true,
 		FontFace = Tokens.Font.Bold,
 		TextSize = Tokens.TextSize.Body,
 		TextColor3 = Tokens.Color.AccentText,
@@ -223,7 +337,16 @@ function NamePrompt.new(props: Props): NamePrompt
 		Size = half,
 		ZIndex = Z + 1,
 		Parent = row,
-	}, { make("UICorner", { CornerRadius = Tokens.Radius.Pill }) })
+	}, {
+		make("UICorner", { CornerRadius = Tokens.Radius.Pill }),
+		make("UIStroke", {
+			Name = "Edge",
+			ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+			Color = Tokens.Color.Stroke,
+			Transparency = Tokens.Transparency.Stroke,
+			Enabled = false,
+		}),
+	})
 
 	local self: NamePrompt = setmetatable({
 		instance = root,
@@ -231,7 +354,13 @@ function NamePrompt.new(props: Props): NamePrompt
 		_title = title,
 		_hint = hint,
 		_box = box,
+		_card = card,
+		_cardSize = cardSize,
+		_row = row,
+		_closeButton = closeButton,
+		_cancelButton = cancel,
 		_confirmButton = confirm,
+		_blur = nil,
 		_mode = "save",
 		_folderId = nil,
 		_conns = {},
@@ -239,9 +368,28 @@ function NamePrompt.new(props: Props): NamePrompt
 
 	self._conns = {
 		root.Activated:Connect(function()
+			-- Mode PILIHAN tidak lagi tertutup oleh ketukan di luar kartu. Sejak panel katalog
+			-- ikut disingkirkan, "di luar kartu" = seluruh layar: satu klik nyasar (di macOS,
+			-- klik untuk memberi fokus ke jendela Studio sudah cukup) menutup dialog dan
+			-- memunculkan katalog kembali -- persis gejala "tekan C kok pindah ke katalog",
+			-- padahal pelakunya klik, bukan tombol C. Jalan keluarnya sekarang tombol silang.
+			local text = TEXT[self._mode]
+			if text ~= nil and text.choice then
+				return
+			end
+			self:close()
+		end),
+		closeButton.Activated:Connect(function()
 			self:close()
 		end),
 		cancel.Activated:Connect(function()
+			-- Mode pilihan: tombol kiri BUKAN "batal", ia jawaban pertama.
+			local text = TEXT[self._mode]
+			if text ~= nil and text.choice then
+				self:close()
+				self._props.onConfirm(self._mode, text.cancelValue, nil)
+				return
+			end
 			self:close()
 		end),
 		confirm.Activated:Connect(function()
@@ -269,6 +417,12 @@ end
 function NamePrompt._confirm(self: NamePrompt)
 	local mode = self._mode
 	local folderId = self._folderId
+	local choice = TEXT[mode]
+	if choice ~= nil and choice.choice then
+		self:close()
+		self._props.onConfirm(mode, choice.confirmValue, nil)
+		return
+	end
 	local name = clean(self._box.Text)
 	if mode ~= "save" and name == nil then
 		return -- nama folder wajib
@@ -287,10 +441,62 @@ function NamePrompt.open(self: NamePrompt, mode: Mode, folderId: number?, initia
 	self._title.Text = text.title
 	self._hint.Text = text.hint
 	self._box.PlaceholderText = text.placeholder
-	self._confirmButton.Text = text.confirm
 	self._box.Text = initial or ""
+
+	-- Dua tampilan dalam satu dialog: isian nama, atau dua kartu pilihan (UIListLayout melewati
+	-- anak yang Visible = false, jadi hint & kotak cukup disembunyikan).
+	local choice = text.choice == true
+	self._hint.Visible = text.hint ~= ""
+	self._box.Visible = not choice
+	self._closeButton.Visible = choice
+	self._cardSize.MaxSize = if choice then Vector2.new(CHOICE_W, CHOICE_H) else Vector2.new(PROMPT_W, PROMPT_H)
+	self._card.Size = UDim2.new(0.9, 0, 0, if choice then CHOICE_H else PROMPT_H)
+	self._row.Size = UDim2.new(1, 0, 0, if choice then CHOICE_ROW_H else ROW_H)
+	self._cancelButton.Text = if choice then twoLine(text.cancel or "", text.note) else "Cancel"
+	self._confirmButton.Text = if choice then twoLine(text.confirm, text.confirmNote) else text.confirm
+	-- Kartu pilihan tidak boleh ada yang "terpilih duluan": keduanya permukaan yang sama.
+	self._confirmButton.BackgroundColor3 = if choice then Tokens.Color.PanelRaised else Tokens.Color.Accent
+	self._confirmButton.BackgroundTransparency = if choice then Tokens.Transparency.PanelRaised else 0
+	self._confirmButton.TextColor3 = if choice then Tokens.Color.Text else Tokens.Color.AccentText
+	for _, b in { self._cancelButton, self._confirmButton } do
+		local edge = b:FindFirstChild("Edge")
+		if edge and edge:IsA("UIStroke") then
+			edge.Enabled = choice
+		end
+		local corner = b:FindFirstChildOfClass("UICorner")
+		if corner then
+			corner.CornerRadius = if choice then Tokens.Radius.Large else Tokens.Radius.Pill
+		end
+	end
+
+	-- Mode pilihan tidak memakai selubung hitam (permintaan 19 Sep 2026): yang diburamkan dunia
+	-- 3D lewat Lighting. UI di belakang TIDAK bisa diburamkan di Roblox -- tidak ada backdrop
+	-- blur untuk GuiObject. Mode isian nama tetap memakai selubung: ia dialog kecil di ATAS
+	-- panel, bukan layar penuh, jadi tanpa selubung batasnya hilang.
+	self.instance.BackgroundTransparency = if choice then 1 else Tokens.Transparency.Overlay
+	self:_setBlur(choice)
+
 	self.instance.Visible = true
-	self._box:CaptureFocus()
+	if not choice then
+		self._box:CaptureFocus()
+	end
+end
+
+function NamePrompt._setBlur(self: NamePrompt, on: boolean)
+	if on then
+		if self._blur == nil then
+			local blur = Instance.new("BlurEffect")
+			blur.Name = "NamePromptBlur"
+			blur.Size = BLUR_SIZE
+			blur.Parent = Lighting
+			self._blur = blur
+		end
+		return
+	end
+	if self._blur ~= nil then
+		self._blur:Destroy()
+		self._blur = nil
+	end
 end
 
 function NamePrompt.isOpen(self: NamePrompt): boolean
@@ -303,9 +509,15 @@ function NamePrompt.close(self: NamePrompt)
 	end
 	self._box:ReleaseFocus()
 	self.instance.Visible = false
+	self:_setBlur(false)
+	local onClose = self._props.onClose
+	if onClose then
+		onClose()
+	end
 end
 
 function NamePrompt.destroy(self: NamePrompt)
+	self:_setBlur(false)
 	for _, c in self._conns do
 		c:Disconnect()
 	end

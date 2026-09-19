@@ -83,5 +83,47 @@ return function()
 	rejects({ op = "setLayerOrder", assetId = 1, order = 2.5 }, E.BAD_ORDER, "order pecahan")
 	rejects({ op = "setLayerOrder", assetId = 1 }, E.BAD_ORDER, "order hilang")
 
+	-- 7. removeKind: daftar kategori, semuanya wajib ada di OutfitState.KINDS
+	do
+		local okKind = V.validate({ op = "removeKind", kinds = { "hair", "face" } })
+		assert(okKind ~= nil and #okKind.kinds == 2, "daftar kategori sah harus lolos utuh")
+		assert(okKind.kinds[1] == "hair" and okKind.kinds[2] == "face", "urutannya dibiarkan apa adanya")
+	end
+	rejects({ op = "removeKind", kinds = { "rambut" } }, E.BAD_KIND, "kategori ngawur")
+	rejects({ op = "removeKind", kinds = { "hair", 5 } }, E.BAD_KIND, "kategori bukan string")
+	rejects({ op = "removeKind", kinds = { "hair", "hair" } }, E.BAD_KIND, "kategori kembar")
+	rejects({ op = "removeKind", kinds = {} }, E.BAD_KIND, "daftar kosong")
+	rejects({ op = "removeKind", kinds = "hair" }, E.BAD_KIND, "bukan daftar")
+	rejects({ op = "removeKind", kind = "hair" }, E.UNKNOWN_FIELD, "bentuk lama ditolak")
+	rejects({ op = "removeKind" }, E.BAD_KIND, "daftar hilang")
+
+	-- Halaman Body: setColor / setScale
+	local c = V.validate({ op = "setColor", slot = "all", hex = "#ff00aa" })
+	eq(c and c.hex, "FF00AA", "hex dinormalkan di validator")
+	eq(c and c.slot, "all", "slot all = palet kulit")
+	eq((V.validate({ op = "setColor", slot = "HeadColor", hex = "a3a2a5" }) or {}).hex, "A3A2A5", "slot per bagian")
+	rejects({ op = "setColor", slot = "NoseColor", hex = "ffffff" }, E.BAD_SLOT, "slot warna ngawur")
+	rejects({ op = "setColor", slot = "HeightScale", hex = "ffffff" }, E.BAD_SLOT, "slot skala bukan slot warna")
+	rejects({ op = "setColor", hex = "ffffff" }, E.BAD_SLOT, "slot wajib ada")
+	rejects({ op = "setColor", slot = "all", hex = "xyz" }, E.BAD_HEX, "hex ngawur")
+	rejects({ op = "setColor", slot = "all", hex = 16711680 }, E.BAD_HEX, "hex bukan string")
+
+	local sc = V.validate({ op = "setScale", slot = "HeightScale", value = 1.02 })
+	eq(sc and sc.value, 1.02, "nilai skala lolos apa adanya")
+	-- Nilai ujung HARUS lolos validator; yang menjepit adalah domain. Slider yang ditolak di ujung
+	-- terasa macet, dan engine sendiri tidak menjepit apa pun (spike 19 Sep 2026: kirim 9 -> dapat 9).
+	eq((V.validate({ op = "setScale", slot = "HeightScale", value = 99 }) or {}).value, 99, "nilai ujung diterima")
+	rejects({ op = "setScale", slot = "HeadColor", value = 1 }, E.BAD_SLOT, "slot warna bukan slot skala")
+	rejects({ op = "setScale", slot = "HeightScale", value = "1" }, E.BAD_VALUE, "nilai string")
+	rejects({ op = "setScale", slot = "HeightScale", value = 0 / 0 }, E.BAD_VALUE, "NaN")
+	rejects({ op = "setScale", slot = "HeightScale", value = math.huge }, E.BAD_VALUE, "tak terhingga")
+	rejects({ op = "setScale", slot = "HeightScale", value = 1, hex = "ffffff" }, E.UNKNOWN_FIELD, "field asing")
+
+	-- removeSlot
+	eq((V.validate({ op = "removeSlot", slot = "Head" }) or {}).slot, "Head", "slot bagian tubuh")
+	rejects({ op = "removeSlot", slot = "HeadColor" }, E.BAD_BODY_SLOT, "slot warna ditolak")
+	rejects({ op = "removeSlot", slot = "Kepala" }, E.BAD_BODY_SLOT, "slot ngawur ditolak")
+	rejects({ op = "removeSlot" }, E.BAD_BODY_SLOT, "slot wajib ada")
+
 	print("PASS IntentValidator.spec")
 end

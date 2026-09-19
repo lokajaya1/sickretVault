@@ -13,7 +13,8 @@
 --   local ok, code, res = wardrobe:bulkDelete({ 1, 2 })   -- res.removed
 --   local ok, code, res = wardrobe:bulkFolder({ 1, 2 }, folderId, true) -- res.changed / res.skipped
 --   local ok, data = wardrobe:items(id)         -- YIELD; { items = { {id,name,price,...} }, total, missing }
---   local ok, code = wardrobe:saveToRoblox("avatar")   -- YIELD; prompt Roblox ("outfit" = buat outfit baru)
+--   local ok, unowned = wardrobe:ownership({ id }, { bundleId }) -- YIELD; { [id] = true } yang BELUM dimiliki
+--   local ok, code = wardrobe:saveToRoblox("avatar", unowned) -- YIELD; item tak dimiliki dicopot dulu
 --   local ok, list = wardrobe:robloxOutfits()          -- YIELD; { { id, name, editable } } (Outfit Loader)
 --   local ok, state = wardrobe:robloxState(outfitId)   -- YIELD; OutfitState untuk kartu loader (di-cache)
 --   local ok, code = wardrobe:wearRoblox(outfitId)     -- YIELD; pakai outfit Roblox itu
@@ -84,6 +85,9 @@ export type Snapshot = {
 	robloxBusy: string?, -- aksi akun Roblox yang sedang jalan: saveAvatar | createOutfit | list | wear
 }
 
+-- Daftar id (aset / bundle). Alias supaya tanda tangan ownership() pendek.
+type Ids = { number }
+
 export type Invoke = (request: { [string]: any }) -> any
 
 local WardrobeController = {}
@@ -115,6 +119,29 @@ export type WardrobeController = typeof(setmetatable(
 	},
 	WardrobeController
 ))
+
+-- Field HumanoidDescription yang berisi SATU assetId (bukan daftar aksesori). Dipakai saat
+-- mencopot item tak dimiliki sebelum menyimpan ke Roblox.
+local SINGLE_SLOTS = {
+	"Shirt",
+	"Pants",
+	"GraphicTShirt",
+	"Face",
+	"Head",
+	"Torso",
+	"LeftArm",
+	"RightArm",
+	"LeftLeg",
+	"RightLeg",
+	"IdleAnimation",
+	"WalkAnimation",
+	"RunAnimation",
+	"JumpAnimation",
+	"FallAnimation",
+	"ClimbAnimation",
+	"SwimAnimation",
+	"MoodAnimation",
+}
 
 local DEFAULT_MAX = 30
 local DEFAULT_MAX_FOLDERS = 12
@@ -539,18 +566,126 @@ function WardrobeController._setRobloxBusy(self: WardrobeController, op: string?
 	self:_emit()
 end
 
+-- Copot item yang BELUM DIMILIKI dari salinan description sebelum dikirim ke prompt Roblox.
+-- Diukur 19 Sep 2026: `PromptCreateOutfit` GAGAL kalau look memuat item tak dimiliki -- bukan
+-- "tersimpan sebagian", benar-benar gagal. Jadi pencopotan ini BUKAN kosmetik: tanpa ia jalur
+-- "New Roblox Outfit" tidak akan pernah berhasil untuk look hasil coba-coba. Panel review sudah
+-- menuliskannya ("Unowned items won't be saved to Roblox"), ini penepatannya.
+-- Bagian tubuh & pakaian klasik yang dicopot kembali ke 0 = bawaan avatar, bukan "hilang".
+local function stripUnowned(desc: any, unowned: { [number]: boolean }?): (any, number)
+	if unowned == nil or next(unowned) == nil then
+		return desc, 0
+	end
+	local copy = desc:Clone()
+	local removed = 0
+
+	local okAcc, accessories = pcall(function()
+		return copy:GetAccessories(true)
+	end)
+	if okAcc and type(accessories) == "table" then
+		local keep = {}
+		for _, entry in accessories :: any do
+			if unowned[entry.AssetId] then
+				removed += 1
+			else
+				table.insert(keep, entry)
+			end
+		end
+		if removed > 0 then
+			pcall(function()
+				copy:SetAccessories(keep, true)
+			end)
+		end
+	end
+
+	-- Slot bernomor tunggal: pakaian klasik, bagian tubuh, animasi.
+	for _, field in SINGLE_SLOTS do
+		local okField, value = pcall(function()
+			return copy[field]
+		end)
+		if okField and type(value) == "number" and value > 0 and unowned[value] then
+			local okSet = pcall(function()
+				copy[field] = 0
+			end)
+			if okSet then
+				removed += 1
+			end
+		end
+	end
+	return copy, removed
+end
+
+-- YIELD. Tanya server item mana yang BELUM dimiliki (panel review sebelum Save to Roblox).
+--   assets  = { assetId }   bundles = { bundleId }
+--   -> (true, { unowned = { [id] = true }, details = { [id] = { name, price } } })
+--   `unowned` memuat id ASET maupun id BUNDLE; `details` = nama & harga item yang sedang dipakai.
+-- Server menjawab dengan daftar id, bukan peta: peta ber-kunci angka lewat remote gampang berubah
+-- bentuk. Kepemilikan diambil di server karena jalur inventory client tidak lengkap DAN minta izin
+-- per sesi (spike 19 Sep 2026); di server 16 panggilan serentak selesai 876 ms tanpa gagal.
+function WardrobeController.ownership(_self: WardrobeController, assets: Ids, bundles: Ids): (boolean, any)
+	local ok, res = pcall(function()
+		local Remotes = require(Shared.Net.Remotes)
+		local RemoteNames = require(Shared.Net.RemoteNames)
+		return Remotes.func(RemoteNames.Functions.Ownership):InvokeServer({ assets = assets, bundles = bundles })
+	end)
+	if not ok or type(res) ~= "table" then
+		log.warn("Ownership invoke gagal", res)
+		return false, "NETWORK"
+	end
+	if res.ok ~= true then
+		return false, if type(res.code) == "string" then res.code else "FAILED"
+	end
+	local unowned: { [number]: boolean } = {}
+	for _, id in res.unowned or {} do
+		if type(id) == "number" then
+			unowned[id] = true
+		end
+	end
+	for _, id in res.unownedBundles or {} do
+		if type(id) == "number" then
+			unowned[id] = true
+		end
+	end
+	-- Nama & harga item yang dipakai, ikut di jawaban yang sama supaya panel tidak perlu
+	-- permintaan kedua. Boleh kosong: kepemilikan tetap berlaku tanpa harga.
+	local details: { [number]: any } = {}
+	for _, entry in res.items or {} do
+		if type(entry) == "table" and type(entry.id) == "number" then
+			details[entry.id] = entry
+		end
+	end
+	-- Detail BUNDLE dipisah dari detail aset: id bundle dan id aset hidup di ruang nomor yang
+	-- berbeda dan bisa kebetulan sama (bundle 239 vs aset 239), jadi satu peta saja tidak aman.
+	local bundleDetails: { [number]: any } = {}
+	for _, entry in res.bundles or {} do
+		if type(entry) == "table" and type(entry.id) == "number" then
+			bundleDetails[entry.id] = entry
+		end
+	end
+	return true, { unowned = unowned, details = details, bundleDetails = bundleDetails }
+end
+
 -- YIELD. Simpan look sekarang ke akun Roblox.
 --   kind = "avatar" -> PromptSaveAvatar (mengganti avatar akun)
 --   kind = "outfit" -> PromptCreateOutfit (menambah outfit baru di akun)
 -- Roblox sendiri yang menampilkan daftar item yang akan dipasang, jadi UI tidak perlu konfirmasi.
 -- Item yang belum dimiliki TIDAK membuat prompt gagal (spike: tetap Success).
-function WardrobeController.saveToRoblox(self: WardrobeController, kind: string?): (boolean, string?)
+function WardrobeController.saveToRoblox(
+	self: WardrobeController,
+	kind: string?,
+	unowned: { [number]: boolean }?
+): (boolean, string?)
 	if self._robloxBusy then
 		return false, "BUSY"
 	end
 	local desc, rig = appliedDescription()
 	if desc == nil then
 		return false, "NOT_READY"
+	end
+	local removed
+	desc, removed = stripUnowned(desc, unowned)
+	if removed > 0 then
+		log.info("save ke Roblox: item tak dimiliki dicopot", removed)
 	end
 	local makeOutfit = kind == "outfit"
 	self:_setRobloxBusy(if makeOutfit then "createOutfit" else "saveAvatar")

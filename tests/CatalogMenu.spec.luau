@@ -125,9 +125,16 @@ return function()
 
 	-- 9b. grup "Soon" (BODY): tidak punya kategori & tidak punya chip
 	local body = CatalogMenu.byId.body
-	eq(body.soon, true, "BODY ditandai Soon")
-	eq(#CatalogMenu.categoryIds("body"), 0, "grup Soon tanpa kategori")
-	eq(#CatalogMenu.chips("body"), 0, "grup Soon tanpa chip")
+	eq(body.soon, nil, "BODY tidak Soon lagi: sub-kategorinya nyata")
+	eq(#CatalogMenu.categoryIds("body"), 6, "enam sub-kategori bagian tubuh")
+	eq(#CatalogMenu.chips("body"), 8, "2 chip panel + 6 kategori")
+	-- Grup berhalaman TIDAK memakai All/Free/Limited: chip pertamanya panel.
+	eq(CatalogMenu.chips("body")[1].id, "color", "chip pertama Color")
+	eq(CatalogMenu.chips("body")[2].id, "scale", "chip kedua Scale")
+	eq(CatalogMenu.chips("hair")[1].id, "all", "grup biasa tetap All/Free/Limited")
+	-- BODY tetap `soon` (tidak punya daftar item), tapi kartunya BISA diketuk: `page` menandai
+	-- bahwa ia membuka halaman sendiri. Tanpa ini CategoryMenu menahannya di flash "Soon".
+	eq(body.page, "body", "BODY membuka halaman sendiri")
 
 	-- 10. FEATURED punya CategoryFilter sendiri; grup lain tidak
 	eq(CatalogMenu.byId.featured.categoryFilter, "Featured", "FEATURED pakai CategoryFilter.Featured")

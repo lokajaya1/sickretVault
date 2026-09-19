@@ -39,6 +39,9 @@ export type Group = {
 	tone: number, -- 0..1 tingkat aksen kartu (warna dari Tokens, bukan pelangi CAC)
 	categoryFilter: string?, -- nama Enum.CatalogCategoryFilter untuk chip grup (mis. "Featured")
 	soon: boolean?, -- true = belum ada isinya (kartu redup + flash "Soon", tidak bisa dibuka)
+	-- Grup yang membuka HALAMAN SENDIRI di panel, bukan daftar item katalog. `soon` tetap true
+	-- untuk grup begini: ia memang tidak punya kategori maupun chip pencarian.
+	page: string?,
 }
 
 export type Chip = {
@@ -59,6 +62,13 @@ CatalogMenu.ROWS_COMPACT = 14
 --             -> hasilnya jatuh ke daftar item gratis bawaan Roblox)
 --   free    : sama + MaxPrice = 0
 --   limited : sama + SalesTypeFilter.Collectibles
+-- Chip yang menggantikan All/Free/Limited pada grup berhalaman (BODY): keduanya membuka PANEL,
+-- bukan pencarian katalog. CAC juga tidak menampilkan All/Free/Limited di halaman Body.
+CatalogMenu.PANELS = {
+	{ id = "color", label = "Color", isFilter = true },
+	{ id = "scale", label = "Scale", isFilter = true },
+} :: { Chip }
+
 CatalogMenu.FILTERS = {
 	{ id = "all", label = "All", isFilter = true },
 	{ id = "free", label = "Free", isFilter = true },
@@ -158,11 +168,12 @@ local list: { Group } = {
 		-- Warna kulit, skala badan, bentuk kepala: bukan pencarian katalog -> PR editor tubuh.
 		id = "body",
 		label = "BODY",
-		categories = {},
+		-- FACES sudah jadi grup mozaik sendiri, dan classic `Face` off-sale (dikunci spec).
+		categories = { "head_shapes", "torso", "left_arm", "right_arm", "left_leg", "right_leg" },
 		span = { x = 2, y = 6, w = 2, h = 2 },
 		spanCompact = { x = 0, y = 12, w = 2, h = 2 },
 		tone = 0.3,
-		soon = true,
+		page = "body",
 	},
 }
 
@@ -209,7 +220,7 @@ function CatalogMenu.chips(group: Group | string): { Chip }
 	if g ~= nil and g.soon then
 		return out
 	end
-	for _, f in CatalogMenu.FILTERS do
+	for _, f in (if g ~= nil and g.page ~= nil then CatalogMenu.PANELS else CatalogMenu.FILTERS) do
 		table.insert(out, { id = f.id, label = f.label, isFilter = true })
 	end
 	for _, catId in CatalogMenu.categoryIds(group) do

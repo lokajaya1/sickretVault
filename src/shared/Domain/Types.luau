@@ -58,6 +58,15 @@ export type Intent =
 	| { op: "wearBundle", bundleId: number, partIds: { number }?, useBundleScales: boolean? }
 	| { op: "removeBundle", bundleId: number }
 	| { op: "setLayerOrder", assetId: number, order: number }
+	-- Item Removal: BEBERAPA kategori sekaligus (OutfitState.KINDS). Satu intent, satu commit,
+	-- jadi satu Undo mengembalikan seluruhnya -- bukan satu Undo per kategori.
+	| { op: "removeKind", kinds: { string } }
+	-- Halaman Body. Pada setColor, slot "all" = petak palet kulit (enam bagian sekaligus);
+	-- nama slot tunggal = Advanced Colors. Satu perubahan = satu commit = satu Undo.
+	| { op: "setColor", slot: string, hex: string }
+	| { op: "setScale", slot: string, value: number }
+	| { op: "setRig", rig: string }
+	| { op: "removeSlot", slot: string }
 	| { op: "undo" }
 	| { op: "redo" }
 	| { op: "reset" }

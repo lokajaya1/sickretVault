@@ -12,6 +12,7 @@
 local Shared = game:GetService("ReplicatedStorage"):WaitForChild("Shared")
 local Types = require(Shared.Domain.Types)
 local Log = require(Shared.Util.Log)
+local ItemDetail = require(Shared.Domain.ItemDetail)
 
 local log = Log.new("OutfitItemsService")
 
@@ -23,6 +24,10 @@ export type Item = {
 	assetType: string?,
 	creator: string?, -- nama pembuat (CreatorName); nil = tidak diketahui
 	price: number?, -- nil = tidak dijual / tidak diketahui
+	resalePrice: number?, -- harga pasar item limited (hanya bila ada penjual ulang)
+	limited: boolean?,
+	offSale: boolean?,
+	priceStatus: string?,
 	isForSale: boolean,
 }
 
@@ -115,10 +120,10 @@ local function toItem(id: number, raw: any): Item?
 	if type(raw) ~= "table" then
 		return nil
 	end
-	local price = raw.Price
-	if type(price) ~= "number" then
-		price = if type(raw.LowestPrice) == "number" then raw.LowestPrice else nil
-	end
+	-- Aturan harga dipinjam dari ItemDetail (satu sumber): sentinel 999999999 dibuang, harga
+	-- pasar limited dikenali, off-sale ditandai. `resalePrice` hanya diteruskan bila Roblox
+	-- bilang ada penjual ulang -- sama dengan kartu katalog.
+	local price, resale, limited, offSale, hasResellers = ItemDetail.priceFields(raw)
 	local creator = if type(raw.CreatorName) == "string" and raw.CreatorName ~= "" then raw.CreatorName else nil
 	return {
 		id = id,
@@ -126,6 +131,10 @@ local function toItem(id: number, raw: any): Item?
 		assetType = if type(raw.AssetType) == "string" then raw.AssetType else nil,
 		creator = creator,
 		price = price,
+		resalePrice = if hasResellers and resale ~= nil and resale > 0 then resale else nil,
+		limited = if limited then true else nil,
+		offSale = if offSale then true else nil,
+		priceStatus = if type(raw.PriceStatus) == "string" then raw.PriceStatus else nil,
 		isForSale = price ~= nil,
 	}
 end

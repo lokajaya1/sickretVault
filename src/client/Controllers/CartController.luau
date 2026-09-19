@@ -6,6 +6,7 @@
 --   cart:onResult(function(summary) ... end)   -- hasil PromptBulkPurchase (untuk toast)
 --   local ok, reason = cart:toggle(item)       -- tombol 🛒 di kartu/detail/strip
 --   local ok, code = cart:checkout()           -- YIELD (InvokeServer) -> panggil dari task.spawn
+--   local ok, code = cart:checkoutItems(list)  -- YIELD; beli daftar item TANPA menyentuh keranjang
 -- PromptBulkPurchase dipanggil server (remote Checkout); PromptBulkPurchaseFinished HANYA bisa
 -- didengarkan dari LocalScript (uji Studio 17 Sep 2026) -> diringkas di sini dengan CheckoutSummary.
 -- Isi keranjang hanya di memori (hilang saat rejoin). Item yang terbeli / sudah dimiliki dibuang otomatis.
@@ -214,6 +215,40 @@ function CartController.checkout(self: CartController): (boolean, string?)
 	local code: string? = nil
 	if not ok or type(res) ~= "table" then
 		log.warn("Checkout invoke gagal", res)
+		code = "NETWORK"
+	elseif not res.ok then
+		code = if type(res.code) == "string" then res.code else "FAILED"
+	end
+	if code then
+		self._checkoutAt = nil
+		self:_emit()
+		return false, code
+	end
+	return true, nil
+end
+
+-- YIELD. Beli SEKUMPULAN item tanpa menyentuh isi keranjang (tombol "Buy all" di panel review).
+-- Keranjang pemain adalah miliknya: menumpuk barang ke sana lalu men-checkout-nya diam-diam akan
+-- menghapus isinya. Server memakai handler Checkout yang sama, jadi batas 20 item & rate limit
+-- tetap berlaku; `_checkoutAt` ikut dipakai supaya tombol tidak bisa ditekan dua kali.
+function CartController.checkoutItems(self: CartController, items: { any }): (boolean, string?)
+	if #items == 0 then
+		return false, "EMPTY"
+	end
+	if self:isCheckingOut() then
+		return false, "BUSY"
+	end
+	local request = {}
+	for _, item in items do
+		table.insert(request, { id = item.id, itemType = item.itemType or "Asset" })
+	end
+	self._checkoutAt = self._clock()
+	self:_emit()
+
+	local ok, res = pcall(self._deps.invoke :: any, request)
+	local code: string? = nil
+	if not ok or type(res) ~= "table" then
+		log.warn("Checkout (buy all) invoke gagal", res)
 		code = "NETWORK"
 	elseif not res.ok then
 		code = if type(res.code) == "string" then res.code else "FAILED"

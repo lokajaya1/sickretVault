@@ -36,8 +36,11 @@ export type OutfitController = typeof(setmetatable(
 	{} :: {
 		_deps: Deps,
 		_state: any?,
+		_baseline: any?, -- avatar asli akun (tujuan `reset`); datang sekali lewat GetState
+		_baselineAsked: boolean, -- GetState susulan sudah diminta (jangan berulang-ulang)
 		_worn: { [number]: boolean },
 		_makeup: { [number]: boolean }, -- makeup dipasang sebagai Decal, di luar OutfitState
+		_makeupRows: { any }, -- Makeup.toDto apa adanya: dibutuhkan pratinjau (assetId + slot)
 		_background: any?, -- latar area preview: { assetId, image, color }; di luar OutfitState juga
 		_bundles: { [number]: boolean },
 		_listeners: { (any) -> () },
@@ -92,8 +95,11 @@ function OutfitController.new(deps: Deps?): OutfitController
 	return setmetatable({
 		_deps = d,
 		_state = nil,
+		_baseline = nil,
+		_baselineAsked = false,
 		_worn = {},
 		_makeup = {},
+		_makeupRows = {},
 		_background = nil,
 		_bundles = {},
 		_listeners = {},
@@ -171,14 +177,18 @@ end
 -- Daftar makeup dari server (Makeup.toDto). Di luar OutfitState, jadi disimpan terpisah.
 function OutfitController._setMakeup(self: OutfitController, dto: any)
 	local set: { [number]: boolean } = {}
+	local rows: { any } = {}
 	if type(dto) == "table" then
 		for _, row in dto do
 			if type(row) == "table" and type(row.assetId) == "number" then
 				set[row.assetId] = true
+				table.insert(rows, row)
 			end
 		end
 	end
 	self._makeup = set
+	-- Barisnya disimpan utuh (bukan cuma assetId): pratinjau butuh slotnya juga.
+	self._makeupRows = rows
 	if self._state ~= nil then
 		emit(self._listeners, self._state) -- kartu perlu digambar ulang (tanda dipakai)
 	end
@@ -196,6 +206,30 @@ function OutfitController._setBackground(self: OutfitController, dto: any)
 	end
 end
 
+-- Avatar asli akun HANYA ada di jawaban GetState. Kalau sesi server belum siap saat `start()`
+-- memanggilnya, jawabannya NOT_READY -- state-nya sendiri menyusul lewat StateChanged, dan
+-- baseline tidak pernah datang. Diukur 19 Sep 2026: itulah yang terjadi di Studio, panel
+-- "Reset to Roblox Avatar?" selalu jatuh ke cadangan (avatar sekarang). Jadi begitu state pertama
+-- tiba tanpa baseline, GetState diminta SEKALI lagi di thread sendiri (ia yield).
+function OutfitController._ensureBaseline(self: OutfitController)
+	if self._baseline ~= nil or self._baselineAsked then
+		return
+	end
+	self._baselineAsked = true
+	local getState = self._deps.getState
+	if getState == nil then
+		return
+	end
+	task.spawn(function()
+		local ok, res = pcall(getState :: any)
+		if ok and type(res) == "table" and res.ok and type(res.baseline) == "table" then
+			self._baseline = res.baseline
+		else
+			log.warn("avatar asli tidak terambil", if ok then "jawaban tanpa baseline" else res)
+		end
+	end)
+end
+
 function OutfitController._setState(self: OutfitController, state: any)
 	if type(state) ~= "table" then
 		return
@@ -203,6 +237,7 @@ function OutfitController._setState(self: OutfitController, state: any)
 	self._state = state
 	self._worn = collectWorn(state)
 	self._bundles = collectBundles(state)
+	self:_ensureBaseline()
 	emit(self._listeners, state)
 end
 
@@ -245,10 +280,19 @@ function OutfitController.start(self: OutfitController)
 	end
 	-- StateChanged awal mungkin sudah lewat (atau tertunda) -> minta juga secara eksplisit.
 	local ok, res = pcall(d.getState :: any)
-	if ok and type(res) == "table" and res.ok and self._state == nil then
-		self:_setState(res.state)
-		self:_setMakeup(res.makeup)
-		self:_setBackground(res.background)
+	if ok and type(res) == "table" and res.ok then
+		-- BASELINE DIAMBIL DI LUAR penjaga `self._state == nil`. Penjaga itu ada supaya jawaban
+		-- GetState tidak menimpa state yang lebih baru dari StateChanged -- dan StateChanged
+		-- biasanya MENDAHULUI panggilan ini. Baseline tidak pernah ikut StateChanged, jadi dulu ia
+		-- selalu ikut terbuang bersama jawaban ini: panel "Reset to Roblox Avatar?" pun kosong.
+		if type(res.baseline) == "table" then
+			self._baseline = res.baseline
+		end
+		if self._state == nil then
+			self:_setState(res.state)
+			self:_setMakeup(res.makeup)
+			self:_setBackground(res.background)
+		end
 	elseif not ok then
 		log.warn("GetState gagal", res)
 	end
@@ -260,6 +304,11 @@ function OutfitController.stop(self: OutfitController)
 	end
 	table.clear(self._conns)
 	self._started = false
+end
+
+-- Avatar asli akun pemain. nil = server belum sempat mengirimnya (UI harus tahan terhadap itu).
+function OutfitController.getBaseline(self: OutfitController): any?
+	return self._baseline
 end
 
 function OutfitController.getState(self: OutfitController): any?
@@ -285,6 +334,21 @@ local function subscribe(list: { any }, fn: any): () -> ()
 			table.remove(list, i)
 		end
 	end
+end
+
+-- Berapa makeup yang sedang dipakai. Dipakai dialog Item Removal untuk angka barisnya;
+-- makeup tidak ada di OutfitState, jadi ia tidak bisa dihitung lewat OutfitState.removeKind.
+-- Baris makeup apa adanya (assetId + slot + textureId), untuk pratinjau look.
+function OutfitController.makeupRows(self: OutfitController): { any }
+	return self._makeupRows
+end
+
+function OutfitController.makeupCount(self: OutfitController): number
+	local n = 0
+	for _ in self._makeup do
+		n += 1
+	end
+	return n
 end
 
 function OutfitController.onChanged(self: OutfitController, fn: (any) -> ()): () -> ()

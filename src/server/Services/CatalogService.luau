@@ -512,7 +512,7 @@ local function fill(self: CatalogService, entry: Entry, req: Request, target: nu
 		entry.cursor = page
 		entry.finished = page.isFinished == true
 		local rawItems = page.items or {}
-		local dtos = toDtos(rawItems, req)
+		local dtos = self:_expandParts(toDtos(rawItems, req), req)
 		if #dtos == 0 then
 			-- Halaman benar-benar kosong = katalog habis; kosong karena tersaring (mis. Gear atau
 			-- rentang harga) = lanjut, tapi hanya sampai MAX_EMPTY_PAGES supaya tidak kena 429.
@@ -584,6 +584,78 @@ end
 
 -- Dibuka untuk ItemDetailService (baris Recommended): hasil getBatchItemDetails berbentuk sama
 -- dengan hasil pencarian, jadi kartunya memakai normalizer yang sama persis.
+-- Bagian tubuh TIDAK BISA dicari per tipe aset: diukur 20 Sep 2026 lewat AvatarEditorService,
+-- AssetTypes={Torso} -> 0 hasil, {LeftArm} -> 0, BundleTypes={BodyParts} -> 30. Part satuannya hanya
+-- ada DI DALAM bundle.
+-- Yang dipakai di sini bukan getBundleDetails per bundle (satu halaman = 30 panggilan -> HTTP 429,
+-- persis anggaran yang sudah dicatat #17b dan #28 no. 1), melainkan `BundledItems` yang SUDAH IKUT
+-- di jawaban GetBatchItemDetailsAsync untuk Bundle -- satu panggilan untuk seluruh halaman.
+-- Isinya: { Id, Type = "Asset", AssetType = "Torso", Name = "R6 - Torso" } (spike 20 Sep 2026),
+-- jadi nama kartunya berasal dari Roblox, bukan dikarang di sini, dan `rbxthumb` atas id part
+-- menggambar BAGIANNYA -- bukan seluruh karakter.
+-- Bundle tanpa part yang cocok dibuang, jadi tidak ada kartu kosong.
+function CatalogService._expandParts(self: CatalogService, dtos: { ItemDto }, req: Request): { ItemDto }
+	local cat = if req.categoryId ~= nil then Categories.byId[req.categoryId] else nil
+	local partTypes = if cat ~= nil then (cat :: any).partTypes else nil
+	if partTypes == nil then
+		return dtos
+	end
+	-- Satu tab bisa menerima beberapa tipe: kepala datang sebagai "Head" (klasik) MAUPUN
+	-- "DynamicHead" (bundle generasi baru). Menyaring satu tipe saja membuat tab Head selalu kosong.
+	local wanted: { [string]: boolean } = {}
+	for _, t in partTypes do
+		wanted[t] = true
+	end
+	local ids: { number } = {}
+	for _, dto in dtos do
+		if dto.itemType == "Bundle" then
+			table.insert(ids, dto.id)
+		end
+	end
+	if #ids == 0 then
+		return {}
+	end
+	local itemType = self._toEnum("AvatarItemType", "Bundle")
+	if itemType == nil then
+		log.warn("AvatarItemType.Bundle tidak ada; part tidak dimekarkan")
+		return dtos
+	end
+	local ok, list = self._api:getBatchItemDetails(ids, itemType)
+	if not ok or type(list) ~= "table" then
+		log.warn("pemekaran part gagal untuk kategori", req.categoryId)
+		return {}
+	end
+	local partOf: { [number]: any } = {}
+	for _, d in list do
+		local bundleId = tonumber(d.Id)
+		local items = d.BundledItems
+		if bundleId ~= nil and type(items) == "table" then
+			for _, it in items do
+				if type(it) == "table" and wanted[it.AssetType] == true and tonumber(it.Id) ~= nil then
+					partOf[bundleId] = it
+					break
+				end
+			end
+		end
+	end
+	local out: { ItemDto } = {}
+	for _, dto in dtos do
+		local part = partOf[dto.id]
+		if part ~= nil then
+			local card = table.clone(dto)
+			card.id = tonumber(part.Id) :: number
+			card.itemType = "Asset"
+			card.assetType = part.AssetType
+			card.bundleType = nil
+			if type(part.Name) == "string" and part.Name ~= "" then
+				card.name = part.Name
+			end
+			table.insert(out, card)
+		end
+	end
+	return out
+end
+
 CatalogService.toDto = toDto
 
 return CatalogService

@@ -40,6 +40,9 @@ local ItemDetailPanel = require(script.Parent.Components.ItemDetailPanel)
 local CartPanel = require(script.Parent.Components.CartPanel)
 local WardrobePanel = require(script.Parent.Components.WardrobePanel)
 local SideRail = require(script.Parent.Components.SideRail)
+local NamePrompt = require(script.Parent.Components.NamePrompt)
+local SaveReviewPanel = require(script.Parent.Components.SaveReviewPanel)
+local RemoveDialog = require(script.Parent.Components.RemoveDialog)
 local OutfitPreview = require(script.Parent.Util.OutfitPreview)
 local CatalogController = require(script.Parent.Parent.Controllers.CatalogController)
 local OutfitController = require(script.Parent.Parent.Controllers.OutfitController)
@@ -160,6 +163,120 @@ local ICON_SPAN = 13 -- panjang garis plus/minus
 local ICON_CHEVRON = 10 -- panjang satu sisi chevron
 local ICON_RING = 13 -- garis tengah lingkaran ikon reset
 
+-- LATAR 3D kartu Item Removal: ruang abu gelap berisi balok-balok, meniru latar editor avatar
+-- bawaan Roblox. Dicari dulu di dokumentasi & forum (19 Sep 2026): latar itu BUKAN aset yang bisa
+-- dimuat dari dalam game -- ia scene yang ikut di dalam aplikasi Roblox sendiri (`Mobile.rbxl`,
+-- lihat "Custom Avatar Editor Background" di DevForum), dan "id latar avatar editor" yang beredar
+-- di forum cuma tangkapan layar yang diunggah ulang orang -- bisa hilang kapan saja. Jadi ruangnya
+-- DIBANGUN SENDIRI dari part: itu sebabnya ia hidup di WorldModel, bukan gambar datar.
+local ROOM_WALL = Color3.fromRGB(34, 34, 40)
+local ROOM_BLOCK = Color3.fromRGB(43, 43, 50)
+local ROOM_FLOOR = Color3.fromRGB(116, 116, 124)
+-- x, y (alas), z, lebar, tinggi, tebal. Baloknya BESAR dan DEKAT -- di rujukan, balok terdekat
+-- setinggi bahu avatar dan terpotong tepi layar; balok kecil di kejauhan membuat ruangnya terbaca
+-- seperti taman miniatur, bukan ruang tempat avatar berdiri.
+local ROOM_BLOCKS: { { number } } = {
+	{ -11, -3, -6, 7, 9, 7 },
+	{ 11, -3, -7, 8, 6, 7 },
+	{ -6, -3, -14, 9, 14, 8 },
+	{ 7, -3, -15, 8, 11, 8 },
+	{ -17, -3, -12, 8, 8, 8 },
+	{ 17, -3, -13, 7, 12, 8 },
+	{ 0, -3, -22, 12, 17, 8 },
+	{ -13, -3, -24, 10, 10, 8 },
+	{ 13, -3, -25, 9, 13, 8 },
+}
+
+local function buildRoom(world: WorldModel)
+	local function block(x: number, y: number, z: number, sx: number, sy: number, sz: number, color: Color3)
+		local part = Instance.new("Part")
+		part.Anchored = true
+		part.CanCollide = false
+		part.CastShadow = false
+		part.Material = Enum.Material.SmoothPlastic
+		part.Color = color
+		part.Size = Vector3.new(sx, sy, sz)
+		part.CFrame = CFrame.new(x, y + sy / 2, z)
+		part.Parent = world
+		return part
+	end
+	-- Lantai JAUH lebih terang daripada dinding: itu yang membuat avatar terlihat BERDIRI, bukan
+	-- melayang, dan itu pula yang paling menonjol di rujukan -- bidang terang di bawah, gelap di
+	-- sekelilingnya.
+	block(0, -4, -6, 90, 1, 70, ROOM_FLOOR)
+	block(0, -3, -30, 110, 46, 2, ROOM_WALL)
+	for _, b in ROOM_BLOCKS do
+		block(b[1], b[2], b[3], b[4], b[5], b[6], ROOM_BLOCK)
+	end
+end
+
+-- Sejauh mana avatar digeser ke kanan di dalam kartu Item Removal (piksel geser layar, sama
+-- satuannya dengan cubitan jari). Kira-kira separuh lebar daftar centang: cukup untuk keluar
+-- dari balik tulisan, tidak sampai terpotong tepi kartu.
+local REMOVE_PAN_X = 96
+
+-- Pratinjau Item Removal: kategori CAC -> Instance mana yang dibuang dari SALINAN karakter.
+-- `Accessory.AccessoryType` sudah membedakan rambut, wajah, dan pakaian berlapis, jadi tidak perlu
+-- menebak dari nama atau mencocokkan assetId. Pakaian klasik adalah Instance tersendiri (Shirt /
+-- Pants / ShirtGraphic), wajah klasik sebuah Decal bernama "face" di Head, dan Decal lain di Head
+-- adalah makeup kita -- yang ikut kategori Face.
+local LAYERED_ACCESSORY: { [string]: boolean } = {
+	TShirt = true,
+	Shirt = true,
+	Pants = true,
+	Jacket = true,
+	Sweater = true,
+	Shorts = true,
+	LeftShoe = true,
+	RightShoe = true,
+	DressSkirt = true,
+}
+local FACE_ACCESSORY: { [string]: boolean } = { Face = true, Eyebrow = true, Eyelash = true }
+
+local function stripFilter(drop: { [string]: boolean }): (Instance) -> boolean
+	return function(x: Instance): boolean
+		if x:IsA("Accessory") then
+			local kind = x.AccessoryType.Name
+			if kind == "Hair" then
+				return drop.hair == true
+			end
+			if FACE_ACCESSORY[kind] then
+				return drop.face == true
+			end
+			if LAYERED_ACCESSORY[kind] then
+				return drop.layered == true
+			end
+			-- Topi, kalung, sayap, dan aksesori lawas yang tipenya "Unknown" masuk sini.
+			return drop.accessories == true
+		end
+		if x:IsA("Shirt") or x:IsA("Pants") or x:IsA("ShirtGraphic") then
+			return drop.classic == true
+		end
+		if x:IsA("Decal") then
+			-- Wajah klasik ada di grup `classic` DAN ikut terbuang oleh kategori "face"
+			-- (OutfitState.removeKind memperlakukannya persis begitu).
+			if x.Name == "face" then
+				return drop.classic == true or drop.face == true
+			end
+			return drop.face == true -- makeup
+		end
+		return false
+	end
+end
+
+-- Kategori yang jumlahnya dihitung untuk dialog Item Removal. Sengaja TANPA "all": barisnya
+-- di dialog melepas semuanya dan tidak butuh angka, dan menghitungnya berarti menjumlah
+-- kategori lain dua kali.
+local REMOVE_KINDS = {
+	"accessories",
+	"hair",
+	"face",
+	"classic",
+	"layered",
+	"bodyParts",
+	"animations",
+}
+
 local function plural(n: number, word: string): string
 	return ("%d %s%s"):format(n, word, if n == 1 then "" else "s")
 end
@@ -189,6 +306,14 @@ export type App = typeof(setmetatable(
 		rightRail: SideRail.SideRail,
 		toast: Toast.Toast,
 		actions: ActionBar.ActionBar,
+		_saveChooser: NamePrompt.NamePrompt, -- "How would you like to save your outfit?" (#30)
+		_saveReview: SaveReviewPanel.SaveReviewPanel, -- panel Owned / Unowned sebelum menyimpan
+		_removeDialog: RemoveDialog.RemoveDialog, -- Item Removal per kategori (ikon tong sampah)
+		_removeToken: number, -- penanda sesi dialog; masuk ke kunci cache pratinjau
+		_reviewToken: number, -- jawaban kepemilikan yang datang terlambat dibuang
+		_reviewUnowned: { [number]: boolean }, -- assetId yang belum dimiliki (dicopot saat menyimpan)
+		_chromeCatalog: boolean, -- katalog tadinya terbuka saat panel simpan muncul -> dibuka lagi
+		_known: { [number]: any }, -- item katalog yang pernah tampil (nama & harga)
 		strip: WornStrip.WornStrip,
 		camera: TryOnCamera.TryOnCamera,
 		_catalogButton: TextButton,
@@ -231,13 +356,13 @@ end
 -- Ikon DIGAMBAR dari Frame, bukan glyph font dan bukan assetId. Uji Studio 18 Sep 2026:
 -- BuilderSans tidak punya "✥" (U+2725) maupun "▾" (U+25BE) -- keduanya jadi kotak kosong -- dan
 -- menebak id aset lebih berbahaya lagi. Garis membulat begini juga lebih rapi daripada huruf.
-local function iconBar(parent: Instance, w: number, h: number, rot: number, dx: number)
+local function iconBar(parent: Instance, w: number, h: number, rot: number, dx: number, dy: number?)
 	local f = Instance.new("Frame")
 	f.Name = "Line"
 	f.BackgroundColor3 = Tokens.Color.Text
 	f.BorderSizePixel = 0
 	f.AnchorPoint = Vector2.new(0.5, 0.5)
-	f.Position = UDim2.new(0.5, dx, 0.5, 0)
+	f.Position = UDim2.new(0.5, dx, 0.5, dy or 0)
 	f.Size = UDim2.fromOffset(w, h)
 	f.Rotation = rot
 	f.ZIndex = Tokens.ZIndex.Hud + 3
@@ -285,6 +410,18 @@ local function drawIcon(kind: string, parent: Instance)
 		dotRound.CornerRadius = UDim.new(1, 0)
 		dotRound.Parent = dot
 		dot.Parent = parent
+	elseif kind == "undo" or kind == "redo" then
+		-- Panah balik: batang mendatar + kepala panah di satu ujung + ekor pendek yang membelok
+		-- ke bawah di ujung lain (kesan "kembali"). Redo = cerminnya, jadi satu cabang dengan
+		-- pengali `dir`. Rotation Roblox searah jarum jam: lengan yang naik ke kanan = -45.
+		local dir = if kind == "undo" then 1 else -1 -- 1 = kepala panah di kiri
+		local arm = ICON_CHEVRON * 0.8
+		local off = arm * 0.354 -- setengah panjang lengan pada sumbu x/y (cos 45 / 2)
+		local tip = (-ICON_SPAN / 2 - 1) * dir
+		iconBar(parent, ICON_SPAN, ICON_LINE, 0, 0)
+		iconBar(parent, arm, ICON_LINE, -45 * dir, tip + off * dir, -off)
+		iconBar(parent, arm, ICON_LINE, 45 * dir, tip + off * dir, off)
+		iconBar(parent, ICON_LINE, ICON_CHEVRON * 0.6, 0, (ICON_SPAN / 2) * dir, ICON_CHEVRON * 0.3)
 	elseif kind == "down" then
 		iconBar(parent, ICON_CHEVRON, ICON_LINE, 45, -reach)
 		iconBar(parent, ICON_CHEVRON, ICON_LINE, -45, reach)
@@ -429,11 +566,42 @@ function App.mount(opts: Options?): App
 	local wardrobe = WardrobeController.new()
 	local self: App
 
-	-- Dock (kiri bawah, dekat avatar): Undo / Redo / Reset -> server lewat OutfitController.
+	-- Dock (kiri bawah, di bawah kartu preview): 4 ikon persegi pola CAC.
+	--   roblox = simpan look ini ke akun Roblox; cart = keranjang; reset = kembali ke avatar
+	--   sendiri (server, lewat OutfitController); trash = Item Removal per kategori.
+	-- Undo sekarang panah di pojok kartu preview, Redo dibuang.
+	-- Dialog pilihan cara menyimpan (pola CAC): dua kartu, menumpang NamePrompt mode "saveTarget".
+	-- Ia selayar penuh (anak `gui`, bukan panel) karena dipanggil dari DUA tempat: bar aksi saat
+	-- katalog terbuka, dan kluster ikon kiri bawah saat katalog tertutup.
+	local saveChooser = NamePrompt.new({
+		parent = gui,
+		zIndex = Tokens.ZIndex.Popup + 5, -- di atas panel & popover, di bawah Toast
+		onConfirm = function(_mode, kind)
+			self:openSaveReview(kind or "avatar")
+		end,
+		-- Ditutup tanpa memilih -> chrome kembali. Kalau justru lanjut ke panel review, panel itu
+		-- yang menyembunyikannya lagi, jadi pemeriksaannya ditunda satu langkah.
+		onClose = function()
+			task.defer(function()
+				if not self._saveReview:isOpen() then
+					self:_setChromeHidden(false)
+				end
+			end)
+		end,
+	})
+
 	local actions = ActionBar.new({
 		parent = gui,
 		onAction = function(op)
-			outfit:send({ op = op })
+			if op == "roblox" then
+				self:openSaveChooser()
+			elseif op == "cart" then
+				self:openCart()
+			elseif op == "reset" then
+				self:confirmReset()
+			elseif op == "trash" then
+				self:openRemoveDialog()
+			end
 		end,
 	})
 
@@ -484,6 +652,23 @@ function App.mount(opts: Options?): App
 	local panel = CatalogPanel.new({
 		controller = catalog,
 		parent = gui,
+		bodyLimits = OutfitState.SCALE_LIMITS,
+		onColor = function(slot, hex)
+			outfit:send({ op = "setColor", slot = slot, hex = hex })
+		end,
+		onScale = function(slot, value)
+			outfit:send({ op = "setScale", slot = slot, value = value })
+		end,
+		onRig = function(rig)
+			outfit:send({ op = "setRig", rig = rig })
+		end,
+		getBody = function()
+			local s = outfit:getState()
+			if s == nil then
+				return nil, nil
+			end
+			return s.colors, s.scales, s.rig
+		end,
 		-- Tap kartu -> overlay di kartu (CatalogPanel); aksinya di bawah.
 		onItemActivated = function(item)
 			-- Overlay dibuka: ambil status favoritnya kalau izin inventory SUDAH ada (quiet =
@@ -832,11 +1017,159 @@ function App.mount(opts: Options?): App
 	hideButton.AnchorPoint = Vector2.new(1, 0)
 	hideButton.Position = UDim2.new(1, -ZOOM_INSET, 0, ZOOM_INSET)
 
+	-- Undo & Redo: sepasang panah di pojok kiri ATAS kartu (pola CAC), sejauh mungkin dari tombol
+	-- sembunyikan di kanan atas dan dari kapsul zoom di kanan bawah. Keduanya ikut hilang saat
+	-- kartu disembunyikan -- sama seperti kontrol kamera, dan bar aksi di bawah kartu tetap ada.
+	local undoButton = floatButton("Undo", "undo", previewCard)
+	undoButton.AnchorPoint = Vector2.new(0, 0)
+	undoButton.Position = UDim2.fromOffset(ZOOM_INSET, ZOOM_INSET)
+
+	local redoButton = floatButton("Redo", "redo", previewCard)
+	redoButton.AnchorPoint = Vector2.new(0, 0)
+	redoButton.Position = UDim2.fromOffset(ZOOM_INSET + ZOOM_BUTTON + 6, ZOOM_INSET)
+
 	-- Tombol memunculkan kartu lagi. Anak `gui`, bukan kartu: kartunya sendiri sedang tersembunyi.
 	-- Letaknya persis di tempat tombol sembunyikan tadi, jadi jarinya tidak perlu berpindah.
 	local showButton = floatButton("ShowPreview", "up", gui)
 	showButton.AnchorPoint = Vector2.new(1, 0)
 	showButton.Visible = false
+
+	-- Panel review "Owned / Unowned" (pola CAC), di antara pilihan cara simpan dan prompt Roblox.
+	-- Dibuat DI SINI, bukan bersama dialog pilihan di atas: ia butuh `previews`, dan layanan itu
+	-- baru ada beberapa baris sebelumnya.
+	local saveReview = SaveReviewPanel.new({
+		parent = gui,
+		zIndex = Tokens.ZIndex.Popup + 5,
+		previews = previews,
+		onBuy = function(item)
+			self:buy(item.id, if item.bundle then "Bundle" else "Asset")
+		end,
+		onBuyAll = function(unownedList)
+			self:buyAll(unownedList)
+		end,
+		onSave = function(kind)
+			-- Item tak dimiliki dicopot dari look sebelum prompt Roblox: PromptCreateOutfit
+			-- MENOLAK look yang memuatnya (diukur 19 Sep 2026), bukan menyimpannya sebagian.
+			self:saveToRoblox(kind, self._reviewUnowned)
+		end,
+		onClose = function()
+			self:_setChromeHidden(false)
+		end,
+	})
+
+	local removeDialog = RemoveDialog.new({
+		parent = gui,
+		zIndex = Tokens.ZIndex.Popup + 5,
+		onRemove = function(kinds)
+			-- SATU intent berisi semua kategori yang dicentang: server membuangnya dalam sekali
+			-- commit, jadi satu Undo mengembalikan seluruhnya -- bukan satu Undo per kategori.
+			outfit:send({ op = "removeKind", kinds = kinds })
+		end,
+		-- Pratinjau HASIL pencentangan (pola CAC): state sekarang dikurangi kategori yang dicentang,
+		-- dihitung dengan fungsi domain yang sama dengan yang nanti dipakai server. Ini cuma
+		-- gambar -- tidak ada intent yang dikirim sampai Remove ditekan.
+		-- Avatar di dialog ini memakai FUNGSI YANG SAMA dengan kartu avatar di kolom kiri
+		-- (`mountCurrent` + latar + `setLive`), bukan jalur lain: clone karakter asli, jadi ia
+		-- bergerak persis mengikuti animasi yang sedang dipakai dan tidak pernah tercabik.
+		-- Konsekuensinya jujur: yang tampil adalah avatar SEKARANG, bukan ramalan hasil centang --
+		-- hasilnya terlihat begitu Remove ditekan (kartu ini memperbarui dirinya sendiri), dan satu
+		-- Undo mengembalikannya.
+		preview = function(kinds, viewport, confirmMode)
+			-- MODE TANYA (Reset to Roblox Avatar?): yang diperlihatkan adalah avatar ASLI AKUN --
+			-- hasil yang akan didapat kalau Yes ditekan -- bukan look yang sedang dicoba. Ia look
+			-- yang tidak sedang dipakai siapa pun, jadi dibangun dari description: berlatar dan
+			-- beruang 3D sama seperti kartu lain, tapi DIAM -- tidak ada karakter hidup untuk ditiru
+			-- posenya.
+			if confirmMode then
+				local baseline = outfit:getBaseline()
+				if baseline == nil then
+					-- Server belum sempat mengirim avatar asli (sesi belum siap saat GetState dijawab).
+					-- Kartu kosong terbaca seperti panel rusak, jadi yang ditampilkan avatar sekarang --
+					-- dan barisnya dicatat, karena ini seharusnya tidak pernah terjadi.
+					log.warn("avatar asli belum diterima; panel reset memakai avatar sekarang")
+					local fallback = previews:mountCurrent(viewport, {
+						background = true,
+						scene = if outfit:getBackground() == nil then buildRoom else nil,
+					})
+					local setLive = fallback.setLive
+					if setLive ~= nil then
+						setLive(true)
+					end
+					fallback.addPan(REMOVE_PAN_X, 0)
+					return fallback.cancel
+				end
+				-- Tidak digeser ke kanan seperti mode daftar: di mode tanya kaki kartu cuma dua tombol,
+				-- jadi avatarnya berdiri di tengah.
+				local handle = previews:mount(
+					viewport,
+					("baseline:%d"):format(self._removeToken),
+					{ outfit = PlayerData.encodeOutfit(baseline), makeup = {} },
+					function()
+						log.warn("pratinjau avatar asli tidak jadi")
+					end,
+					{
+						focus = "full",
+						background = true,
+						scene = if outfit:getBackground() == nil then buildRoom else nil,
+					}
+				)
+				return handle.cancel
+			end
+			local drop: { [string]: boolean } = {}
+			for _, kind in kinds do
+				drop[kind] = true
+			end
+			-- KARTU YANG SAMA dengan kolom kiri (mountCurrent + latar + setLive) juga untuk pratinjau
+			-- "sesudah dibuang": salinan karakternya disaring lebih dulu, jadi ia tetap bersendi,
+			-- tetap ikut animasi, tetap berlatar. Mencentang Animations mematikan peniruan pose --
+			-- avatar berhenti, persis yang akan terjadi setelah animasinya dibuang.
+			if not (drop.bodyParts or drop.all) then
+				-- Memakai item Background -> ruang 3D TIDAK dibangun. Latarnya sudah gambar pilihan
+				-- pemain; balok-balok kita akan berdiri di DEPAN gambar itu dan merusaknya.
+				local plain = outfit:getBackground() == nil
+				local live = previews:mountCurrent(viewport, {
+					background = true,
+					strip = if #kinds > 0 then stripFilter(drop) else nil,
+					scene = if plain then buildRoom else nil,
+				})
+				local setLive = live.setLive
+				if setLive ~= nil then
+					setLive(not drop.animations)
+				end
+				-- Dunia avatar memenuhi kartu, daftar centang menempati sisi kirinya: kameranya
+				-- digeser supaya avatar berdiri di sisa ruang kanan, bukan di belakang tulisan.
+				live.addPan(REMOVE_PAN_X, 0)
+				return live.cancel
+			end
+			-- Body Parts (dan All, yang memuatnya) TIDAK bisa disaring dari salinan: badan bukan item
+			-- yang bisa dicabut, ia harus dibangun ulang dari description. Untuk dua kasus itu saja
+			-- dipakai previews:mount -- diam, tapi tepat.
+			local state = outfit:getState()
+			if state == nil then
+				return nil
+			end
+			local look = state
+			for _, kind in kinds do
+				look = (OutfitState.removeKind(look, kind))
+			end
+			-- Kunci cache memuat penanda sesi: tanpa itu, membuka dialog lagi setelah look berubah
+			-- akan memakai ulang model lama (OutfitPreview menyimpan model per kunci).
+			local key = ("remove:%d:%s"):format(self._removeToken, table.concat(kinds, ","))
+			local handle = previews:mount(
+				viewport,
+				key,
+				-- Jalur ini hanya untuk Body Parts / All, dan keduanya membuang makeup juga.
+				{ outfit = PlayerData.encodeOutfit(look), makeup = if drop.all then {} else outfit:makeupRows() },
+				function()
+					log.warn("pratinjau Item Removal tidak jadi")
+				end,
+				-- background = true juga di jalur ini: tanpa itu kartu kehilangan latarnya persis saat
+				-- avatar paling polos (semua item dibuang), dan yang tersisa cuma badan di atas hitam.
+				{ focus = "full", background = true, scene = if outfit:getBackground() == nil then buildRoom else nil }
+			)
+			return handle.cancel
+		end,
+	})
 
 	local livePreview = previews:mountCurrent(previewPort, { background = true })
 	-- true = panel detail item dibuka dari Saved Outfits -> Back kembali ke sana, bukan ke katalog.
@@ -883,11 +1216,16 @@ function App.mount(opts: Options?): App
 			{ key = "avatarNew", text = "New Avatar", icon = "avatarAdd", muted = true },
 			{ key = "avatarStand", text = "My Avatar", icon = "avatarStand", muted = true },
 			{ key = "saveRoblox", text = "Save to Roblox", icon = "roblox" },
-			{ key = "swap", text = "Swap", icon = "swap", muted = true },
+			-- Dulu "Swap" (fitur yang belum ada, selalu menjawab "Soon"). Diganti Reset atas
+			-- permintaan 19 Sep 2026: kluster ini muncul saat katalog TERTUTUP, dan di situ bar
+			-- aksi tidak ada -- tanpa ini reset tidak bisa dijangkau sama sekali dari layar utama.
+			{ key = "reset", text = "Reset to My Avatar", icon = "reset" },
 		},
 		onActivated = function(key)
 			if key == "saveRoblox" then
-				self:saveToRoblox()
+				self:openSaveChooser()
+			elseif key == "reset" then
+				self:confirmReset()
 			else
 				self.bottomRail:flash(key, "Soon", SOON_SECONDS)
 			end
@@ -1030,6 +1368,14 @@ function App.mount(opts: Options?): App
 		rightRail = rightRail,
 		toast = toast,
 		actions = actions,
+		_saveChooser = saveChooser,
+		_saveReview = saveReview,
+		_removeDialog = removeDialog,
+		_removeToken = 0,
+		_reviewToken = 0,
+		_reviewUnowned = {},
+		_chromeCatalog = false,
+		_known = known,
 		strip = strip,
 		camera = camera,
 		_catalogButton = catalogButton,
@@ -1086,6 +1432,7 @@ function App.mount(opts: Options?): App
 	-- Outfit berubah (dari server) -> perbarui sorotan kartu, panel detail & strip.
 	local unsubscribe = outfit:onChanged(function()
 		panel:refreshSelection()
+		panel:refreshBody()
 		detailPanel:refreshWorn()
 		refreshStrip()
 		local refresh = livePreview.refresh
@@ -1243,6 +1590,18 @@ function App.mount(opts: Options?): App
 	)
 	table.insert(
 		self._conns,
+		undoButton.Activated:Connect(function()
+			outfit:send({ op = "undo" })
+		end)
+	)
+	table.insert(
+		self._conns,
+		redoButton.Activated:Connect(function()
+			outfit:send({ op = "redo" })
+		end)
+	)
+	table.insert(
+		self._conns,
 		hideButton.Activated:Connect(function()
 			self._previewMin = true
 			self:_refreshButtons()
@@ -1373,10 +1732,8 @@ function App._refreshButtons(self: App)
 	if setLive then
 		setLive(showCard and not window) -- mode tembus: tidak ada salinan yang perlu dicerminkan
 	end
-	local bar = self.actions.instance
-	bar.Visible = open
-	bar.AnchorPoint = Vector2.zero
-	bar.Position = UDim2.fromOffset(L.dockX, L.dockY)
+	self.actions:setPlacement(L.dockX, L.dockY, L.dockW, L.actionsH)
+	self.actions:setVisible(open)
 	local gap = L.dockH - L.actionsH - L.stripH
 	self.strip:setPlacement(L.dockX, L.dockY + L.actionsH + gap, L.dockW, L.stripH)
 	self.strip:setVisible(open)
@@ -1389,7 +1746,58 @@ function App._refreshButtons(self: App)
 	end
 end
 
+-- Menutup dialog simpan / panel review yang sedang terbuka. Penutupannya lewat `close()` biasa,
+-- jadi jalur pemulihan chrome (termasuk memunculkan katalog kembali) tetap yang itu-itu juga.
+function App.closeModals(self: App): boolean
+	local closed = false
+	if self._saveChooser:isOpen() then
+		self._saveChooser:close()
+		closed = true
+	end
+	if self._saveReview:isOpen() then
+		self._saveReview:close()
+		closed = true
+	end
+	if self._removeDialog:isOpen() then
+		self._removeDialog:close()
+		closed = true
+	end
+	return closed
+end
+
+-- Tombol C berarti SATU hal: "bawa aku ke katalog". Sebelumnya ia ditahan mentah-mentah selagi
+-- panel simpan terbuka -- benar secara teknis (tidak ada lagi panel bertumpuk), tapi salah rasa:
+-- pintasan yang diam terasa rusak. Sekarang panel simpannya ditutup dulu, lalu katalog dibuka.
+-- Katalog dibuka di `task.defer` karena penutupan panel memulihkan chrome lewat defer juga; tanpa
+-- menunggu satu langkah, pemulihan itu berjalan SESUDAH kita dan hasilnya saling menimpa.
+function App.catalogShortcut(self: App)
+	if not self:isModalOpen() then
+		self:toggleCatalog()
+		return
+	end
+	self:closeModals()
+	task.defer(function()
+		if not self.panel:isVisible() then
+			self.panel:setVisible(true)
+			self:_refreshButtons()
+		end
+	end)
+end
+
+-- Ada dialog/panel modal di depan layar? Dipakai untuk mengunci jalan masuk yang TIDAK lewat
+-- tombol -- pintasan papan tik, misalnya. Tombolnya sendiri sudah disembunyikan
+-- `_setChromeHidden`, tapi tombol C tidak peduli pada tombol yang hilang.
+function App.isModalOpen(self: App): boolean
+	return self._saveChooser:isOpen() or self._saveReview:isOpen() or self._removeDialog:isOpen()
+end
+
+-- Diuji 19 Sep 2026: menekan C saat panel review terbuka membuka panel katalog DI BELAKANGNYA --
+-- dua panel bertumpuk, dan chrome yang tadi disembunyikan ikut terbit lagi sebagian. Pintasan
+-- ditahan selagi modal terbuka; menutup panelnya mengembalikan pintasan seperti biasa.
 function App.toggleCatalog(self: App)
+	if self:isModalOpen() then
+		return
+	end
 	self.panel:setVisible(not self.panel:isVisible())
 	self:_refreshButtons()
 end
@@ -1514,9 +1922,148 @@ end
 -- Promptnya milik Roblox (ia sendiri yang mendaftar item yang akan dipasang), jadi di sini cuma
 -- toast hasil. YIELD -> thread sendiri. Item yang belum dimiliki tidak membuatnya gagal
 -- (spike 19 Sep 2026: tetap Success).
-function App.saveToRoblox(self: App, kind: string?)
+-- Tanya dulu: outfit Roblox BARU, atau timpa avatar akun? (#29 langsung menimpa tanpa bertanya.)
+-- Dialognya sendiri yang memanggil saveToRoblox lewat onConfirm; tap di luar kartu = batal.
+-- Ikon tong sampah: dialog Item Removal. Jumlah per kategori dihitung di sini dengan fungsi
+-- domain yang SAMA dengan yang dipakai server saat benar-benar membuang (OutfitState.removeKind
+-- atas state sekarang), bukan ditebak dari strip item -- kalau angkanya beda dari yang terjadi,
+-- pemain berhak menganggap tombolnya bohong.
+-- Reset membuang SELURUH hasil coba-coba dan mengembalikan avatar akun. Ia tidak boleh berjalan
+-- dari satu ketukan tanpa pertanyaan -- pola CAC: kartu yang sama, avatar (asli akun) terlihat,
+-- No / Yes. Dipakai DUA tombol: bar aksi (katalog terbuka) dan kluster kiri bawah (katalog
+-- tertutup), jadi ia satu fungsi -- bukan dua salinan yang bisa berbeda diam-diam.
+function App.confirmReset(self: App)
+	-- Penanda sesi dinaikkan: kunci cache pratinjau memuatnya, dan avatar asli akun harus dibangun
+	-- ulang kalau panelnya dibuka lagi setelah look berubah.
+	self._removeToken += 1
+	self._removeDialog:openConfirm("Reset to Roblox Avatar?", function()
+		self.outfit:send({ op = "reset" })
+	end)
+end
+
+function App.openRemoveDialog(self: App)
+	local state = self.outfit:getState()
+	if state == nil then
+		self.actions:flash("Not ready", SOON_SECONDS)
+		return
+	end
+	local counts: { [string]: number } = {}
+	for _, kind in REMOVE_KINDS do
+		local _, n = OutfitState.removeKind(state, kind)
+		counts[kind] = n
+	end
+	-- Makeup tidak punya barisnya sendiri (CAC tidak punya, dan daftar ini mengikuti CAC): ia ikut
+	-- kategori FACE, tempatnya memang di wajah. Dihitung terpisah karena makeup bukan bagian
+	-- OutfitState (Decal di Head), jadi OutfitState.removeKind selalu menjawab 0 untuknya.
+	local makeup = self.outfit:makeupCount()
+	counts.face += makeup
+	-- Baris "All" juga butuh angkanya sendiri, kalau tidak ia ikut redup dan tak bisa dicentang.
+	local _, nAll = OutfitState.removeKind(state, "all")
+	counts.all = nAll + makeup
+	self._removeToken += 1
+	self._removeDialog:open(counts)
+end
+
+function App.openSaveChooser(self: App)
+	self:_setChromeHidden(true)
+	self._saveChooser:open("saveTarget")
+end
+
+-- Selama dialog simpan / panel review terbuka, seluruh tombol melayang disembunyikan: sejak
+-- selubung hitamnya dibuang, chrome di belakang cuma jadi derau di sekitar panel. Mengembalikannya
+-- cukup dengan _refreshButtons(), yang memang menghitung ulang semuanya dari keadaan sekarang.
+function App._setChromeHidden(self: App, hidden: boolean)
+	if not hidden then
+		if self._chromeCatalog then
+			self._chromeCatalog = false
+			-- Baris ini menjawab "kenapa katalog tiba-tiba muncul lagi?": ia HANYA tercetak
+			-- lewat jalur penutupan panel simpan. Kalau katalog muncul tanpa baris ini,
+			-- pelakunya bukan penutupan panel -- dan itu yang perlu dikejar berikutnya.
+			log.info("katalog dibuka lagi: panel simpan ditutup")
+			self.panel:setVisible(true)
+		end
+		self:_refreshButtons()
+		return
+	end
+	-- Katalog ikut disembunyikan: panel simpan MENGGANTIKAN panel katalog, tidak menumpuk di
+	-- atasnya. Ditutup dengan setVisible saja, TANPA _refreshButtons -- fungsi itu menganggap
+	-- katalog tertutup berarti pemain menutupnya, lalu ikut menutup detail, keranjang, dan lemari.
+	-- Di sini katalog cuma disingkirkan sebentar, jadi keadaannya harus utuh saat dibuka lagi.
+	if self.panel:isVisible() then
+		self._chromeCatalog = true
+		self.panel:setVisible(false)
+	end
+	for _, rail in { self.leftRail, self.rightRail, self.bottomRail } do
+		rail:setVisible(false)
+	end
+	self.actions:setVisible(false)
+	self.strip:setVisible(false)
+	self._topBar.Visible = false
+	self._previewCard.Visible = false
+	self._previewShow.Visible = false
+end
+
+-- Panel review: item yang sedang dipakai, dipisah "sudah dimiliki" / "belum". Panelnya dibuka
+-- SEKETIKA (kartu berstatus "checking...") lalu kepemilikannya menyusul -- 750 ms diukur di
+-- Studio, tapi panel yang menunggu di balik layar terasa seperti tombol yang tidak berfungsi.
+-- Kepemilikan item dari bundle ditanyakan lewat bundleId-nya: part bundle tidak punya baris
+-- kepemilikan sendiri (spike 19 Sep 2026).
+function App.openSaveReview(self: App, kind: string)
+	local worn = WornItems.removable(WornItems.list(self.outfit:getState(), self._known))
+
+	-- Part yang berasal dari bundle DIGABUNG jadi satu kartu bundle: part bundle tidak dijual
+	-- satuan (harganya memang tidak ada), yang punya harga dan bisa dibeli adalah bundle-nya.
+	-- Tanpa ini kolom kanan penuh "Head", "Torso", "Left Arm" tanpa satu pun harga.
+	self:_setChromeHidden(true)
+	self._reviewUnowned = {}
+	local items = {}
+	local assets, bundles = {}, {}
+	local seenBundle: { [number]: boolean } = {}
+	for _, item in worn do
+		if item.source ~= nil then
+			if not seenBundle[item.source] then
+				seenBundle[item.source] = true
+				table.insert(bundles, item.source)
+				table.insert(items, { id = item.source, name = "Bundle", bundle = true })
+			end
+		else
+			table.insert(assets, item.id)
+			table.insert(items, { id = item.id, name = item.name, price = item.price })
+		end
+	end
+	-- Layar pendek (ponsel mendatar) -> kartu & kepala panel ikut mengecil, ambangnya sama dengan
+	-- panel katalog (PanelLayout.COMPACT_HEIGHT).
+	self._saveReview:open(kind, items, self.panel:getLayout().compact)
+
+	self._reviewToken += 1
+	local token = self._reviewToken
 	task.spawn(function()
-		local ok, code = self.wardrobe:saveToRoblox(kind)
+		local ok, res = self.wardrobe:ownership(assets, bundles)
+		-- Panel sudah ditutup / dibuka ulang sementara jawabannya di jalan -> buang.
+		if token ~= self._reviewToken or not self._saveReview:isOpen() then
+			return
+		end
+		if ok and type(res) == "table" then
+			-- Peta dari server memuat id BUNDLE untuk part bundle; yang dicopot nanti adalah
+			-- assetId, jadi part-part bundle yang tak dimiliki diterjemahkan di sini.
+			local unownedAssets: { [number]: boolean } = {}
+			for _, item in worn do
+				local key = item.source or item.id
+				if res.unowned[key] then
+					unownedAssets[item.id] = true
+				end
+			end
+			self._reviewUnowned = unownedAssets
+			self._saveReview:setOwnership(res.unowned, res.details, res.bundleDetails)
+		else
+			self._saveReview:fail(if type(res) == "string" then res else nil)
+		end
+	end)
+end
+
+function App.saveToRoblox(self: App, kind: string?, unowned: { [number]: boolean }?)
+	task.spawn(function()
+		local ok, code = self.wardrobe:saveToRoblox(kind, unowned)
 		if ok then
 			self.toast:show(
 				if kind == "outfit" then "Saved as a new Roblox outfit" else "Your Roblox avatar was updated",
@@ -1524,8 +2071,38 @@ function App.saveToRoblox(self: App, kind: string?)
 			)
 			return
 		end
-		local text = ROBLOX_SAVE_TEXT[code or "FAILED"] or ROBLOX_SAVE_TEXT.FAILED
+		-- Diukur 19 Sep 2026 (Command Bar, melewati seluruh kode kita): PromptCreateOutfit menjawab
+		-- Failed untuk look berisi item yang BELUM DIMILIKI, dan Success untuk avatar asli akun --
+		-- sedangkan PromptSaveAvatar tetap Success (temuan #29 no. 4). Jadi "Failed" di jalur
+		-- outfit hampir selalu soal kepemilikan, bukan gangguan sesaat: jangan suruh "try again".
+		local text = if kind == "outfit" and code == "FAILED"
+			then "Roblox only saves outfits made of items you own"
+			else ROBLOX_SAVE_TEXT[code or "FAILED"] or ROBLOX_SAVE_TEXT.FAILED
 		self.toast:show(text, if code == "DENIED" or code == "BUSY" then "info" else "warning")
+	end)
+end
+
+-- Ubin "buy all" di panel review: satu prompt untuk semua item yang belum dimiliki. Lewat
+-- CartController.checkoutItems, jadi isi keranjang pemain TIDAK ikut terbeli atau terhapus.
+-- Part bundle dibeli sebagai BUNDLE-nya (membeli part satuan tidak selalu mungkin), dan bundle
+-- yang sama tidak dikirim dua kali.
+function App.buyAll(self: App, list: { any })
+	local request, seen = {}, {}
+	for _, item in list do
+		local id = item.id
+		local itemType = if item.bundle then "Bundle" else "Asset"
+		local key = ("%s:%d"):format(itemType, id)
+		if not seen[key] then
+			seen[key] = true
+			table.insert(request, { id = id, itemType = itemType })
+		end
+	end
+	task.spawn(function()
+		local ok, code = self.cart:checkoutItems(request)
+		if not ok then
+			local text = CHECKOUT_TEXT[code or ""] or "Couldn't open the purchase prompt"
+			self.toast:show(text, if code == "RATE_LIMITED" or code == "BUSY" then "info" else "error")
+		end
 	end)
 end
 
@@ -1555,6 +2132,9 @@ function App.destroy(self: App)
 	self.panel:destroy()
 	self.toast:destroy()
 	self.actions:destroy()
+	self._saveChooser:destroy()
+	self._saveReview:destroy()
+	self._removeDialog:destroy()
 	self.strip:destroy()
 	self.gui:Destroy()
 end
