@@ -225,6 +225,87 @@ function OutfitState.remove(state: OutfitState, assetId: number, baseline: Outfi
 	return s
 end
 
+-- ===== BADAN: warna kulit & skala (halaman "Body", pola Catalog Avatar Creator) =====
+
+-- Batas skala mengikuti editor avatar Roblox untuk R15. PERINGATAN: ini BUKAN janji. Engine masih
+-- bisa menjepit lebih ketat lewat setelan tempat (StarterPlayer.AvatarMinScale/MaxScale), dan
+-- `ApplyDescription` melakukannya DIAM-DIAM -- tanpa error, tanpa kabar. Tabel ini menjaga UI &
+-- intent tetap masuk akal; nilai yang benar-benar diterima harus diukur di Studio.
+OutfitState.SCALE_LIMITS = {
+	HeightScale = { min = 0.9, max = 1.05 },
+	WidthScale = { min = 0.7, max = 1 },
+	DepthScale = { min = 0.9, max = 1.05 },
+	HeadScale = { min = 0.95, max = 1 },
+	BodyTypeScale = { min = 0, max = 1 },
+	ProportionScale = { min = 0, max = 1 },
+}
+
+-- "RRGGBB" huruf besar tanpa '#'. nil = bukan warna yang sah -> pemanggil menolak, bukan menebak.
+function OutfitState.cleanHex(hex: any): string?
+	if type(hex) ~= "string" then
+		return nil
+	end
+	local body = string.gsub(hex, "^#", "")
+	if #body ~= 6 or string.match(body, "^%x%x%x%x%x%x$") == nil then
+		return nil
+	end
+	return string.upper(body)
+end
+
+-- Warna satu bagian badan, atau SELURUHNYA bila slot = "all" (itulah palet warna kulit di CAC:
+-- satu ketukan mewarnai enam bagian sekaligus; "Advanced Colors" barulah per bagian).
+-- Return (state baru, berapa slot yang BERUBAH). 0 = tidak ada yang berubah -> pemanggil membalas
+-- NOTHING dan tidak menyentuh timeline undo, sama seperti `removeKind`.
+function OutfitState.setColor(state: OutfitState, slot: string, hex: string): (OutfitState, number)
+	local clean = OutfitState.cleanHex(hex)
+	if clean == nil then
+		return state, 0
+	end
+	local slots: { string }
+	if slot == "all" then
+		slots = Map.ColorSlots
+	else
+		local known = false
+		for _, k in Map.ColorSlots do
+			if k == slot then
+				known = true
+			end
+		end
+		if not known then
+			return state, 0
+		end
+		slots = { slot }
+	end
+	local s = deepCopy(state)
+	local changed = 0
+	for _, k in slots do
+		if s.colors[k] ~= clean then
+			s.colors[k] = clean
+			changed += 1
+		end
+	end
+	if changed == 0 then
+		return state, 0 -- state ASAL dikembalikan: tidak ada salinan sia-sia
+	end
+	return s, changed
+end
+
+-- Satu slot skala. Nilai di luar batas DIJEPIT, bukan ditolak: slider yang menolak nilai ujung
+-- terasa macet, sedangkan menjepit persis seperti yang dilakukan engine.
+function OutfitState.setScale(state: OutfitState, slot: string, value: number): (OutfitState, boolean)
+	local limit = OutfitState.SCALE_LIMITS[slot]
+	if limit == nil or type(value) ~= "number" or value ~= value then
+		return state, false
+	end
+	local wanted = math.clamp(value, limit.min, limit.max)
+	if state.scales[slot] == wanted then
+		return state, false
+	end
+	local s = deepCopy(state)
+	s.scales[slot] = wanted
+	return s, true
+end
+
 -- Kategori yang bisa dihapus sekaligus (pola "Item Removal" CAC). Dipakai UI tong sampah.
 -- "all" = lepas semua yang sedang dipakai (badan kembali ke bawaan), BUKAN kembali ke avatar asli
 -- pemain — itu tugas `reset`.

@@ -167,5 +167,39 @@ return function()
 		assert(rk.accessories["1"] ~= nil and rk.classic.Shirt.id == 10, "state asal tidak disentuh")
 	end
 
+	-- 8. Badan: warna kulit & skala (halaman Body)
+	do
+		local base = OS.empty()
+
+		assert(OS.cleanHex("#a3a2a5") == "A3A2A5", "hex dinormalkan: '#' dibuang, huruf dibesarkan")
+		assert(OS.cleanHex("A3A2A") == nil, "hex kependekan ditolak")
+		assert(OS.cleanHex("GGGGGG") == nil, "bukan heksadesimal ditolak")
+		assert(OS.cleanHex(123456) == nil, "bukan string ditolak")
+
+		local all, nAll = OS.setColor(base, "all", "ff0000")
+		assert(nAll == 6, "palet kulit mewarnai ENAM bagian, dapat " .. tostring(nAll))
+		assert(all.colors.HeadColor == "FF0000" and all.colors.LeftLegColor == "FF0000", "semua slot ikut")
+		assert(base.colors.HeadColor == "A3A2A5", "state asal tidak disentuh")
+
+		local one, nOne = OS.setColor(all, "HeadColor", "00FF00")
+		assert(nOne == 1 and one.colors.HeadColor == "00FF00", "Advanced Colors mewarnai satu bagian")
+		assert(one.colors.TorsoColor == "FF0000", "bagian lain tidak ikut berubah")
+
+		local _, nSame = OS.setColor(all, "all", "FF0000")
+		assert(nSame == 0, "warna yang sama tidak menghitung perubahan")
+		local _, nBad = OS.setColor(all, "NoseColor", "FF0000")
+		assert(nBad == 0, "slot ngawur ditolak")
+
+		local tall, okTall = OS.setScale(base, "HeightScale", 1.02)
+		assert(okTall and tall.scales.HeightScale == 1.02, "skala sah tersimpan")
+		local capped, okCap = OS.setScale(base, "HeightScale", 9)
+		-- DIJEPIT, bukan ditolak: engine pun menjepit, dan slider yang menolak terasa macet.
+		assert(okCap and capped.scales.HeightScale == OS.SCALE_LIMITS.HeightScale.max, "skala dijepit ke batas")
+		local _, okBadSlot = OS.setScale(base, "NoseScale", 1)
+		assert(not okBadSlot, "slot skala ngawur ditolak")
+		local _, okSame = OS.setScale(base, "HeightScale", 1)
+		assert(not okSame, "nilai yang sama bukan perubahan")
+	end
+
 	print("PASS OutfitState.spec")
 end
