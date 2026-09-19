@@ -97,6 +97,15 @@ local function toCartItem(x: any): any
 	}
 end
 
+-- Teks toast "Save to Roblox" (kode dari WardrobeController.saveToRoblox).
+local ROBLOX_SAVE_TEXT: { [string]: string } = {
+	DENIED = "Roblox save was cancelled",
+	TIMEOUT = "The Roblox prompt timed out",
+	BUSY = "Still working on the last one",
+	NOT_READY = "Your avatar isn't ready yet",
+	FAILED = "Couldn't save to Roblox, try again",
+}
+
 -- Teks toast wardrobe (teks pemain berbahasa Inggris). %s = nama outfit.
 -- favorite & setSetting sengaja tanpa toast (bintang / switch sudah berubah sendiri).
 local WARDROBE_OK_TEXT: { [string]: string } = {
@@ -176,6 +185,7 @@ export type App = typeof(setmetatable(
 		_previewShow: TextButton, -- tombol bulat untuk memunculkan kartu yang disembunyikan
 		_previewMin: boolean, -- kartu sedang disembunyikan pemain
 		leftRail: SideRail.SideRail,
+		bottomRail: SideRail.SideRail, -- kluster 4 ikon kiri bawah (pola CAC)
 		rightRail: SideRail.SideRail,
 		toast: Toast.Toast,
 		actions: ActionBar.ActionBar,
@@ -855,12 +865,35 @@ function App.mount(opts: Options?): App
 		side = "left",
 		items = {
 			{ key = "community", text = "Community Outfits", muted = true },
-			{ key = "loader", text = "Outfit Loader", muted = true },
+			{ key = "loader", text = "Outfit Loader" },
 		},
 		onActivated = function(key)
-			self.leftRail:flash(key, "Soon", SOON_SECONDS)
+			if key == "loader" then
+				self:openOutfitLoader()
+			else
+				self.leftRail:flash(key, "Soon", SOON_SECONDS)
+			end
 		end,
 	})
+	-- Kluster ikon kiri bawah (pola CAC). Baru satu yang aktif: Save to Roblox.
+	local bottomRail = SideRail.new({
+		parent = gui,
+		side = "bottomLeft",
+		items = {
+			{ key = "avatarNew", text = "New Avatar", icon = "avatarAdd", muted = true },
+			{ key = "avatarStand", text = "My Avatar", icon = "avatarStand", muted = true },
+			{ key = "saveRoblox", text = "Save to Roblox", icon = "roblox" },
+			{ key = "swap", text = "Swap", icon = "swap", muted = true },
+		},
+		onActivated = function(key)
+			if key == "saveRoblox" then
+				self:saveToRoblox()
+			else
+				self.bottomRail:flash(key, "Soon", SOON_SECONDS)
+			end
+		end,
+	})
+
 	local rightRail = SideRail.new({
 		parent = gui,
 		side = "right",
@@ -993,6 +1026,7 @@ function App.mount(opts: Options?): App
 		_previewShow = showButton,
 		_previewMin = false,
 		leftRail = leftRail,
+		bottomRail = bottomRail,
 		rightRail = rightRail,
 		toast = toast,
 		actions = actions,
@@ -1298,7 +1332,7 @@ function App._refreshButtons(self: App)
 	local L = self.panel:getLayout()
 	self._topBar.Visible = not (open and L.compact)
 	-- Kolom samping: hanya saat katalog tertutup (panel katalog menutupi sisi kanan).
-	for _, rail in { self.leftRail, self.rightRail } do
+	for _, rail in { self.leftRail, self.rightRail, self.bottomRail } do
 		rail:setVisible(not open)
 		rail:setCompact(L.compact)
 	end
@@ -1396,6 +1430,13 @@ function App.openWardrobe(self: App)
 	end
 end
 
+-- Tombol "Outfit Loader" (kolom kiri, pola CAC): panel Saved Outfits, langsung ke tab Roblox
+-- (outfit akun Roblox pemain). Daftarnya minta izin baca inventory sekali per sesi.
+function App.openOutfitLoader(self: App)
+	self:openWardrobe()
+	self.wardrobePanel:openRoblox()
+end
+
 -- Back di panel outfit: kembali ke katalog, atau ke layar utama bila dibuka dari kolom samping.
 function App.closeWardrobe(self: App)
 	self.wardrobePanel:setOpen(false)
@@ -1469,6 +1510,25 @@ function App._showCheckoutResult(self: App, summary: any)
 	end
 end
 
+-- Tombol "Save to Roblox" (kluster kiri bawah): simpan look sekarang ke AVATAR akun Roblox.
+-- Promptnya milik Roblox (ia sendiri yang mendaftar item yang akan dipasang), jadi di sini cuma
+-- toast hasil. YIELD -> thread sendiri. Item yang belum dimiliki tidak membuatnya gagal
+-- (spike 19 Sep 2026: tetap Success).
+function App.saveToRoblox(self: App, kind: string?)
+	task.spawn(function()
+		local ok, code = self.wardrobe:saveToRoblox(kind)
+		if ok then
+			self.toast:show(
+				if kind == "outfit" then "Saved as a new Roblox outfit" else "Your Roblox avatar was updated",
+				"info"
+			)
+			return
+		end
+		local text = ROBLOX_SAVE_TEXT[code or "FAILED"] or ROBLOX_SAVE_TEXT.FAILED
+		self.toast:show(text, if code == "DENIED" or code == "BUSY" then "info" else "warning")
+	end)
+end
+
 -- Buka prompt beli Roblox; gagal -> toast.
 function App.buy(self: App, id: number, itemType: string)
 	if not promptBuy(Players.LocalPlayer, id, itemType) then
@@ -1488,6 +1548,7 @@ function App.destroy(self: App)
 	self._live.cancel()
 	self.previews:destroy()
 	self.leftRail:destroy()
+	self.bottomRail:destroy()
 	self.rightRail:destroy()
 	self.detailPanel:destroy()
 	self.detail:close()

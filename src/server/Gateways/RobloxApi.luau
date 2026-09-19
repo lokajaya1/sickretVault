@@ -12,7 +12,8 @@
 --                        GetAvatarRulesAsync, GetOutfitDetailsAsync,
 --                        GetRecommendedAssetsAsync, GetRecommendedBundlesAsync (spike 19 Sep 2026)
 --   AssetService:        GetBundleDetailsAsync
---   Players:             GetHumanoidDescriptionFromUserIdAsync, GetHumanoidDescriptionFromOutfitIdAsync
+--   Players:             GetHumanoidDescriptionFromUserIdAsync, GetHumanoidDescriptionFromOutfitIdAsync,
+--                        GetUserIdFromNameAsync
 --   Humanoid:            ApplyDescriptionAsync (versi tanpa Async sudah deprecated)
 -- Batas batch GetBatchItemDetailsAsync TIDAK tertulis di docs; Dev/Inspect (16 Sep 2026): maks 100
 -- -> Limits.ItemBatchSize = 100.
@@ -20,6 +21,7 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Limits = require(Shared.Config.Limits)
+local GameConfig = require(Shared.Config.GameConfig)
 local Cache = require(Shared.Util.Cache)
 local Retry = require(Shared.Util.Retry)
 local Log = require(Shared.Util.Log)
@@ -33,6 +35,7 @@ export type Deps = {
 	avatarEditorService: any?,
 	assetService: any?,
 	players: any?,
+	http: any?, -- HttpService (proxy daftar outfit pemain lain)
 	retry: Retry.Options?, -- mis. { sleep = function() end } saat test
 	clock: (() -> number)?,
 	newSearchParams: (() -> any)?, -- default CatalogSearchParams.new
@@ -56,6 +59,7 @@ export type SearchOptions = {
 export type SearchPage = { items: { any }, isFinished: boolean, pages: any }
 
 local AVATAR_RULES_TTL = 6 * 3600
+local USER_OUTFIT_PAGE = 25 -- batas halaman API outfit (proxy)
 local VALID_LIMITS = { [10] = true, [28] = true, [30] = true, [60] = true, [120] = true }
 
 -- Pesan error yang TIDAK perlu diulang (id salah / aset tidak ada / tidak diizinkan).
@@ -77,6 +81,7 @@ export type RobloxApi = typeof(setmetatable(
 		_aes: any,
 		_assets: any,
 		_players: any,
+		_http: any,
 		_retry: Retry.Options,
 		_newSearchParams: () -> any,
 		_items: Cache.Cache,
@@ -123,6 +128,7 @@ function RobloxApi.new(deps: Deps?): RobloxApi
 		_aes = d.avatarEditorService or game:GetService("AvatarEditorService"),
 		_assets = d.assetService or game:GetService("AssetService"),
 		_players = d.players or game:GetService("Players"),
+		_http = d.http, -- HttpService diambil saat DIPAKAI: domain test Lune tidak punya service itu
 		_retry = retry,
 		_newSearchParams = d.newSearchParams or function()
 			return CatalogSearchParams.new()
@@ -430,6 +436,84 @@ function RobloxApi.getDescriptionFromUserId(self: RobloxApi, userId: number): (b
 	return self:_call("GetHumanoidDescriptionFromUserIdAsync", function()
 		return self._players:GetHumanoidDescriptionFromUserIdAsync(userId)
 	end)
+end
+
+-- Username -> userId (Outfit Loader: memuat avatar pemain lain). Hasilnya di-cache: nama yang
+-- sama sering diketik ulang, dan API ini melempar kalau namanya tidak ada.
+-- Daftar outfit TERSIMPAN milik pemain lain, lewat proxy (lihat GameConfig.OutfitProxy).
+-- Bentuk balasan (diukur 19 Sep 2026): { filteredCount, data = { { id, name, isEditable,
+-- outfitType } }, total }. CATATAN: `outfitType` SELALU null di proxy — beda dengan GetOutfits
+-- engine yang memberi "Avatar"/"DynamicHead" — jadi tipe tidak bisa dipakai menyaring. Yang dipakai
+-- `isEditable`: false = preset bawaan Roblox ("ROBLOX Boy", "Man Face"), sama untuk semua orang.
+-- Gagal (429 / proxy mati) BUKAN kesalahan fatal: pemanggil cukup menyembunyikan daftarnya.
+function RobloxApi.getUserOutfits(self: RobloxApi, userId: number): (boolean, any)
+	if not isId(userId) then
+		return false, badArg("UserOutfits", "userId tidak valid")
+	end
+	local host = GameConfig.OutfitProxy
+	if type(host) ~= "string" or host == "" then
+		return false, makeError("UserOutfits", "proxy outfit dimatikan")
+	end
+	local http = self._http
+	if http == nil then
+		local okSvc, svc = pcall(game.GetService, game, "HttpService")
+		if not okSvc then
+			return false, makeError("UserOutfits", "HttpService tidak tersedia")
+		end
+		http = svc
+		self._http = http
+	end
+	local key = ("outfits:%d"):format(userId)
+	local hit = self._outfits:get(key)
+	if hit ~= nil then
+		return true, hit
+	end
+	local url = ("https://%s/v1/users/%d/outfits?page=1&itemsPerPage=%d"):format(host, userId, USER_OUTFIT_PAGE)
+	local ok, body = self:_call("UserOutfits", function()
+		return http:GetAsync(url)
+	end)
+	if not ok then
+		return false, body
+	end
+	local okJson, decoded = pcall(function()
+		return http:JSONDecode(body)
+	end)
+	if not okJson or type(decoded) ~= "table" or type(decoded.data) ~= "table" then
+		return false, makeError("UserOutfits", "balasan proxy tidak terbaca")
+	end
+	local list = {}
+	for _, row in decoded.data do
+		if type(row) == "table" and isId(row.id) and row.isEditable == true then
+			table.insert(list, {
+				id = row.id,
+				name = if type(row.name) == "string" and row.name ~= "" then row.name else "Outfit",
+			})
+		end
+	end
+	self._outfits:set(key, list)
+	return true, list
+end
+
+function RobloxApi.getUserIdFromName(self: RobloxApi, name: string): (boolean, any)
+	if type(name) ~= "string" or name == "" or #name > 20 then
+		return false, badArg("GetUserIdFromNameAsync", "username tidak valid")
+	end
+	local key = "user:" .. string.lower(name)
+	local hit = self._misc:get(key)
+	if hit ~= nil then
+		return true, hit
+	end
+	local ok, res = self:_call("GetUserIdFromNameAsync", function()
+		return self._players:GetUserIdFromNameAsync(name)
+	end)
+	if not ok then
+		return false, res
+	end
+	if type(res) ~= "number" then
+		return false, makeError("GetUserIdFromNameAsync", "username tidak ditemukan")
+	end
+	self._misc:set(key, res)
+	return true, res
 end
 
 function RobloxApi.getDescriptionFromOutfitId(self: RobloxApi, outfitId: number): (boolean, any)

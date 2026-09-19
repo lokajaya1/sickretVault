@@ -13,6 +13,7 @@ local Log = require(Shared.Util.Log)
 local Features = require(Shared.Config.Features)
 local PlayerData = require(Shared.Domain.PlayerData)
 local Makeup = require(Shared.Domain.Makeup)
+local DescriptionBuilder = require(Shared.Avatar.DescriptionBuilder)
 local IntentValidator = require(script.Validators.IntentValidator)
 local WardrobeValidator = require(script.Validators.WardrobeValidator)
 local RobloxApi = require(script.Gateways.RobloxApi)
@@ -134,6 +135,7 @@ local recLimiter = RateLimiter.fromLimits(RemoteNames.Functions.GetRecommended)
 local clipLimiter = RateLimiter.fromLimits(RemoteNames.Functions.GetAnimationClip)
 local checkoutLimiter = RateLimiter.fromLimits(RemoteNames.Functions.Checkout)
 local wardrobeLimiter = RateLimiter.fromLimits(RemoteNames.Functions.Wardrobe)
+local robloxOutfitLimiter = RateLimiter.fromLimits(RemoteNames.Functions.RobloxOutfit)
 
 -- 4a-0. LATAR area preview (AvatarBackground). Item ini TIDAK menempel di avatar: yang berubah
 --       cuma gambar di belakang ViewportFrame preview, per pemain. Jadi statenya satu assetId di
@@ -408,6 +410,122 @@ Remotes.func(RemoteNames.Functions.Wardrobe).OnServerInvoke = function(player: P
 		log.debug("Wardrobe", req.op, res.code, player.Name)
 	end
 	return res
+end
+
+-- 5d2. RobloxOutfit: { op = "state" | "wear", outfitId } -> { ok, state? } | { ok = false, code }.
+-- Daftar outfit Roblox HANYA bisa diambil di client (spike 19 Sep 2026: GetOutfits di server ->
+-- "This method can only be called on the client"), tapi description-nya JUSTRU bisa di server
+-- (266 ms). Jadi client cukup mengirim outfitId; server yang mengubahnya jadi OutfitState, dan
+-- server tetap sumber kebenaran (client tidak pernah mengirim state jadi).
+--   op = "state"    -> untuk menggambar kartu loader (outfit TERENKODE, siap dipakai OutfitPreview)
+--   op = "wear"     -> pakai look-nya (bisa di-Undo)
+--   op = "user"     -> { name } / { userId } -> avatar yang SEDANG dipakai pemain lain
+--   op = "wearUser" -> pakai avatar pemain lain itu
+--   op = "userOutfits" -> { userId } -> daftar outfit tersimpan pemain lain (lewat proxy)
+local function robloxOutfitState(outfitId: number): (boolean, any)
+	local ok, desc = api:getDescriptionFromOutfitId(outfitId) -- yield
+	if not ok then
+		local code = if type(desc) == "table" and type(desc.code) == "string" then desc.code else "FAILED"
+		return false, code
+	end
+	local sOk, state = pcall(DescriptionBuilder.fromDescription, desc)
+	if not sOk then
+		log.error("RobloxOutfit fromDescription gagal", state)
+		return false, "FAILED"
+	end
+	return true, state
+end
+
+-- Avatar yang SEDANG dipakai pemain lain. Daftar OUTFIT tersimpan milik orang lain TIDAK bisa
+-- diambil dari dalam game (GetOutfits hanya untuk pemain sendiri, dan API web avatar.roblox.com
+-- tidak bisa dipanggil HttpService) -> loader hanya menawarkan "Current Avatar" orang itu.
+local function robloxUser(player: Player, op: string, raw: any): any
+	local userId = raw.userId
+	if type(userId) ~= "number" then
+		local name = raw.name
+		if type(name) ~= "string" then
+			return { ok = false, code = "BAD_ARG" }
+		end
+		name = string.match(name, "^%s*(.-)%s*$") or name
+		if #name < 3 or #name > 20 then
+			return { ok = false, code = "BAD_NAME" }
+		end
+		local okId, id = api:getUserIdFromName(name)
+		if not okId then
+			return { ok = false, code = "NO_USER" }
+		end
+		userId = id
+	end
+	if userId <= 0 or userId % 1 ~= 0 then
+		return { ok = false, code = "BAD_ARG" }
+	end
+	local okDesc, desc = api:getDescriptionFromUserId(userId) -- yield
+	if not okDesc then
+		return { ok = false, code = "NOT_FOUND" }
+	end
+	local sOk, state = pcall(DescriptionBuilder.fromDescription, desc)
+	if not sOk then
+		log.error("RobloxOutfit user fromDescription gagal", state)
+		return { ok = false, code = "FAILED" }
+	end
+	if op == "wearUser" then
+		local wOk, code = avatar:wearOutfit(player, state)
+		if not wOk then
+			return { ok = false, code = code or "FAILED" }
+		end
+		log.info("RobloxOutfit wearUser", userId, player.Name)
+	end
+	return { ok = true, userId = userId, state = PlayerData.encodeOutfit(state) }
+end
+
+Remotes.func(RemoteNames.Functions.RobloxOutfit).OnServerInvoke = function(player: Player, raw: any)
+	if not robloxOutfitLimiter:take(player.UserId) then
+		return { ok = false, code = "RATE_LIMITED" }
+	end
+	if type(raw) ~= "table" then
+		return { ok = false, code = "BAD_ARG" }
+	end
+	local op, outfitId = raw.op, raw.outfitId
+	if op == "user" or op == "wearUser" then
+		return robloxUser(player, op, raw)
+	end
+	if op == "userOutfits" then
+		-- daftar outfit tersimpan pemain lain (lewat proxy; boleh gagal tanpa merusak panel)
+		local uid = raw.userId
+		if type(uid) ~= "number" or uid <= 0 or uid % 1 ~= 0 or uid > 2 ^ 53 then
+			return { ok = false, code = "BAD_ARG" }
+		end
+		local okList, list = api:getUserOutfits(uid) -- yield
+		if not okList then
+			log.debug("RobloxOutfit userOutfits gagal", uid, player.Name)
+			return { ok = false, code = "PROXY" }
+		end
+		return { ok = true, outfits = list }
+	end
+	if op ~= "state" and op ~= "wear" then
+		return { ok = false, code = "BAD_ARG" }
+	end
+	if type(outfitId) ~= "number" or outfitId <= 0 or outfitId % 1 ~= 0 or outfitId > 2 ^ 53 then
+		return { ok = false, code = "BAD_ARG" }
+	end
+	local ok, res = robloxOutfitState(outfitId)
+	if not ok then
+		log.debug("RobloxOutfit", op, outfitId, res, player.Name)
+		return { ok = false, code = res }
+	end
+	if op == "state" then
+		-- kartu memakai OutfitPreview, yang menunggu outfit TERENKODE (PlayerData.encodeOutfit),
+		-- bukan OutfitState mentah. Kirim state mentah -> "outfit tidak valid: version".
+		return { ok = true, state = PlayerData.encodeOutfit(res) }
+	end
+	-- outfit Roblox tidak membawa makeup (makeup = Decal, di luar HumanoidDescription) -> makeup
+	-- yang sedang dipakai dibersihkan, sama seperti memakai slot wardrobe tanpa makeup.
+	local wOk, code = avatar:wearOutfit(player, res)
+	if not wOk then
+		return { ok = false, code = code or "FAILED" }
+	end
+	log.info("RobloxOutfit wear", outfitId, player.Name)
+	return { ok = true, state = PlayerData.encodeOutfit(res) }
 end
 
 -- 5e. Muat data pemain lalu pasang outfit terakhir (YIELD). Gagal -> tetap avatar asli.
