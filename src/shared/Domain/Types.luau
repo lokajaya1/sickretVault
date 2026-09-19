@@ -58,7 +58,9 @@ export type Intent =
 	| { op: "wearBundle", bundleId: number, partIds: { number }?, useBundleScales: boolean? }
 	| { op: "removeBundle", bundleId: number }
 	| { op: "setLayerOrder", assetId: number, order: number }
-	| { op: "removeKind", kind: string } -- Item Removal per kategori (OutfitState.KINDS)
+	-- Item Removal: BEBERAPA kategori sekaligus (OutfitState.KINDS). Satu intent, satu commit,
+	-- jadi satu Undo mengembalikan seluruhnya -- bukan satu Undo per kategori.
+	| { op: "removeKind", kinds: { string } }
 	| { op: "undo" }
 	| { op: "redo" }
 	| { op: "reset" }

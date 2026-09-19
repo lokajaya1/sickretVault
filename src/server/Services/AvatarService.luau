@@ -344,9 +344,17 @@ function AvatarService.handle(self: AvatarService, player: any, intent: Types.In
 		commit(self, player, session, nextState)
 		return true, nil
 	elseif op == "removeKind" then
-		-- Item Removal (tong sampah): satu kategori dibuang dalam SEKALI commit, jadi satu Undo
-		-- mengembalikan semuanya. Tidak ada yang terbuang -> NOTHING (timeline tidak disentuh).
-		local nextState, removed = OutfitState.removeKind(session.state, i.kind)
+		-- Item Removal (tong sampah): SEMUA kategori yang dicentang dibuang dalam SEKALI commit,
+		-- jadi satu Undo mengembalikan seluruhnya -- bukan satu Undo per kategori. Kategori yang
+		-- kebetulan kosong tidak membatalkan yang lain; yang membatalkan hanya kalau TIDAK ADA
+		-- satu pun item terbuang -> NOTHING (timeline undo tidak disentuh).
+		local nextState = session.state
+		local removed = 0
+		for _, kind in i.kinds do
+			local after, n = OutfitState.removeKind(nextState, kind)
+			nextState = after
+			removed += n
+		end
 		if removed == 0 then
 			return false, "NOTHING"
 		end

@@ -42,6 +42,7 @@ local WardrobePanel = require(script.Parent.Components.WardrobePanel)
 local SideRail = require(script.Parent.Components.SideRail)
 local NamePrompt = require(script.Parent.Components.NamePrompt)
 local SaveReviewPanel = require(script.Parent.Components.SaveReviewPanel)
+local RemoveDialog = require(script.Parent.Components.RemoveDialog)
 local OutfitPreview = require(script.Parent.Util.OutfitPreview)
 local CatalogController = require(script.Parent.Parent.Controllers.CatalogController)
 local OutfitController = require(script.Parent.Parent.Controllers.OutfitController)
@@ -162,6 +163,19 @@ local ICON_SPAN = 13 -- panjang garis plus/minus
 local ICON_CHEVRON = 10 -- panjang satu sisi chevron
 local ICON_RING = 13 -- garis tengah lingkaran ikon reset
 
+-- Kategori yang jumlahnya dihitung untuk dialog Item Removal. Sengaja TANPA "all": barisnya
+-- di dialog melepas semuanya dan tidak butuh angka, dan menghitungnya berarti menjumlah
+-- kategori lain dua kali.
+local REMOVE_KINDS = {
+	"accessories",
+	"hair",
+	"face",
+	"classic",
+	"layered",
+	"bodyParts",
+	"animations",
+}
+
 local function plural(n: number, word: string): string
 	return ("%d %s%s"):format(n, word, if n == 1 then "" else "s")
 end
@@ -193,6 +207,7 @@ export type App = typeof(setmetatable(
 		actions: ActionBar.ActionBar,
 		_saveChooser: NamePrompt.NamePrompt, -- "How would you like to save your outfit?" (#30)
 		_saveReview: SaveReviewPanel.SaveReviewPanel, -- panel Owned / Unowned sebelum menyimpan
+		_removeDialog: RemoveDialog.RemoveDialog, -- Item Removal per kategori (ikon tong sampah)
 		_reviewToken: number, -- jawaban kepemilikan yang datang terlambat dibuang
 		_reviewUnowned: { [number]: boolean }, -- assetId yang belum dimiliki (dicopot saat menyimpan)
 		_chromeCatalog: boolean, -- katalog tadinya terbuka saat panel simpan muncul -> dibuka lagi
@@ -482,8 +497,8 @@ function App.mount(opts: Options?): App
 				self:openCart()
 			elseif op == "reset" then
 				outfit:send({ op = "reset" })
-			else
-				self.actions:flash("Soon", SOON_SECONDS) -- Item Removal menyusul
+			elseif op == "trash" then
+				self:openRemoveDialog()
 			end
 		end,
 	})
@@ -923,6 +938,16 @@ function App.mount(opts: Options?): App
 		end,
 	})
 
+	local removeDialog = RemoveDialog.new({
+		parent = gui,
+		zIndex = Tokens.ZIndex.Popup + 5,
+		onRemove = function(kinds)
+			-- SATU intent berisi semua kategori yang dicentang: server membuangnya dalam sekali
+			-- commit, jadi satu Undo mengembalikan seluruhnya -- bukan satu Undo per kategori.
+			outfit:send({ op = "removeKind", kinds = kinds })
+		end,
+	})
+
 	local livePreview = previews:mountCurrent(previewPort, { background = true })
 	-- true = panel detail item dibuka dari Saved Outfits -> Back kembali ke sana, bukan ke katalog.
 	local wardrobeReturn = false
@@ -1117,6 +1142,7 @@ function App.mount(opts: Options?): App
 		actions = actions,
 		_saveChooser = saveChooser,
 		_saveReview = saveReview,
+		_removeDialog = removeDialog,
 		_reviewToken = 0,
 		_reviewUnowned = {},
 		_chromeCatalog = false,
@@ -1502,6 +1528,10 @@ function App.closeModals(self: App): boolean
 		self._saveReview:close()
 		closed = true
 	end
+	if self._removeDialog:isOpen() then
+		self._removeDialog:close()
+		closed = true
+	end
 	return closed
 end
 
@@ -1528,7 +1558,7 @@ end
 -- tombol -- pintasan papan tik, misalnya. Tombolnya sendiri sudah disembunyikan
 -- `_setChromeHidden`, tapi tombol C tidak peduli pada tombol yang hilang.
 function App.isModalOpen(self: App): boolean
-	return self._saveChooser:isOpen() or self._saveReview:isOpen()
+	return self._saveChooser:isOpen() or self._saveReview:isOpen() or self._removeDialog:isOpen()
 end
 
 -- Diuji 19 Sep 2026: menekan C saat panel review terbuka membuka panel katalog DI BELAKANGNYA --
@@ -1664,6 +1694,24 @@ end
 -- (spike 19 Sep 2026: tetap Success).
 -- Tanya dulu: outfit Roblox BARU, atau timpa avatar akun? (#29 langsung menimpa tanpa bertanya.)
 -- Dialognya sendiri yang memanggil saveToRoblox lewat onConfirm; tap di luar kartu = batal.
+-- Ikon tong sampah: dialog Item Removal. Jumlah per kategori dihitung di sini dengan fungsi
+-- domain yang SAMA dengan yang dipakai server saat benar-benar membuang (OutfitState.removeKind
+-- atas state sekarang), bukan ditebak dari strip item -- kalau angkanya beda dari yang terjadi,
+-- pemain berhak menganggap tombolnya bohong.
+function App.openRemoveDialog(self: App)
+	local state = self.outfit:getState()
+	if state == nil then
+		self.actions:flash("Not ready", SOON_SECONDS)
+		return
+	end
+	local counts: { [string]: number } = {}
+	for _, kind in REMOVE_KINDS do
+		local _, n = OutfitState.removeKind(state, kind)
+		counts[kind] = n
+	end
+	self._removeDialog:open(counts)
+end
+
 function App.openSaveChooser(self: App)
 	self:_setChromeHidden(true)
 	self._saveChooser:open("saveTarget")
@@ -1834,6 +1882,7 @@ function App.destroy(self: App)
 	self.actions:destroy()
 	self._saveChooser:destroy()
 	self._saveReview:destroy()
+	self._removeDialog:destroy()
 	self.strip:destroy()
 	self.gui:Destroy()
 end

@@ -22,13 +22,13 @@ for _, k in OutfitState.KINDS do
 	KINDS[k] = true
 end
 
-local SCHEMA: { [string]: { [string]: "id" | "ids?" | "bool?" | "order" | "kind" } } = {
+local SCHEMA: { [string]: { [string]: "id" | "ids?" | "bool?" | "order" | "kinds" } } = {
 	wear = { assetId = "id" },
 	remove = { assetId = "id" },
 	wearBundle = { bundleId = "id", partIds = "ids?", useBundleScales = "bool?" },
 	removeBundle = { bundleId = "id" },
 	setLayerOrder = { assetId = "id", order = "order" },
-	removeKind = { kind = "kind" },
+	removeKind = { kinds = "kinds" },
 	undo = {},
 	redo = {},
 	reset = {},
@@ -86,6 +86,36 @@ local function cleanIds(v: any): { number }?
 	return out
 end
 
+-- Array murni berisi kategori sah yang unik, panjang 1..semua kategori. Urutannya dibiarkan
+-- apa adanya: `removeKind` per kategori tidak saling bergantung, jadi hasilnya sama saja.
+local function cleanKinds(v: any): { string }?
+	if type(v) ~= "table" then
+		return nil
+	end
+	local n = #v
+	if n < 1 or n > #OutfitState.KINDS then
+		return nil
+	end
+	local count = 0
+	for _ in v do
+		count += 1
+		if count > n then
+			return nil -- ada key non-array
+		end
+	end
+	local seen: { [string]: boolean } = {}
+	local out: { string } = {}
+	for i = 1, n do
+		local k = v[i]
+		if type(k) ~= "string" or not KINDS[k] or seen[k] then
+			return nil
+		end
+		seen[k] = true
+		out[i] = k
+	end
+	return out
+end
+
 function IntentValidator.validate(raw: any): (Intent?, string?)
 	if type(raw) ~= "table" then
 		return nil, E.NOT_TABLE
@@ -124,11 +154,12 @@ function IntentValidator.validate(raw: any): (Intent?, string?)
 				return nil, E.BAD_ORDER
 			end
 			out[field] = v
-		elseif kind == "kind" then
-			if type(v) ~= "string" or not KINDS[v] then
+		elseif kind == "kinds" then
+			local kinds = cleanKinds(v)
+			if not kinds then
 				return nil, E.BAD_KIND
 			end
-			out[field] = v
+			out[field] = kinds
 		elseif kind == "bool?" then
 			if v ~= nil and type(v) ~= "boolean" then
 				return nil, E.BAD_BOOL

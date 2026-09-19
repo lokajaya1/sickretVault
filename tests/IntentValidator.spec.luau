@@ -83,14 +83,19 @@ return function()
 	rejects({ op = "setLayerOrder", assetId = 1, order = 2.5 }, E.BAD_ORDER, "order pecahan")
 	rejects({ op = "setLayerOrder", assetId = 1 }, E.BAD_ORDER, "order hilang")
 
-	-- 7. removeKind: kategori wajib salah satu dari OutfitState.KINDS
+	-- 7. removeKind: daftar kategori, semuanya wajib ada di OutfitState.KINDS
 	do
-		local okKind = V.validate({ op = "removeKind", kind = "hair" })
-		assert(okKind ~= nil and okKind.kind == "hair", "kategori sah harus lolos beserta nilainya")
+		local okKind = V.validate({ op = "removeKind", kinds = { "hair", "face" } })
+		assert(okKind ~= nil and #okKind.kinds == 2, "daftar kategori sah harus lolos utuh")
+		assert(okKind.kinds[1] == "hair" and okKind.kinds[2] == "face", "urutannya dibiarkan apa adanya")
 	end
-	rejects({ op = "removeKind", kind = "rambut" }, E.BAD_KIND, "kategori ngawur")
-	rejects({ op = "removeKind", kind = 5 }, E.BAD_KIND, "kategori bukan string")
-	rejects({ op = "removeKind" }, E.BAD_KIND, "kategori hilang")
+	rejects({ op = "removeKind", kinds = { "rambut" } }, E.BAD_KIND, "kategori ngawur")
+	rejects({ op = "removeKind", kinds = { "hair", 5 } }, E.BAD_KIND, "kategori bukan string")
+	rejects({ op = "removeKind", kinds = { "hair", "hair" } }, E.BAD_KIND, "kategori kembar")
+	rejects({ op = "removeKind", kinds = {} }, E.BAD_KIND, "daftar kosong")
+	rejects({ op = "removeKind", kinds = "hair" }, E.BAD_KIND, "bukan daftar")
+	rejects({ op = "removeKind", kind = "hair" }, E.UNKNOWN_FIELD, "bentuk lama ditolak")
+	rejects({ op = "removeKind" }, E.BAD_KIND, "daftar hilang")
 
 	print("PASS IntentValidator.spec")
 end
