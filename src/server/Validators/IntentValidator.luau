@@ -22,7 +22,11 @@ for _, k in OutfitState.KINDS do
 	KINDS[k] = true
 end
 
-local SCHEMA: { [string]: { [string]: "id" | "ids?" | "bool?" | "order" | "kinds" | "colorSlot" | "scaleSlot" | "hex" | "scale" } } =
+local SCHEMA: {
+	[string]: {
+		[string]: "id" | "ids?" | "bool?" | "order" | "kinds" | "colorSlot" | "scaleSlot" | "hex" | "scale" | "rig",
+	},
+} =
 	{
 		wear = { assetId = "id" },
 		remove = { assetId = "id" },
@@ -32,6 +36,7 @@ local SCHEMA: { [string]: { [string]: "id" | "ids?" | "bool?" | "order" | "kinds
 		removeKind = { kinds = "kinds" },
 		setColor = { slot = "colorSlot", hex = "hex" },
 		setScale = { slot = "scaleSlot", value = "scale" },
+		setRig = { rig = "rig" },
 		undo = {},
 		redo = {},
 		reset = {},
@@ -52,6 +57,7 @@ IntentValidator.Errors = {
 	BAD_SLOT = "BAD_SLOT",
 	BAD_HEX = "BAD_HEX",
 	BAD_VALUE = "BAD_VALUE",
+	BAD_RIG = "BAD_RIG",
 }
 local E = IntentValidator.Errors
 
@@ -185,6 +191,11 @@ function IntentValidator.validate(raw: any): (Intent?, string?)
 				return nil, E.BAD_HEX
 			end
 			out[field] = clean
+		elseif kind == "rig" then
+			if not OutfitState.isRig(v) then
+				return nil, E.BAD_RIG
+			end
+			out[field] = v
 		elseif kind == "scale" then
 			-- Angka terhingga saja. Penjepitan ke batas slot dilakukan domain, bukan di sini:
 			-- nilai ujung slider HARUS diterima, bukan ditolak.

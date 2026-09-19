@@ -169,7 +169,7 @@ local list: { Group } = {
 		id = "body",
 		label = "BODY",
 		-- FACES sudah jadi grup mozaik sendiri, dan classic `Face` off-sale (dikunci spec).
-		categories = { "head_shapes", "torso", "arms", "legs" },
+		categories = { "body_face", "head_shapes", "torso", "left_arm", "right_arm", "left_leg", "right_leg" },
 		span = { x = 2, y = 6, w = 2, h = 2 },
 		spanCompact = { x = 0, y = 12, w = 2, h = 2 },
 		tone = 0.3,

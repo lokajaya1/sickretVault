@@ -134,6 +134,14 @@ function AvatarService.new(deps: Deps): AvatarService
 end
 
 local function sameLook(a: State, b: State): boolean
+	-- RIG dibandingkan TERPISAH: `toSpec` menghasilkan cermin HumanoidDescription, dan rig bukan
+	-- bagian description (ia ditentukan saat karakter dibuat). Tanpa baris ini, mengganti R6/R15
+	-- terbaca sebagai "tidak ada yang berubah" -> commit tidak menjadwalkan apply -> _flush tidak
+	-- pernah jalan, dan intent yang sukses tidak pernah terlihat. Diukur 20 Sep 2026 dengan satu
+	-- baris log di _flush: ia hanya tercetak saat startup, tidak sekali pun setelah setRig.
+	if a.rig ~= b.rig then
+		return false
+	end
 	local sa = DescriptionBuilder.toSpec(a)
 	local sb = DescriptionBuilder.toSpec(b)
 	return (DescriptionBuilder.specEquals(sa, sb))
@@ -378,6 +386,13 @@ function AvatarService.handle(self: AvatarService, player: any, intent: Types.In
 		end
 		commit(self, player, session, nextState, nextMakeup)
 		return true, nil
+	elseif op == "setRig" then
+		local nextState, changed = OutfitState.setRig(session.state, i.rig)
+		if changed == 0 then
+			return false, "NOTHING"
+		end
+		commit(self, player, session, nextState)
+		return true, nil
 	elseif op == "setColor" or op == "setScale" then
 		-- Satu geseran slider / satu ketukan petak warna = satu commit = satu Undo. Nol slot
 		-- berubah -> NOTHING, jadi menekan warna yang SEDANG dipakai tidak menumpuk riwayat undo
@@ -569,6 +584,27 @@ function AvatarService._flush(self: AvatarService, player: any)
 	repeat
 		session.dirty = false
 		local target = session.state
+		-- RIG berdiri SEBELUM sameLook: `sameLook` membandingkan isi look dan tidak melihat rig sama
+		-- sekali, jadi perubahan rig saja akan berhenti di break di bawah. ApplyDescription pun tidak
+		-- bisa mengubah rig. Cabang ini hanya jalan kalau rig karakter sekarang memang berbeda, jadi
+		-- jalur apply yang dipakai semua perubahan lain tidak tersentuh.
+		if self._api.swapRig ~= nil then
+			local h = self._getHumanoid(player)
+			local wantRig = if target.rig == "R6" then "R6" else "R15"
+			if h ~= nil and h.RigType ~= nil and h.RigType.Name ~= wantRig then
+				local builtOk, d = pcall(self._build, target)
+				if builtOk then
+					local swapped = self._api:swapRig(player, d, wantRig)
+					if typeof(d) == "Instance" then
+						d:Destroy()
+					end
+					if swapped then
+						session.applied = target
+						break
+					end
+				end
+			end
+		end
 		if sameLook(target, session.applied) then
 			break
 		end

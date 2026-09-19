@@ -269,6 +269,23 @@ function OutfitState.isColorSlot(slot: any): boolean
 	return false
 end
 
+OutfitState.RIGS = { R6 = true, R15 = true }
+
+-- R6 / R15. Bukan skala, tapi tempatnya sama di UI (satu halaman Scale) dan aturannya sama:
+-- nilai tak dikenal tidak mengubah apa pun, 0 = NOTHING.
+function OutfitState.setRig(state: OutfitState, rig: any): (OutfitState, number)
+	if not OutfitState.isRig(rig) or state.rig == rig then
+		return state, 0
+	end
+	local s = deepCopy(state)
+	s.rig = rig
+	return s, 1
+end
+
+function OutfitState.isRig(rig: any): boolean
+	return type(rig) == "string" and OutfitState.RIGS[rig] == true
+end
+
 function OutfitState.isScaleSlot(slot: any): boolean
 	return type(slot) == "string" and OutfitState.SCALE_LIMITS[slot] ~= nil
 end

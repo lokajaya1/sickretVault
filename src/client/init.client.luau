@@ -8,6 +8,37 @@ local App = require(script.UI.App)
 
 local log = Log.new("Client")
 
+-- Mengganti rig R6/R15 hanya bisa dilakukan dengan MENGGANTI seluruh model karakter -- tidak ada
+-- cara lain, dan LoadCharacter tidak punya argumen rig
+-- (devforum.roblox.com/t/is-it-possible-to-toggle-r15-to-r6-or-r6-to-r15/4696562).
+-- Begitu player.Character diganti, Camera.CameraSubject MASIH menunjuk Humanoid lama yang sudah
+-- dihancurkan -> kamera membeku. Workspace.CurrentCamera hanya ada di CLIENT, jadi server tidak
+-- akan pernah bisa memperbaikinya sendiri
+-- (devforum.roblox.com/t/changing-the-players-character-breaks-the-camera/3032512).
+local Players = game:GetService("Players")
+local localPlayer = Players.LocalPlayer
+
+local function bindCamera(character: Model)
+	local humanoid = character:WaitForChild("Humanoid", 10)
+	if humanoid == nil then
+		log.warn("karakter baru tanpa Humanoid: kamera tidak diikat ulang")
+		return
+	end
+	local camera = workspace.CurrentCamera
+	if camera == nil then
+		return
+	end
+	-- HANYA subjeknya yang diperbarui. CameraType TIDAK disentuh: saat panel katalog terbuka,
+	-- kamera dipegang TryOnCamera dalam mode Scriptable, dan memaksanya kembali ke Custom berarti
+	-- merebut kamera dari pengendali aplikasi -- itulah bug gerak kamera setelah ganti rig.
+	camera.CameraSubject = humanoid
+end
+
+localPlayer.CharacterAdded:Connect(bindCamera)
+if localPlayer.Character then
+	bindCamera(localPlayer.Character)
+end
+
 -- Teks toast per kode dari server (teks pemain berbahasa Inggris).
 local NOTICE_TEXT: { [string]: string } = {
 	NOT_FOUND = "Item not found or not supported",

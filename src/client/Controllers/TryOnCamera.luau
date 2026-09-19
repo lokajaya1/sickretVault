@@ -148,6 +148,17 @@ function TryOnCamera.destroy(self: TryOnCamera)
 end
 
 function TryOnCamera._step(self: TryOnCamera, dt: number)
+	-- REBUT KEMBALI: karakter yang lahir ulang (ganti rig R6/R15 -> player.Character diganti)
+	-- membuat modul kamera bawaan Roblox mengikat ulang lewat CharacterAdded dan mengembalikan
+	-- CameraType ke Custom. Panel masih mengira kameranya Scriptable, jadi gerak kamera terasa
+	-- rusak. Diperiksa tiap frame karena kelahiran karakter bisa terjadi kapan saja selama panel
+	-- terbuka, dan menyetel properti yang nilainya sudah benar tidak berbiaya.
+	if self:isEnabled() then
+		local active = workspace.CurrentCamera
+		if active ~= nil and active.CameraType ~= Enum.CameraType.Scriptable then
+			active.CameraType = Enum.CameraType.Scriptable
+		end
+	end
 	local cam = Workspace.CurrentCamera
 	local root = getRoot()
 	if cam == nil or root == nil then

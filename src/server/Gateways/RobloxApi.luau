@@ -544,4 +544,85 @@ function RobloxApi.applyDescription(self: RobloxApi, humanoid: any, description:
 	return false, e
 end
 
+-- Ganti rig R6/R15. Rig ditentukan saat karakter DIBUAT, jadi satu-satunya jalan adalah mengganti
+-- seluruh model (LoadCharacter tidak punya argumen rig).
+-- TIGA langkah yang mudah terlewat, dan tanpa salah satunya karakternya rusak:
+--   1. Model dari CreateHumanoidModelFromDescriptionAsync lahir TANPA SENDI di place ini (diukur
+--      19 Sep 2026, PR #28). BuildRigFromAttachments menyusun AnimationConstraint dari pasangan
+--      RigAttachment -- tanpa itu badannya terlepas begitu dijadikan karakter.
+--   2. Model itu juga tidak membawa skrip Animate, jadi karakter barunya berdiri kaku.
+--   3. Karakter lama dibuang SESUDAH yang baru dipasang; membuangnya duluan = pemain mati.
+-- Kamera diikat ulang di CLIENT (init.client.luau): Workspace.CurrentCamera tidak ada di server.
+function RobloxApi.swapRig(self: RobloxApi, player: any, description: any, rigName: string): (boolean, any)
+	if player == nil or description == nil then
+		return false, badArg("CreateHumanoidModelFromDescriptionAsync", "player/description nil")
+	end
+	local rig = if rigName == "R6" then Enum.HumanoidRigType.R6 else Enum.HumanoidRigType.R15
+	local ok, model = self:_call("CreateHumanoidModelFromDescriptionAsync", function()
+		return self._players:CreateHumanoidModelFromDescriptionAsync(description, rig)
+	end)
+	if not ok or typeof(model) ~= "Instance" then
+		return false, model
+	end
+	local okSwap, err = pcall(function()
+		local old = player.Character
+		model.Name = player.Name
+		local humanoid = model:FindFirstChildOfClass("Humanoid")
+		if humanoid ~= nil then
+			pcall(function()
+				humanoid:BuildRigFromAttachments()
+			end)
+			-- HipHeight ikut terbawa dari deskripsi R15 dan bernilai -1, sementara R6 klasik harus 0.
+			-- Humanoid menahan badan pada ketinggian itu, jadi seluruh karakter berdiri TEPAT 1 stud
+			-- di bawah lantai -- terlihat seperti kaki menembus tanah, padahal ia berdiri normal
+			-- (diukur 20 Sep 2026: hip=-1, kaki Y=-0.01, root Y=2, state=Running).
+			if rigName == "R6" then
+				pcall(function()
+					humanoid.HipHeight = 0
+				end)
+			end
+		end
+		local animate = if old ~= nil then old:FindFirstChild("Animate") else nil
+		if animate == nil then
+			local starter = game:GetService("StarterPlayer"):FindFirstChild("StarterCharacterScripts")
+			animate = if starter ~= nil then starter:FindFirstChild("Animate") else nil
+		end
+		if animate ~= nil and model:FindFirstChild("Animate") == nil then
+			animate:Clone().Parent = model
+		end
+		if old ~= nil then
+			-- Menyamakan PIVOT tidak menyamakan TELAPAK KAKI: pivot R6 dan R15 berada di tinggi yang
+			-- berbeda, jadi R6 yang lebih pendek tenggelam ke tanah. Yang disejajarkan adalah dasar
+			-- kotak batas kedua model, plus sedikit jarak supaya tidak lahir di dalam lantai.
+			local oldCF, oldSize = old:GetBoundingBox()
+			model:PivotTo(old:GetPivot())
+			local newCF, newSize = model:GetBoundingBox()
+			local oldBottom = oldCF.Position.Y - oldSize.Y / 2
+			local newBottom = newCF.Position.Y - newSize.Y / 2
+			model:PivotTo(model:GetPivot() + Vector3.new(0, oldBottom - newBottom + 0.05, 0))
+		end
+		model.Parent = workspace
+		-- PivotTo TIDAK peduli tabrakan: ia menaruh model tepat di koordinat itu, termasuk kalau
+		-- koordinat itu berada di dalam lantai -- itulah kaki R6 yang menembus tanah. MoveTo memakai
+		-- posisi yang sudah disejajarkan di atas, lalu MENAIKKAN model bila di sana ada part lain.
+		-- Harus dipanggil SESUDAH model masuk ke workspace, kalau tidak tidak ada yang bisa ditabrak.
+		pcall(function()
+			model:MoveTo(model:GetPivot().Position)
+		end)
+		player.Character = model
+		if old ~= nil then
+			task.defer(function()
+				old:Destroy()
+			end)
+		end
+	end)
+	if not okSwap then
+		model:Destroy()
+		local e = makeError("swapRig", err)
+		log.warn("swapRig gagal:", e.code, e.message)
+		return false, e
+	end
+	return true, nil
+end
+
 return RobloxApi

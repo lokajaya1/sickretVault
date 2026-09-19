@@ -65,6 +65,7 @@ export type Intent =
 	-- nama slot tunggal = Advanced Colors. Satu perubahan = satu commit = satu Undo.
 	| { op: "setColor", slot: string, hex: string }
 	| { op: "setScale", slot: string, value: number }
+	| { op: "setRig", rig: string }
 	| { op: "undo" }
 	| { op: "redo" }
 	| { op: "reset" }

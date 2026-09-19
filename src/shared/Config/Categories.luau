@@ -76,12 +76,18 @@ local list: { Category } = {
 	-- BACKGROUNDS
 	{ id = "backgrounds", label = "Backgrounds", assetTypes = { "AvatarBackground" } },
 
-	-- BODY. Bagian tubuh memakai tipe aset KLASIK, bukan bundle: bundle sudah punya kategorinya
-	-- sendiri (`bodies`, `heads`). Lengan & kaki digabung kiri+kanan seperti Catalog Avatar Creator.
-	{ id = "head_shapes", label = "Head Shapes", assetTypes = { "Head" } },
+	-- BODY. Yang ditampilkan adalah PART SATUAN, bukan bundle: part bundle (mis. "Korblox
+	-- Deathspeaker - Torso") adalah aset tersendiri dengan AvatarAssetType Torso/LeftArm/dst,
+	-- jadi pencarian per tipe aset sudah mengembalikannya satu per satu dan pemain bisa memakai
+	-- SATU bagian saja. Menambahkan bundleTypes di sini justru memunculkan bundle utuhnya --
+	-- itu sudah punya kategorinya sendiri (`bodies`, `heads`) di grup CHARACTERS.
+	{ id = "body_face", label = "Face", assetTypes = { "FaceAccessory", "Face" } },
+	{ id = "head_shapes", label = "Head", assetTypes = { "Head" } },
 	{ id = "torso", label = "Torso", assetTypes = { "Torso" } },
-	{ id = "arms", label = "Arms", assetTypes = { "LeftArm", "RightArm" } },
-	{ id = "legs", label = "Legs", assetTypes = { "LeftLeg", "RightLeg" } },
+	{ id = "left_arm", label = "LeftArm", assetTypes = { "LeftArm" } },
+	{ id = "right_arm", label = "RightArm", assetTypes = { "RightArm" } },
+	{ id = "left_leg", label = "LeftLeg", assetTypes = { "LeftLeg" } },
+	{ id = "right_leg", label = "RightLeg", assetTypes = { "RightLeg" } },
 }
 
 local byId: { [string]: Category } = {}

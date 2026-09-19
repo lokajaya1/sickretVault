@@ -85,7 +85,8 @@ export type Props = {
 	bodyLimits: BodyPage.Limits?,
 	onColor: ((string, string) -> ())?,
 	onScale: ((string, number) -> ())?,
-	getBody: (() -> ({ [string]: string }?, { [string]: number }?))?,
+	onRig: ((string) -> ())?,
+	getBody: (() -> ({ [string]: string }?, { [string]: number }?, string?))?,
 }
 
 -- Keadaan popover yang BELUM diterapkan. Dipisah dari state controller supaya mengetik di kotak
@@ -130,6 +131,7 @@ export type CatalogPanel = typeof(setmetatable(
 		_groupBar: ScrollingFrame,
 		_groupTabs: { [string]: TextButton },
 		_filterTabs: { [string]: TextButton },
+		_panelTabs: { [string]: TextButton },
 		_groupScroll: number, -- posisi geser baris grup (baris pertama)
 		_groupHoldUntil: number,
 		_tabHoldUntil: number, -- os.clock() sampai kapan posisi geser dijaga (lihat _keepTabScroll)
@@ -835,6 +837,23 @@ function CatalogPanel.new(props: Props): CatalogPanel
 		)
 	end
 
+	-- Chip PANEL (Color / Scale) menggantikan All/Free/Limited pada grup berhalaman (BODY).
+	-- Dibuat sekali di sini, sama seperti chip filter; yang berubah per grup cuma yang mana
+	-- yang terlihat -- membangun ulang baris chip tiap kali grup dibuka berarti kehilangan
+	-- posisi geser dan koneksi tombolnya.
+	local panelTabs: { [string]: TextButton } = {}
+	for i, f in CatalogMenu.PANELS do
+		local b = stripTab("Pnl_" .. f.id, f.label, i - #CatalogMenu.PANELS - 1, tabBar, false)
+		b.Visible = false
+		panelTabs[f.id] = b
+		table.insert(
+			conns,
+			b.Activated:Connect(function()
+				self:_setFilter(f.id)
+			end)
+		)
+	end
+
 	-- Baris 1: grup mozaik; selalu lengkap supaya bisa pindah grup tanpa kembali ke menu.
 	for i, group in CatalogMenu.list do
 		local b = stripTab("Group_" .. group.id, group.label, i, groupBar, true)
@@ -862,6 +881,8 @@ function CatalogPanel.new(props: Props): CatalogPanel
 			b.Activated:Connect(function()
 				self:_setWearing(false)
 				self:_keepTabScroll()
+				-- Kembali ke grid: tanpa ini panel Color/Scale tetap menutupi daftar item.
+				self:_showBodyPanel(nil)
 				spawnCall(ctl.setCategory, ctl, cat.id)
 			end)
 		)
@@ -980,6 +1001,7 @@ function CatalogPanel.new(props: Props): CatalogPanel
 		_groupBar = groupBar,
 		_groupTabs = groupTabs,
 		_filterTabs = filterTabs,
+		_panelTabs = panelTabs,
 		_tabScroll = 0,
 		_tabHoldUntil = 0,
 		_groupScroll = 0,
@@ -1583,6 +1605,9 @@ function CatalogPanel._render(self: CatalogPanel, state: any)
 	for id, b in self._filterTabs do
 		setTabActive(b, id == active)
 	end
+	for id, b in self._panelTabs do
+		setTabActive(b, id == self._bodySection)
+	end
 
 	if self._wearing then
 		local getWearing = self._props.getWearing
@@ -1796,6 +1821,11 @@ function CatalogPanel._ensureBody(self: CatalogPanel)
 				self._props.onScale(slot, value)
 			end
 		end,
+		onRig = function(rig)
+			if self._props.onRig then
+				self._props.onRig(rig)
+			end
+		end,
 	})
 end
 
@@ -1803,6 +1833,9 @@ end
 function CatalogPanel._showBodyPanel(self: CatalogPanel, section: string?)
 	if section == nil then
 		self._bodySection = nil
+		for _, b in self._panelTabs do
+			setTabActive(b, false)
+		end
 		if self._body then
 			self._body:setVisible(false)
 		end
@@ -1815,6 +1848,9 @@ function CatalogPanel._showBodyPanel(self: CatalogPanel, section: string?)
 		return
 	end
 	self._bodySection = section
+	for id, b in self._panelTabs do
+		setTabActive(b, id == section)
+	end
 	self._grid.Visible = false
 	body:setVisible(true)
 	body:setSection(section)
@@ -1942,8 +1978,13 @@ function CatalogPanel._applyPage(self: CatalogPanel)
 
 	-- Chip filter berlaku di semua grup -> selalu tampil di halaman daftar item, KECUALI di hasil
 	-- satu pencipta (di sana tidak ada grup yang bisa disaring).
+	-- Grup berhalaman (BODY) tidak memakai All/Free/Limited: chipnya Color & Scale.
+	local isPage = group ~= nil and group.page ~= nil
 	for _, b in self._filterTabs do
-		b.Visible = self._creatorName == nil
+		b.Visible = self._creatorName == nil and not isPage
+	end
+	for _, b in self._panelTabs do
+		b.Visible = isPage
 	end
 
 	-- Tab: hanya kategori milik grup ini (Wearing tetap di paling kiri bila ada).

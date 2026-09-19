@@ -659,12 +659,15 @@ function App.mount(opts: Options?): App
 		onScale = function(slot, value)
 			outfit:send({ op = "setScale", slot = slot, value = value })
 		end,
+		onRig = function(rig)
+			outfit:send({ op = "setRig", rig = rig })
+		end,
 		getBody = function()
 			local s = outfit:getState()
 			if s == nil then
 				return nil, nil
 			end
-			return s.colors, s.scales
+			return s.colors, s.scales, s.rig
 		end,
 		-- Tap kartu -> overlay di kartu (CatalogPanel); aksinya di bawah.
 		onItemActivated = function(item)
