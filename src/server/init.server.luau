@@ -13,6 +13,7 @@ local Log = require(Shared.Util.Log)
 local Features = require(Shared.Config.Features)
 local PlayerData = require(Shared.Domain.PlayerData)
 local Makeup = require(Shared.Domain.Makeup)
+local ItemDetail = require(Shared.Domain.ItemDetail)
 local DescriptionBuilder = require(Shared.Avatar.DescriptionBuilder)
 local IntentValidator = require(script.Validators.IntentValidator)
 local WardrobeValidator = require(script.Validators.WardrobeValidator)
@@ -115,13 +116,18 @@ avatar = AvatarService.new({
 	end,
 })
 
+-- Detail item (nama & harga) dari daftar id. Dipegang di luar WardrobeService karena panel review
+-- Save to Roblox juga memakainya: item yang sedang dipakai sering TIDAK pernah lewat katalog di
+-- client (mis. hasil restore saat join), jadi client tidak tahu nama maupun harganya.
+local outfitItems = OutfitItemsService.new({ api = api })
+
 -- Wardrobe (slot outfit) butuh data pemain.
 local wardrobe = if playerData and Features.Wardrobe
 	then WardrobeService.new({
 		playerData = playerData,
 		avatar = avatar,
 		makeup = makeup, -- slot menyimpan look utuh: makeup di slot perlu di-resolve saat dipakai
-		items = OutfitItemsService.new({ api = api }),
+		items = outfitItems,
 	})
 	else nil
 
@@ -417,8 +423,70 @@ Remotes.func(RemoteNames.Functions.Ownership).OnServerInvoke = function(player: 
 			table.insert(unownedBundles, id)
 		end
 	end
+	-- Sekalian nama & harga item yang dipakai: panel menampilkan keduanya, dan tanpa ini semua
+	-- kartu bertuliskan "N/A" karena client cuma kenal item yang pernah ia tampilkan di katalog.
+	-- Gagal di sini TIDAK menggagalkan kepemilikan -- panel tetap berguna tanpa harga.
+	local items = {}
+	local pOkItems, okList, listRes = pcall(outfitItems.list, outfitItems, avatar:getState(player))
+	if pOkItems and okList and type(listRes) == "table" then
+		for _, entry in listRes.items do
+			table.insert(items, {
+				id = entry.id,
+				name = entry.name,
+				price = entry.price,
+				resalePrice = entry.resalePrice,
+				limited = entry.limited,
+				offSale = entry.offSale,
+				priceStatus = entry.priceStatus,
+			})
+		end
+	else
+		log.debug("Ownership: detail item tidak terambil", player.Name)
+	end
+
+	-- Bagian tubuh & animasi datang dari BUNDLE dan tidak dijual satuan: harga satuannya memang
+	-- tidak ada. Yang punya harga adalah bundle-nya, jadi detail bundle diambil terpisah
+	-- (GetBatchItemDetailsAsync dengan AvatarItemType.Bundle) dan panel menampilkan bundle itu
+	-- sebagai SATU kartu, bukan lima part tanpa harga.
+	local bundleIds = {}
+	for id in ownedBundles do
+		table.insert(bundleIds, id)
+	end
+	local bundleInfo = {}
+	if #bundleIds > 0 then
+		-- pcall MEMBUNGKUS dua nilai kembalian gateway (ok, hasil) -> tiga variabel, bukan dua.
+		local pOkB, okB, bDetails = pcall(function()
+			return api:getBatchItemDetails(bundleIds, Enum.AvatarItemType.Bundle)
+		end)
+		if pOkB and okB and type(bDetails) == "table" then
+			for id, detail in bDetails do
+				if type(detail) == "table" then
+					-- Aturan harga yang sama dengan aset (ItemDetail): bundle pun bisa limited.
+					local bPrice, bResale, bLimited, bOffSale, bResellers = ItemDetail.priceFields(detail)
+					table.insert(bundleInfo, {
+						id = id,
+						name = if type(detail.Name) == "string" then detail.Name else nil,
+						price = bPrice,
+						resalePrice = if bResellers and bResale ~= nil and bResale > 0 then bResale else nil,
+						limited = if bLimited then true else nil,
+						offSale = if bOffSale then true else nil,
+						priceStatus = if type(detail.PriceStatus) == "string" then detail.PriceStatus else nil,
+					})
+				end
+			end
+		else
+			log.debug("Ownership: detail bundle tidak terambil", player.Name)
+		end
+	end
+
 	log.debug("Ownership", #unowned, "aset belum dimiliki", player.Name)
-	return { ok = true, unowned = unowned, unownedBundles = unownedBundles }
+	return {
+		ok = true,
+		unowned = unowned,
+		unownedBundles = unownedBundles,
+		items = items,
+		bundles = bundleInfo,
+	}
 end
 
 -- 5d. Wardrobe: { op, ... } -> { ok, outfits?, outfit?, settings?, max? } | { ok = false, code }.

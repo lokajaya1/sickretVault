@@ -41,6 +41,7 @@ local CartPanel = require(script.Parent.Components.CartPanel)
 local WardrobePanel = require(script.Parent.Components.WardrobePanel)
 local SideRail = require(script.Parent.Components.SideRail)
 local NamePrompt = require(script.Parent.Components.NamePrompt)
+local SaveReviewPanel = require(script.Parent.Components.SaveReviewPanel)
 local OutfitPreview = require(script.Parent.Util.OutfitPreview)
 local CatalogController = require(script.Parent.Parent.Controllers.CatalogController)
 local OutfitController = require(script.Parent.Parent.Controllers.OutfitController)
@@ -191,6 +192,9 @@ export type App = typeof(setmetatable(
 		toast: Toast.Toast,
 		actions: ActionBar.ActionBar,
 		_saveChooser: NamePrompt.NamePrompt, -- "How would you like to save your outfit?" (#30)
+		_saveReview: SaveReviewPanel.SaveReviewPanel, -- panel Owned / Unowned sebelum menyimpan
+		_reviewToken: number, -- jawaban kepemilikan yang datang terlambat dibuang
+		_known: { [number]: any }, -- item katalog yang pernah tampil (nama & harga)
 		strip: WornStrip.WornStrip,
 		camera: TryOnCamera.TryOnCamera,
 		_catalogButton: TextButton,
@@ -454,7 +458,16 @@ function App.mount(opts: Options?): App
 		parent = gui,
 		zIndex = Tokens.ZIndex.Popup + 5, -- di atas panel & popover, di bawah Toast
 		onConfirm = function(_mode, kind)
-			self:saveToRoblox(kind)
+			self:openSaveReview(kind or "avatar")
+		end,
+		-- Ditutup tanpa memilih -> chrome kembali. Kalau justru lanjut ke panel review, panel itu
+		-- yang menyembunyikannya lagi, jadi pemeriksaannya ditunda satu langkah.
+		onClose = function()
+			task.defer(function()
+				if not self._saveReview:isOpen() then
+					self:_setChromeHidden(false)
+				end
+			end)
 		end,
 	})
 
@@ -885,6 +898,27 @@ function App.mount(opts: Options?): App
 	showButton.AnchorPoint = Vector2.new(1, 0)
 	showButton.Visible = false
 
+	-- Panel review "Owned / Unowned" (pola CAC), di antara pilihan cara simpan dan prompt Roblox.
+	-- Dibuat DI SINI, bukan bersama dialog pilihan di atas: ia butuh `previews`, dan layanan itu
+	-- baru ada beberapa baris sebelumnya.
+	local saveReview = SaveReviewPanel.new({
+		parent = gui,
+		zIndex = Tokens.ZIndex.Popup + 5,
+		previews = previews,
+		onBuy = function(item)
+			self:buy(item.id, if item.bundle then "Bundle" else "Asset")
+		end,
+		onBuyAll = function(unownedList)
+			self:buyAll(unownedList)
+		end,
+		onSave = function(kind)
+			self:saveToRoblox(kind)
+		end,
+		onClose = function()
+			self:_setChromeHidden(false)
+		end,
+	})
+
 	local livePreview = previews:mountCurrent(previewPort, { background = true })
 	-- true = panel detail item dibuka dari Saved Outfits -> Back kembali ke sana, bukan ke katalog.
 	local wardrobeReturn = false
@@ -1078,6 +1112,9 @@ function App.mount(opts: Options?): App
 		toast = toast,
 		actions = actions,
 		_saveChooser = saveChooser,
+		_saveReview = saveReview,
+		_reviewToken = 0,
+		_known = known,
 		strip = strip,
 		camera = camera,
 		_catalogButton = catalogButton,
@@ -1575,7 +1612,73 @@ end
 -- Tanya dulu: outfit Roblox BARU, atau timpa avatar akun? (#29 langsung menimpa tanpa bertanya.)
 -- Dialognya sendiri yang memanggil saveToRoblox lewat onConfirm; tap di luar kartu = batal.
 function App.openSaveChooser(self: App)
+	self:_setChromeHidden(true)
 	self._saveChooser:open("saveTarget")
+end
+
+-- Selama dialog simpan / panel review terbuka, seluruh tombol melayang disembunyikan: sejak
+-- selubung hitamnya dibuang, chrome di belakang cuma jadi derau di sekitar panel. Mengembalikannya
+-- cukup dengan _refreshButtons(), yang memang menghitung ulang semuanya dari keadaan sekarang.
+function App._setChromeHidden(self: App, hidden: boolean)
+	if not hidden then
+		self:_refreshButtons()
+		return
+	end
+	for _, rail in { self.leftRail, self.rightRail, self.bottomRail } do
+		rail:setVisible(false)
+	end
+	self.actions:setVisible(false)
+	self.strip:setVisible(false)
+	self._topBar.Visible = false
+	self._previewCard.Visible = false
+	self._previewShow.Visible = false
+end
+
+-- Panel review: item yang sedang dipakai, dipisah "sudah dimiliki" / "belum". Panelnya dibuka
+-- SEKETIKA (kartu berstatus "checking...") lalu kepemilikannya menyusul -- 750 ms diukur di
+-- Studio, tapi panel yang menunggu di balik layar terasa seperti tombol yang tidak berfungsi.
+-- Kepemilikan item dari bundle ditanyakan lewat bundleId-nya: part bundle tidak punya baris
+-- kepemilikan sendiri (spike 19 Sep 2026).
+function App.openSaveReview(self: App, kind: string)
+	local worn = WornItems.removable(WornItems.list(self.outfit:getState(), self._known))
+
+	-- Part yang berasal dari bundle DIGABUNG jadi satu kartu bundle: part bundle tidak dijual
+	-- satuan (harganya memang tidak ada), yang punya harga dan bisa dibeli adalah bundle-nya.
+	-- Tanpa ini kolom kanan penuh "Head", "Torso", "Left Arm" tanpa satu pun harga.
+	self:_setChromeHidden(true)
+	local items = {}
+	local assets, bundles = {}, {}
+	local seenBundle: { [number]: boolean } = {}
+	for _, item in worn do
+		if item.source ~= nil then
+			if not seenBundle[item.source] then
+				seenBundle[item.source] = true
+				table.insert(bundles, item.source)
+				table.insert(items, { id = item.source, name = "Bundle", bundle = true })
+			end
+		else
+			table.insert(assets, item.id)
+			table.insert(items, { id = item.id, name = item.name, price = item.price })
+		end
+	end
+	-- Layar pendek (ponsel mendatar) -> kartu & kepala panel ikut mengecil, ambangnya sama dengan
+	-- panel katalog (PanelLayout.COMPACT_HEIGHT).
+	self._saveReview:open(kind, items, self.panel:getLayout().compact)
+
+	self._reviewToken += 1
+	local token = self._reviewToken
+	task.spawn(function()
+		local ok, res = self.wardrobe:ownership(assets, bundles)
+		-- Panel sudah ditutup / dibuka ulang sementara jawabannya di jalan -> buang.
+		if token ~= self._reviewToken or not self._saveReview:isOpen() then
+			return
+		end
+		if ok and type(res) == "table" then
+			self._saveReview:setOwnership(res.unowned, res.details, res.bundleDetails)
+		else
+			self._saveReview:fail(if type(res) == "string" then res else nil)
+		end
+	end)
 end
 
 function App.saveToRoblox(self: App, kind: string?)
@@ -1596,6 +1699,30 @@ function App.saveToRoblox(self: App, kind: string?)
 			then "Roblox only saves outfits made of items you own"
 			else ROBLOX_SAVE_TEXT[code or "FAILED"] or ROBLOX_SAVE_TEXT.FAILED
 		self.toast:show(text, if code == "DENIED" or code == "BUSY" then "info" else "warning")
+	end)
+end
+
+-- Ubin "buy all" di panel review: satu prompt untuk semua item yang belum dimiliki. Lewat
+-- CartController.checkoutItems, jadi isi keranjang pemain TIDAK ikut terbeli atau terhapus.
+-- Part bundle dibeli sebagai BUNDLE-nya (membeli part satuan tidak selalu mungkin), dan bundle
+-- yang sama tidak dikirim dua kali.
+function App.buyAll(self: App, list: { any })
+	local request, seen = {}, {}
+	for _, item in list do
+		local id = item.id
+		local itemType = if item.bundle then "Bundle" else "Asset"
+		local key = ("%s:%d"):format(itemType, id)
+		if not seen[key] then
+			seen[key] = true
+			table.insert(request, { id = id, itemType = itemType })
+		end
+	end
+	task.spawn(function()
+		local ok, code = self.cart:checkoutItems(request)
+		if not ok then
+			local text = CHECKOUT_TEXT[code or ""] or "Couldn't open the purchase prompt"
+			self.toast:show(text, if code == "RATE_LIMITED" or code == "BUSY" then "info" else "error")
+		end
 	end)
 end
 
@@ -1626,6 +1753,7 @@ function App.destroy(self: App)
 	self.toast:destroy()
 	self.actions:destroy()
 	self._saveChooser:destroy()
+	self._saveReview:destroy()
 	self.strip:destroy()
 	self.gui:Destroy()
 end

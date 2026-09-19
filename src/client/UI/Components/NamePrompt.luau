@@ -14,6 +14,8 @@
 -- mode folder TIDAK boleh kosong -> tombol confirm diabaikan bila kosong (dialog tetap terbuka).
 -- Panjang teks dipotong sesuai batas modenya (server tetap memvalidasi).
 
+local Lighting = game:GetService("Lighting")
+
 local Tokens = require(script.Parent.Parent.Theme.Tokens)
 
 local PROMPT_W = 320
@@ -22,6 +24,7 @@ local CHOICE_W = 420 -- mode pilihan: dua kartu sejajar butuh lebih lebar
 local CHOICE_H = 216 -- judul + baris syarat + dua kartu
 local CHOICE_ROW_H = 104 -- tinggi kartu pilihan
 local ROW_H = 34 -- tinggi baris tombol biasa
+local BLUR_SIZE = 18 -- mode pilihan: dunia di belakang diburamkan, selubung hitamnya dibuang
 local MAX_NAME = 32 -- sama dengan Wardrobe.MAX_NAME
 local MAX_FOLDER_NAME = 24 -- sama dengan OutfitFolders.MAX_NAME
 
@@ -88,6 +91,7 @@ export type Props = {
 	parent: Instance, -- GuiObject, atau ScreenGui bila dialog dipakai selayar penuh (#30)
 	zIndex: number, -- lapisan dasar (dialog dipasang di atasnya)
 	onConfirm: (mode: Mode, name: string?, folderId: number?) -> (),
+	onClose: (() -> ())?, -- dialog ditutup (batal, tap di luar, atau sesudah confirm)
 }
 
 local NamePrompt = {}
@@ -105,6 +109,7 @@ export type NamePrompt = typeof(setmetatable(
 		_row: Frame,
 		_cancelButton: TextButton,
 		_confirmButton: TextButton,
+		_blur: BlurEffect?,
 		_mode: Mode,
 		_folderId: number?,
 		_conns: { RBXScriptConnection },
@@ -321,6 +326,7 @@ function NamePrompt.new(props: Props): NamePrompt
 		_row = row,
 		_cancelButton = cancel,
 		_confirmButton = confirm,
+		_blur = nil,
 		_mode = "save",
 		_folderId = nil,
 		_conns = {},
@@ -416,9 +422,33 @@ function NamePrompt.open(self: NamePrompt, mode: Mode, folderId: number?, initia
 		end
 	end
 
+	-- Mode pilihan tidak memakai selubung hitam (permintaan 19 Sep 2026): yang diburamkan dunia
+	-- 3D lewat Lighting. UI di belakang TIDAK bisa diburamkan di Roblox -- tidak ada backdrop
+	-- blur untuk GuiObject. Mode isian nama tetap memakai selubung: ia dialog kecil di ATAS
+	-- panel, bukan layar penuh, jadi tanpa selubung batasnya hilang.
+	self.instance.BackgroundTransparency = if choice then 1 else Tokens.Transparency.Overlay
+	self:_setBlur(choice)
+
 	self.instance.Visible = true
 	if not choice then
 		self._box:CaptureFocus()
+	end
+end
+
+function NamePrompt._setBlur(self: NamePrompt, on: boolean)
+	if on then
+		if self._blur == nil then
+			local blur = Instance.new("BlurEffect")
+			blur.Name = "NamePromptBlur"
+			blur.Size = BLUR_SIZE
+			blur.Parent = Lighting
+			self._blur = blur
+		end
+		return
+	end
+	if self._blur ~= nil then
+		self._blur:Destroy()
+		self._blur = nil
 	end
 end
 
@@ -432,9 +462,15 @@ function NamePrompt.close(self: NamePrompt)
 	end
 	self._box:ReleaseFocus()
 	self.instance.Visible = false
+	self:_setBlur(false)
+	local onClose = self._props.onClose
+	if onClose then
+		onClose()
+	end
 end
 
 function NamePrompt.destroy(self: NamePrompt)
+	self:_setBlur(false)
 	for _, c in self._conns do
 		c:Disconnect()
 	end

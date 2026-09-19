@@ -13,6 +13,7 @@
 --   local ok, code, res = wardrobe:bulkDelete({ 1, 2 })   -- res.removed
 --   local ok, code, res = wardrobe:bulkFolder({ 1, 2 }, folderId, true) -- res.changed / res.skipped
 --   local ok, data = wardrobe:items(id)         -- YIELD; { items = { {id,name,price,...} }, total, missing }
+--   local ok, unowned = wardrobe:ownership({ id }, { bundleId }) -- YIELD; { [id] = true } yang BELUM dimiliki
 --   local ok, code = wardrobe:saveToRoblox("avatar")   -- YIELD; prompt Roblox ("outfit" = buat outfit baru)
 --   local ok, list = wardrobe:robloxOutfits()          -- YIELD; { { id, name, editable } } (Outfit Loader)
 --   local ok, state = wardrobe:robloxState(outfitId)   -- YIELD; OutfitState untuk kartu loader (di-cache)
@@ -83,6 +84,9 @@ export type Snapshot = {
 	restoreOutfit: boolean?, -- nil = belum diketahui
 	robloxBusy: string?, -- aksi akun Roblox yang sedang jalan: saveAvatar | createOutfit | list | wear
 }
+
+-- Daftar id (aset / bundle). Alias supaya tanda tangan ownership() pendek.
+type Ids = { number }
 
 export type Invoke = (request: { [string]: any }) -> any
 
@@ -537,6 +541,56 @@ end
 function WardrobeController._setRobloxBusy(self: WardrobeController, op: string?)
 	self._robloxBusy = op
 	self:_emit()
+end
+
+-- YIELD. Tanya server item mana yang BELUM dimiliki (panel review sebelum Save to Roblox).
+--   assets  = { assetId }   bundles = { bundleId }
+--   -> (true, { unowned = { [id] = true }, details = { [id] = { name, price } } })
+--   `unowned` memuat id ASET maupun id BUNDLE; `details` = nama & harga item yang sedang dipakai.
+-- Server menjawab dengan daftar id, bukan peta: peta ber-kunci angka lewat remote gampang berubah
+-- bentuk. Kepemilikan diambil di server karena jalur inventory client tidak lengkap DAN minta izin
+-- per sesi (spike 19 Sep 2026); di server 16 panggilan serentak selesai 876 ms tanpa gagal.
+function WardrobeController.ownership(_self: WardrobeController, assets: Ids, bundles: Ids): (boolean, any)
+	local ok, res = pcall(function()
+		local Remotes = require(Shared.Net.Remotes)
+		local RemoteNames = require(Shared.Net.RemoteNames)
+		return Remotes.func(RemoteNames.Functions.Ownership):InvokeServer({ assets = assets, bundles = bundles })
+	end)
+	if not ok or type(res) ~= "table" then
+		log.warn("Ownership invoke gagal", res)
+		return false, "NETWORK"
+	end
+	if res.ok ~= true then
+		return false, if type(res.code) == "string" then res.code else "FAILED"
+	end
+	local unowned: { [number]: boolean } = {}
+	for _, id in res.unowned or {} do
+		if type(id) == "number" then
+			unowned[id] = true
+		end
+	end
+	for _, id in res.unownedBundles or {} do
+		if type(id) == "number" then
+			unowned[id] = true
+		end
+	end
+	-- Nama & harga item yang dipakai, ikut di jawaban yang sama supaya panel tidak perlu
+	-- permintaan kedua. Boleh kosong: kepemilikan tetap berlaku tanpa harga.
+	local details: { [number]: any } = {}
+	for _, entry in res.items or {} do
+		if type(entry) == "table" and type(entry.id) == "number" then
+			details[entry.id] = entry
+		end
+	end
+	-- Detail BUNDLE dipisah dari detail aset: id bundle dan id aset hidup di ruang nomor yang
+	-- berbeda dan bisa kebetulan sama (bundle 239 vs aset 239), jadi satu peta saja tidak aman.
+	local bundleDetails: { [number]: any } = {}
+	for _, entry in res.bundles or {} do
+		if type(entry) == "table" and type(entry.id) == "number" then
+			bundleDetails[entry.id] = entry
+		end
+	end
+	return true, { unowned = unowned, details = details, bundleDetails = bundleDetails }
 end
 
 -- YIELD. Simpan look sekarang ke akun Roblox.
