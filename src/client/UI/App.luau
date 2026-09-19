@@ -195,6 +195,7 @@ export type App = typeof(setmetatable(
 		_saveReview: SaveReviewPanel.SaveReviewPanel, -- panel Owned / Unowned sebelum menyimpan
 		_reviewToken: number, -- jawaban kepemilikan yang datang terlambat dibuang
 		_reviewUnowned: { [number]: boolean }, -- assetId yang belum dimiliki (dicopot saat menyimpan)
+		_chromeCatalog: boolean, -- katalog tadinya terbuka saat panel simpan muncul -> dibuka lagi
 		_known: { [number]: any }, -- item katalog yang pernah tampil (nama & harga)
 		strip: WornStrip.WornStrip,
 		camera: TryOnCamera.TryOnCamera,
@@ -1118,6 +1119,7 @@ function App.mount(opts: Options?): App
 		_saveReview = saveReview,
 		_reviewToken = 0,
 		_reviewUnowned = {},
+		_chromeCatalog = false,
 		_known = known,
 		strip = strip,
 		camera = camera,
@@ -1488,7 +1490,54 @@ function App._refreshButtons(self: App)
 	end
 end
 
+-- Menutup dialog simpan / panel review yang sedang terbuka. Penutupannya lewat `close()` biasa,
+-- jadi jalur pemulihan chrome (termasuk memunculkan katalog kembali) tetap yang itu-itu juga.
+function App.closeModals(self: App): boolean
+	local closed = false
+	if self._saveChooser:isOpen() then
+		self._saveChooser:close()
+		closed = true
+	end
+	if self._saveReview:isOpen() then
+		self._saveReview:close()
+		closed = true
+	end
+	return closed
+end
+
+-- Tombol C berarti SATU hal: "bawa aku ke katalog". Sebelumnya ia ditahan mentah-mentah selagi
+-- panel simpan terbuka -- benar secara teknis (tidak ada lagi panel bertumpuk), tapi salah rasa:
+-- pintasan yang diam terasa rusak. Sekarang panel simpannya ditutup dulu, lalu katalog dibuka.
+-- Katalog dibuka di `task.defer` karena penutupan panel memulihkan chrome lewat defer juga; tanpa
+-- menunggu satu langkah, pemulihan itu berjalan SESUDAH kita dan hasilnya saling menimpa.
+function App.catalogShortcut(self: App)
+	if not self:isModalOpen() then
+		self:toggleCatalog()
+		return
+	end
+	self:closeModals()
+	task.defer(function()
+		if not self.panel:isVisible() then
+			self.panel:setVisible(true)
+			self:_refreshButtons()
+		end
+	end)
+end
+
+-- Ada dialog/panel modal di depan layar? Dipakai untuk mengunci jalan masuk yang TIDAK lewat
+-- tombol -- pintasan papan tik, misalnya. Tombolnya sendiri sudah disembunyikan
+-- `_setChromeHidden`, tapi tombol C tidak peduli pada tombol yang hilang.
+function App.isModalOpen(self: App): boolean
+	return self._saveChooser:isOpen() or self._saveReview:isOpen()
+end
+
+-- Diuji 19 Sep 2026: menekan C saat panel review terbuka membuka panel katalog DI BELAKANGNYA --
+-- dua panel bertumpuk, dan chrome yang tadi disembunyikan ikut terbit lagi sebagian. Pintasan
+-- ditahan selagi modal terbuka; menutup panelnya mengembalikan pintasan seperti biasa.
 function App.toggleCatalog(self: App)
+	if self:isModalOpen() then
+		return
+	end
 	self.panel:setVisible(not self.panel:isVisible())
 	self:_refreshButtons()
 end
@@ -1625,8 +1674,24 @@ end
 -- cukup dengan _refreshButtons(), yang memang menghitung ulang semuanya dari keadaan sekarang.
 function App._setChromeHidden(self: App, hidden: boolean)
 	if not hidden then
+		if self._chromeCatalog then
+			self._chromeCatalog = false
+			-- Baris ini menjawab "kenapa katalog tiba-tiba muncul lagi?": ia HANYA tercetak
+			-- lewat jalur penutupan panel simpan. Kalau katalog muncul tanpa baris ini,
+			-- pelakunya bukan penutupan panel -- dan itu yang perlu dikejar berikutnya.
+			log.info("katalog dibuka lagi: panel simpan ditutup")
+			self.panel:setVisible(true)
+		end
 		self:_refreshButtons()
 		return
+	end
+	-- Katalog ikut disembunyikan: panel simpan MENGGANTIKAN panel katalog, tidak menumpuk di
+	-- atasnya. Ditutup dengan setVisible saja, TANPA _refreshButtons -- fungsi itu menganggap
+	-- katalog tertutup berarti pemain menutupnya, lalu ikut menutup detail, keranjang, dan lemari.
+	-- Di sini katalog cuma disingkirkan sebentar, jadi keadaannya harus utuh saat dibuka lagi.
+	if self.panel:isVisible() then
+		self._chromeCatalog = true
+		self.panel:setVisible(false)
 	end
 	for _, rail in { self.leftRail, self.rightRail, self.bottomRail } do
 		rail:setVisible(false)

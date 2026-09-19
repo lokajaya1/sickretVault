@@ -105,6 +105,11 @@ local function drawIcon(kind: string, parent: Instance)
 		bar(parent, 0.28, 0.45, 0.16, 0.08, 45)
 		bar(parent, 0.5, 0.64, 0.5, 0.08)
 		bar(parent, 0.72, 0.55, 0.16, 0.08, 45)
+	elseif kind == "close" then
+		-- Silang DIGAMBAR, bukan huruf. Karakter silang (U+2715) tidak ada di font kita: di
+		-- Studio ia keluar sebagai kotak kosong (19 Sep 2026). Dua batang miring selalu jadi.
+		bar(parent, 0.5, 0.5, 0.86, 0.13, 45)
+		bar(parent, 0.5, 0.5, 0.86, 0.13, -45)
 	elseif kind == "cart" then
 		bar(parent, 0.26, 0.26, 0.24, 0.08, -50) -- gagang
 		bar(parent, 0.54, 0.52, 0.62, 0.34) -- keranjang

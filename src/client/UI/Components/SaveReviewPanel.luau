@@ -33,6 +33,7 @@ local Tokens = require(script.Parent.Parent.Theme.Tokens)
 -- Aturan HARGA (harga pasar limited menang, off-sale bukan "Free", sentinel dibuang) dipinjam
 -- dari kartu katalog: dua salinan aturan harga pasti akan berbeda suatu hari.
 local ItemCard = require(script.Parent.ItemCard)
+local SideRail = require(script.Parent.SideRail)
 
 export type Item = {
 	id: number,
@@ -266,10 +267,7 @@ function SaveReviewPanel.new(props: Props): SaveReviewPanel
 	})
 	local closeButton: TextButton = make("TextButton", {
 		Name = "Close",
-		Text = "X",
-		FontFace = Tokens.Font.Bold,
-		TextSize = Tokens.TextSize.Button,
-		TextColor3 = Tokens.Color.Text,
+		Text = "",
 		BackgroundColor3 = Tokens.Color.PanelRaised,
 		BackgroundTransparency = Tokens.Transparency.PanelRaised,
 		AutoButtonColor = true,
@@ -279,6 +277,20 @@ function SaveReviewPanel.new(props: Props): SaveReviewPanel
 		ZIndex = Z + 2,
 		Parent = head,
 	}, { make("UICorner", { CornerRadius = Tokens.Radius.Pill }) })
+	-- Silang yang sama dengan dialog pilih cara simpan: digambar, bukan huruf "X" -- huruf X
+	-- besar tebal terbaca sebagai huruf di antara teks kepala, bukan sebagai tombol tutup.
+	SideRail.drawIcon(
+		"close",
+		make("Frame", {
+			Name = "Icon",
+			BackgroundTransparency = 1,
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Position = UDim2.fromScale(0.5, 0.5),
+			Size = UDim2.fromOffset(11, 11),
+			ZIndex = Z + 3,
+			Parent = closeButton,
+		})
+	)
 
 	-- Badan: grid dimiliki | avatar | grid belum dimiliki.
 	local body: Frame = make("Frame", {
@@ -673,6 +685,13 @@ function SaveReviewPanel._refresh(self: SaveReviewPanel)
 		self._note.Text = "Unowned items won't be saved to Roblox. Tap one to buy it."
 	end
 	self._saveButton.Text = if self._kind == "outfit" then "Save as new outfit" else "Save to my avatar"
+	-- Tidak satu pun item dimiliki -> tidak ada sisa yang bisa disimpan, tombolnya hilang. Tombol
+	-- yang lenyap tanpa keterangan terbaca seperti rusak, jadi alasannya ditulis. Ini juga
+	-- PENGAMAN untuk jalur "avatar": menyimpan look yang seluruh itemnya dicopot berarti
+	-- MENGOSONGKAN avatar akun sungguhan -- bukan hal yang boleh terjadi hanya karena satu ketukan.
+	if ownedCount == 0 and #missing > 0 then
+		self._note.Text = "You don't own any of these yet, so there's nothing left to save."
+	end
 	self._saveButton.Visible = ownedCount > 0
 end
 

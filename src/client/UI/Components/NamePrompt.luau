@@ -17,6 +17,7 @@
 local Lighting = game:GetService("Lighting")
 
 local Tokens = require(script.Parent.Parent.Theme.Tokens)
+local SideRail = require(script.Parent.SideRail)
 
 local PROMPT_W = 320
 local PROMPT_H = 168
@@ -107,6 +108,7 @@ export type NamePrompt = typeof(setmetatable(
 		_card: TextButton,
 		_cardSize: UISizeConstraint,
 		_row: Frame,
+		_closeButton: TextButton,
 		_cancelButton: TextButton,
 		_confirmButton: TextButton,
 		_blur: BlurEffect?,
@@ -214,6 +216,37 @@ function NamePrompt.new(props: Props): NamePrompt
 		ZIndex = Z + 1,
 		Parent = card,
 	})
+	-- Tombol tutup di pojok kanan atas kartu. Ia anak JUDUL, bukan anak kartu: kartu memakai
+	-- UIListLayout, yang akan menyusun tombol ini jadi satu baris sendiri di bawah judul. Anak
+	-- sebuah TextLabel tidak ikut disusun, jadi ia bisa melayang di kanan atas tanpa Frame
+	-- pembungkus tambahan. Hanya untuk mode pilihan: mode isian nama sudah punya tombol Cancel,
+	-- sedangkan mode pilihan (sejak selubung hitamnya dibuang) tidak lagi terlihat bisa ditutup.
+	local closeButton: TextButton = make("TextButton", {
+		Name = "Close",
+		Text = "",
+		BackgroundColor3 = Tokens.Color.PanelRaised,
+		BackgroundTransparency = Tokens.Transparency.PanelRaised,
+		BorderSizePixel = 0,
+		AutoButtonColor = true,
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.fromScale(1, 0.5),
+		Size = UDim2.fromOffset(28, 28),
+		Visible = false,
+		ZIndex = Z + 2,
+		Parent = title,
+	}, { make("UICorner", { CornerRadius = Tokens.Radius.Pill }) })
+	SideRail.drawIcon(
+		"close",
+		make("Frame", {
+			Name = "Icon",
+			BackgroundTransparency = 1,
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Position = UDim2.fromScale(0.5, 0.5),
+			Size = UDim2.fromOffset(11, 11),
+			ZIndex = Z + 2,
+			Parent = closeButton,
+		})
+	)
 	local hint: TextLabel = make("TextLabel", {
 		Name = "Hint",
 		Text = TEXT.save.hint,
@@ -324,6 +357,7 @@ function NamePrompt.new(props: Props): NamePrompt
 		_card = card,
 		_cardSize = cardSize,
 		_row = row,
+		_closeButton = closeButton,
 		_cancelButton = cancel,
 		_confirmButton = confirm,
 		_blur = nil,
@@ -334,6 +368,18 @@ function NamePrompt.new(props: Props): NamePrompt
 
 	self._conns = {
 		root.Activated:Connect(function()
+			-- Mode PILIHAN tidak lagi tertutup oleh ketukan di luar kartu. Sejak panel katalog
+			-- ikut disingkirkan, "di luar kartu" = seluruh layar: satu klik nyasar (di macOS,
+			-- klik untuk memberi fokus ke jendela Studio sudah cukup) menutup dialog dan
+			-- memunculkan katalog kembali -- persis gejala "tekan C kok pindah ke katalog",
+			-- padahal pelakunya klik, bukan tombol C. Jalan keluarnya sekarang tombol silang.
+			local text = TEXT[self._mode]
+			if text ~= nil and text.choice then
+				return
+			end
+			self:close()
+		end),
+		closeButton.Activated:Connect(function()
 			self:close()
 		end),
 		cancel.Activated:Connect(function()
@@ -402,6 +448,7 @@ function NamePrompt.open(self: NamePrompt, mode: Mode, folderId: number?, initia
 	local choice = text.choice == true
 	self._hint.Visible = text.hint ~= ""
 	self._box.Visible = not choice
+	self._closeButton.Visible = choice
 	self._cardSize.MaxSize = if choice then Vector2.new(CHOICE_W, CHOICE_H) else Vector2.new(PROMPT_W, PROMPT_H)
 	self._card.Size = UDim2.new(0.9, 0, 0, if choice then CHOICE_H else PROMPT_H)
 	self._row.Size = UDim2.new(1, 0, 0, if choice then CHOICE_ROW_H else ROW_H)

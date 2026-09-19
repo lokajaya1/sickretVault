@@ -56,7 +56,10 @@ UserInputService.InputBegan:Connect(function(input: InputObject, processed: bool
 		return
 	end
 	if input.KeyCode == Enum.KeyCode.C then
-		app:toggleCatalog()
+		-- Bukan sekadar buka/tutup katalog: kalau ada panel simpan di depan, panel itu ditutup
+		-- dulu lalu katalog yang muncul. Seluruh urutannya ada di App.catalogShortcut, supaya
+		-- jalan masuk lain (tombol, nanti mungkin gamepad) ikut memakai aturan yang sama.
+		app:catalogShortcut()
 	end
 end)
 
