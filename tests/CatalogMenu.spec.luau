@@ -126,8 +126,8 @@ return function()
 	-- 9b. grup "Soon" (BODY): tidak punya kategori & tidak punya chip
 	local body = CatalogMenu.byId.body
 	eq(body.soon, nil, "BODY tidak Soon lagi: sub-kategorinya nyata")
-	eq(#CatalogMenu.categoryIds("body"), 7, "tujuh sub-kategori bagian tubuh")
-	eq(#CatalogMenu.chips("body"), 9, "2 chip panel + 7 kategori")
+	eq(#CatalogMenu.categoryIds("body"), 6, "enam sub-kategori bagian tubuh")
+	eq(#CatalogMenu.chips("body"), 8, "2 chip panel + 6 kategori")
 	-- Grup berhalaman TIDAK memakai All/Free/Limited: chip pertamanya panel.
 	eq(CatalogMenu.chips("body")[1].id, "color", "chip pertama Color")
 	eq(CatalogMenu.chips("body")[2].id, "scale", "chip kedua Scale")
