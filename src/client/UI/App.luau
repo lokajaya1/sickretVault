@@ -231,13 +231,13 @@ end
 -- Ikon DIGAMBAR dari Frame, bukan glyph font dan bukan assetId. Uji Studio 18 Sep 2026:
 -- BuilderSans tidak punya "✥" (U+2725) maupun "▾" (U+25BE) -- keduanya jadi kotak kosong -- dan
 -- menebak id aset lebih berbahaya lagi. Garis membulat begini juga lebih rapi daripada huruf.
-local function iconBar(parent: Instance, w: number, h: number, rot: number, dx: number)
+local function iconBar(parent: Instance, w: number, h: number, rot: number, dx: number, dy: number?)
 	local f = Instance.new("Frame")
 	f.Name = "Line"
 	f.BackgroundColor3 = Tokens.Color.Text
 	f.BorderSizePixel = 0
 	f.AnchorPoint = Vector2.new(0.5, 0.5)
-	f.Position = UDim2.new(0.5, dx, 0.5, 0)
+	f.Position = UDim2.new(0.5, dx, 0.5, dy or 0)
 	f.Size = UDim2.fromOffset(w, h)
 	f.Rotation = rot
 	f.ZIndex = Tokens.ZIndex.Hud + 3
@@ -285,6 +285,18 @@ local function drawIcon(kind: string, parent: Instance)
 		dotRound.CornerRadius = UDim.new(1, 0)
 		dotRound.Parent = dot
 		dot.Parent = parent
+	elseif kind == "undo" or kind == "redo" then
+		-- Panah balik: batang mendatar + kepala panah di satu ujung + ekor pendek yang membelok
+		-- ke bawah di ujung lain (kesan "kembali"). Redo = cerminnya, jadi satu cabang dengan
+		-- pengali `dir`. Rotation Roblox searah jarum jam: lengan yang naik ke kanan = -45.
+		local dir = if kind == "undo" then 1 else -1 -- 1 = kepala panah di kiri
+		local arm = ICON_CHEVRON * 0.8
+		local off = arm * 0.354 -- setengah panjang lengan pada sumbu x/y (cos 45 / 2)
+		local tip = (-ICON_SPAN / 2 - 1) * dir
+		iconBar(parent, ICON_SPAN, ICON_LINE, 0, 0)
+		iconBar(parent, arm, ICON_LINE, -45 * dir, tip + off * dir, -off)
+		iconBar(parent, arm, ICON_LINE, 45 * dir, tip + off * dir, off)
+		iconBar(parent, ICON_LINE, ICON_CHEVRON * 0.6, 0, (ICON_SPAN / 2) * dir, ICON_CHEVRON * 0.3)
 	elseif kind == "down" then
 		iconBar(parent, ICON_CHEVRON, ICON_LINE, 45, -reach)
 		iconBar(parent, ICON_CHEVRON, ICON_LINE, -45, reach)
@@ -429,11 +441,22 @@ function App.mount(opts: Options?): App
 	local wardrobe = WardrobeController.new()
 	local self: App
 
-	-- Dock (kiri bawah, dekat avatar): Undo / Redo / Reset -> server lewat OutfitController.
+	-- Dock (kiri bawah, di bawah kartu preview): 4 ikon persegi pola CAC.
+	--   roblox = simpan look ini ke akun Roblox; cart = keranjang; reset = kembali ke avatar
+	--   sendiri (server, lewat OutfitController); trash = Item Removal per kategori.
+	-- Undo sekarang panah di pojok kartu preview, Redo dibuang.
 	local actions = ActionBar.new({
 		parent = gui,
 		onAction = function(op)
-			outfit:send({ op = op })
+			if op == "roblox" then
+				self:saveToRoblox()
+			elseif op == "cart" then
+				self:openCart()
+			elseif op == "reset" then
+				outfit:send({ op = "reset" })
+			else
+				self.actions:flash("Soon", SOON_SECONDS) -- Item Removal menyusul
+			end
 		end,
 	})
 
@@ -831,6 +854,17 @@ function App.mount(opts: Options?): App
 	local hideButton = floatButton("Hide", "down", previewCard)
 	hideButton.AnchorPoint = Vector2.new(1, 0)
 	hideButton.Position = UDim2.new(1, -ZOOM_INSET, 0, ZOOM_INSET)
+
+	-- Undo & Redo: sepasang panah di pojok kiri ATAS kartu (pola CAC), sejauh mungkin dari tombol
+	-- sembunyikan di kanan atas dan dari kapsul zoom di kanan bawah. Keduanya ikut hilang saat
+	-- kartu disembunyikan -- sama seperti kontrol kamera, dan bar aksi di bawah kartu tetap ada.
+	local undoButton = floatButton("Undo", "undo", previewCard)
+	undoButton.AnchorPoint = Vector2.new(0, 0)
+	undoButton.Position = UDim2.fromOffset(ZOOM_INSET, ZOOM_INSET)
+
+	local redoButton = floatButton("Redo", "redo", previewCard)
+	redoButton.AnchorPoint = Vector2.new(0, 0)
+	redoButton.Position = UDim2.fromOffset(ZOOM_INSET + ZOOM_BUTTON + 6, ZOOM_INSET)
 
 	-- Tombol memunculkan kartu lagi. Anak `gui`, bukan kartu: kartunya sendiri sedang tersembunyi.
 	-- Letaknya persis di tempat tombol sembunyikan tadi, jadi jarinya tidak perlu berpindah.
@@ -1243,6 +1277,18 @@ function App.mount(opts: Options?): App
 	)
 	table.insert(
 		self._conns,
+		undoButton.Activated:Connect(function()
+			outfit:send({ op = "undo" })
+		end)
+	)
+	table.insert(
+		self._conns,
+		redoButton.Activated:Connect(function()
+			outfit:send({ op = "redo" })
+		end)
+	)
+	table.insert(
+		self._conns,
 		hideButton.Activated:Connect(function()
 			self._previewMin = true
 			self:_refreshButtons()
@@ -1373,10 +1419,8 @@ function App._refreshButtons(self: App)
 	if setLive then
 		setLive(showCard and not window) -- mode tembus: tidak ada salinan yang perlu dicerminkan
 	end
-	local bar = self.actions.instance
-	bar.Visible = open
-	bar.AnchorPoint = Vector2.zero
-	bar.Position = UDim2.fromOffset(L.dockX, L.dockY)
+	self.actions:setPlacement(L.dockX, L.dockY, L.dockW, L.actionsH)
+	self.actions:setVisible(open)
 	local gap = L.dockH - L.actionsH - L.stripH
 	self.strip:setPlacement(L.dockX, L.dockY + L.actionsH + gap, L.dockW, L.stripH)
 	self.strip:setVisible(open)

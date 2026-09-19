@@ -105,8 +105,28 @@ local function drawIcon(kind: string, parent: Instance)
 		bar(parent, 0.28, 0.45, 0.16, 0.08, 45)
 		bar(parent, 0.5, 0.64, 0.5, 0.08)
 		bar(parent, 0.72, 0.55, 0.16, 0.08, 45)
+	elseif kind == "cart" then
+		bar(parent, 0.26, 0.26, 0.24, 0.08, -50) -- gagang
+		bar(parent, 0.54, 0.52, 0.62, 0.34) -- keranjang
+		dot(parent, 0.36, 0.84, 0.13)
+		dot(parent, 0.7, 0.84, 0.13)
+	elseif kind == "trash" then
+		bar(parent, 0.5, 0.12, 0.24, 0.08) -- pegangan tutup
+		bar(parent, 0.5, 0.26, 0.68, 0.09) -- tutup
+		local body = bar(parent, 0.5, 0.62, 0.5, 0.6)
+		for _, x in { 0.32, 0.68 } do
+			local slot = Instance.new("Frame") -- "lubang" = warna latar, terbaca sebagai potongan
+			slot.AnchorPoint = Vector2.new(0.5, 0.5)
+			slot.Position = UDim2.fromScale(x, 0.5)
+			slot.Size = UDim2.fromScale(0.12, 0.66)
+			slot.BackgroundColor3 = Tokens.Color.Background
+			slot.BorderSizePixel = 0
+			slot.ZIndex = body.ZIndex + 1
+			slot.Parent = body
+		end
 	end
 end
+SideRail.drawIcon = drawIcon -- dipakai ulang ActionBar: satu kosakata ikon untuk seluruh UI
 
 local function iconButton(item: Item, order: number, parent: Instance): TextButton
 	local b = Instance.new("TextButton")
