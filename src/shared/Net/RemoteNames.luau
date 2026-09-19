@@ -19,6 +19,7 @@ return {
 		GetItemDetail = "GetItemDetail",
 		GetRecommended = "GetRecommended", -- { id, itemType, assetType? } -> { ok, items }
 		GetState = "GetState",
+		Ownership = "Ownership", -- { assets = { id }, bundles = { id } } -> { ok, unowned, unownedBundles }
 		RobloxOutfit = "RobloxOutfit", -- { op = "state" | "wear", outfitId } -> { ok, state?, code? }
 		Wardrobe = "Wardrobe", -- client -> server: WardrobeValidator.Request -> { ok, code?, outfits?, ... }
 	},

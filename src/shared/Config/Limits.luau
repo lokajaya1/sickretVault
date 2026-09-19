@@ -17,6 +17,9 @@ return {
 		GetItemDetail = { capacity = 10, refillPerSec = 2 },
 		GetRecommended = { capacity = 6, refillPerSec = 1 }, -- 2 panggilan API per permintaan
 		GetState = { capacity = 5, refillPerSec = 1 },
+		-- Satu permintaan = sampai 40 PlayerOwnsAsset serentak (876 ms untuk 16, spike 19 Sep 2026).
+		-- Panel dibuka manual, jadi kapasitas kecil sudah cukup.
+		Ownership = { capacity = 4, refillPerSec = 0.5 },
 		-- GetHumanoidDescriptionFromOutfitIdAsync = 266 ms per panggilan (spike 19 Sep 2026);
 		-- kartu loader memuat state satu per satu, jadi kapasitasnya cukup untuk satu layar.
 		RobloxOutfit = { capacity = 8, refillPerSec = 1 },

@@ -136,6 +136,7 @@ local clipLimiter = RateLimiter.fromLimits(RemoteNames.Functions.GetAnimationCli
 local checkoutLimiter = RateLimiter.fromLimits(RemoteNames.Functions.Checkout)
 local wardrobeLimiter = RateLimiter.fromLimits(RemoteNames.Functions.Wardrobe)
 local robloxOutfitLimiter = RateLimiter.fromLimits(RemoteNames.Functions.RobloxOutfit)
+local ownershipLimiter = RateLimiter.fromLimits(RemoteNames.Functions.Ownership)
 
 -- 4a-0. LATAR area preview (AvatarBackground). Item ini TIDAK menempel di avatar: yang berubah
 --       cuma gambar di belakang ViewportFrame preview, per pemain. Jadi statenya satu assetId di
@@ -385,6 +386,39 @@ Remotes.func(RemoteNames.Functions.Checkout).OnServerInvoke = function(player: P
 		return { ok = false, code = res.code }
 	end
 	return { ok = true }
+end
+
+-- 5c2. Ownership: { assets = { id }, bundles = { id } } -> { ok, unowned, unownedBundles }.
+-- Untuk panel "Owned / Unowned" sebelum Save to Roblox. Yang dikirim balik hanya id yang BELUM
+-- dimiliki (array angka biasa): client sudah tahu daftar yang ia tanyakan, dan peta ber-kunci angka
+-- lewat remote gampang berubah bentuk. YIELD (PlayerOwnsAsset serentak, 876 ms untuk 16 panggilan).
+Remotes.func(RemoteNames.Functions.Ownership).OnServerInvoke = function(player: Player, raw: any)
+	if not ownershipLimiter:take(player.UserId) then
+		return { ok = false, code = "RATE_LIMITED" }
+	end
+	if type(raw) ~= "table" then
+		return { ok = false, code = "BAD_ARG" }
+	end
+	local pOk, ownedAssets, ownedBundles = pcall(function()
+		return checkout:owned(player, raw.assets, raw.bundles)
+	end)
+	if not pOk then
+		log.error("Ownership error", ownedAssets, player.Name)
+		return { ok = false, code = "FAILED" }
+	end
+	local unowned, unownedBundles = {}, {}
+	for id, has in ownedAssets do
+		if not has then
+			table.insert(unowned, id)
+		end
+	end
+	for id, has in ownedBundles do
+		if not has then
+			table.insert(unownedBundles, id)
+		end
+	end
+	log.debug("Ownership", #unowned, "aset belum dimiliki", player.Name)
+	return { ok = true, unowned = unowned, unownedBundles = unownedBundles }
 end
 
 -- 5d. Wardrobe: { op, ... } -> { ok, outfits?, outfit?, settings?, max? } | { ok = false, code }.
@@ -649,6 +683,8 @@ Players.PlayerRemoving:Connect(function(player: Player)
 	recLimiter:reset(player.UserId)
 	checkoutLimiter:reset(player.UserId)
 	wardrobeLimiter:reset(player.UserId)
+	ownershipLimiter:reset(player.UserId)
+	checkout:forget(player)
 	if wardrobe then
 		wardrobe:forget(player)
 	end

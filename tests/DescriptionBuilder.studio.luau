@@ -25,11 +25,13 @@
 --     require(game.ReplicatedStorage.Tests["DescriptionBuilder.studio"]).perm()
 --     require(game.ReplicatedStorage.Tests["DescriptionBuilder.studio"]).outfits()
 --     require(game.ReplicatedStorage.Tests["DescriptionBuilder.studio"]).load()
+--     require(game.ReplicatedStorage.Tests["DescriptionBuilder.studio"]).own()   -- #30, jalur B
 --   tab SERVER (pembanding: HARUS ditolak / atau justru jalan — itulah yang diukur):
 --     require(game.ReplicatedStorage.Tests["DescriptionBuilder.studio"]).caps()
 --     require(game.ReplicatedStorage.Tests["DescriptionBuilder.studio"]).save()
 --     require(game.ReplicatedStorage.Tests["DescriptionBuilder.studio"]).load()
 --     require(game.ReplicatedStorage.Tests["DescriptionBuilder.studio"]).db(1, false)
+--     require(game.ReplicatedStorage.Tests["DescriptionBuilder.studio"]).own()   -- #30, jalur A
 --
 -- CATATAN: `save()` dan `outfit()` MENULIS ke akun Roblox yang sedang dipakai Studio (avatar /
 -- daftar outfit sungguhan). Itu memang yang diuji; siapkan diri untuk merapikan outfit sisa uji.
@@ -254,6 +256,293 @@ function M.unowned(assetId: number?)
 	end)
 	say("PromptSaveAvatar(item asing) dipanggil: ok=%s %s (%.0f ms)", tostring(ok), tostring(err), ms(t0))
 	say("-> INI JAWABAN Q2: lihat hasil PromptSaveAvatarCompleted di atas (Success/PermissionDenied/Failed)")
+end
+
+--------------------------------------------------------------------------------
+-- Q5 (#30): dari mana status "sudah dimiliki" per item diambil, dan berapa mahal?
+-- Panel CAC ("Owned Items" / "Unowned Items (N)") butuh status untuk SETIAP item yang dipakai --
+-- sekitar 20 item. Dua jalur yang mungkin, dan keduanya diukur di sini:
+--   A. SERVER: MarketplaceService:PlayerOwnsAsset per item (N panggilan). Yang ditakutkan 429 --
+--      #28 no. 6 mencatat 4 dari 12 panggilan favorit beruntun kena 429.
+--   B. CLIENT: AvatarEditorService:GetInventoryAsync(assetTypes) -- SATU permintaan berhalaman
+--      untuk seluruh inventory, lalu dicocokkan sendiri. Butuh izin (perm(), berlaku per sesi).
+-- Jalankan own() di tab SERVER dan tab CLIENT; masing-masing menjalankan jalur yang berlaku.
+--------------------------------------------------------------------------------
+-- Tipe aset yang dipakai jalur B. Disamakan dengan yang bisa muncul di look kita.
+local INVENTORY_TYPES = {
+	"Hat",
+	"HairAccessory",
+	"FaceAccessory",
+	"NeckAccessory",
+	"ShoulderAccessory",
+	"FrontAccessory",
+	"BackAccessory",
+	"WaistAccessory",
+	"Shirt",
+	"Pants",
+	"TShirt",
+	"ShirtAccessory",
+	"PantsAccessory",
+	"JacketAccessory",
+	"SweaterAccessory",
+	"ShortsAccessory",
+	"DressSkirtAccessory",
+	"LeftShoeAccessory",
+	"RightShoeAccessory",
+}
+
+-- Id aset yang SEDANG DIPAKAI: aksesori + classic clothing. Cukup untuk mengukur biaya.
+local function wornAssetIds(desc: any): { number }
+	local ids: { number } = {}
+	local seen: { [number]: boolean } = {}
+	local function add(id: any)
+		if typeof(id) == "number" and id > 0 and not seen[id] then
+			seen[id] = true
+			table.insert(ids, id)
+		end
+	end
+	local okAcc, accessories = pcall(function()
+		return desc:GetAccessories(true)
+	end)
+	if okAcc and typeof(accessories) == "table" then
+		for _, entry in accessories :: any do
+			add(entry.AssetId)
+		end
+	end
+	for _, field in { "Shirt", "Pants", "GraphicTShirt", "Face" } do
+		local okField, value = pcall(function()
+			return desc[field]
+		end)
+		if okField then
+			add(value)
+		end
+	end
+	return ids
+end
+
+function M.own()
+	local desc, player = appliedDescription()
+	if desc == nil or player == nil then
+		return
+	end
+	local ids = wornAssetIds(desc)
+	say("own() di %s: %d item dipakai", where(), #ids)
+
+	if not RunService:IsClient() then
+		-- JALUR A: satu panggilan per item.
+		local marketplace = game:GetService("MarketplaceService")
+		local owned, failed, slowest = 0, 0, 0
+		local t0 = os.clock()
+		for i, id in ids do
+			local tItem = os.clock()
+			local ok, result = pcall(function()
+				return marketplace:PlayerOwnsAsset(player, id)
+			end)
+			local took = ms(tItem)
+			slowest = math.max(slowest, took)
+			if not ok then
+				failed += 1
+				say("  A #%d id=%d GAGAL (%.0f ms): %s", i, id, took, tostring(result))
+			else
+				if result then
+					owned += 1
+				end
+				say("  A #%d id=%d dimiliki=%s (%.0f ms)", i, id, tostring(result), took)
+			end
+		end
+		say(
+			"JALUR A (PlayerOwnsAsset x%d): dimiliki=%d gagal=%d total=%.0f ms terlama=%.0f ms",
+			#ids,
+			owned,
+			failed,
+			ms(t0),
+			slowest
+		)
+		say("-> gagal > 0 berarti kena batas (429): jalur A TIDAK bisa dipakai apa adanya")
+		return
+	end
+
+	-- JALUR B: satu permintaan berhalaman untuk seluruh inventory.
+	local types = {}
+	for _, name in INVENTORY_TYPES do
+		local okType, value = pcall(function()
+			return (Enum.AvatarAssetType :: any)[name]
+		end)
+		if okType and value ~= nil then
+			table.insert(types, value)
+		else
+			say("  tipe %s TIDAK ADA di Enum.AvatarAssetType", name)
+		end
+	end
+	say("JALUR B: meminta inventory untuk %d tipe", #types)
+	local t0 = os.clock()
+	local okInv, pages = pcall(function()
+		return (AvatarEditorService :: any):GetInventoryAsync(types)
+	end)
+	if not okInv then
+		say("GetInventoryAsync GAGAL (%.0f ms): %s", ms(t0), tostring(pages))
+		say("-> kalau soal izin, jalankan perm() dulu di tab Client lalu ulangi own()")
+		return
+	end
+	say("GetInventoryAsync balas dalam %.0f ms", ms(t0))
+
+	local ownedIds: { [number]: boolean } = {}
+	local count, pageNo = 0, 0
+	local tPages = os.clock()
+	while true do
+		pageNo += 1
+		local okPage, page = pcall(function()
+			return pages:GetCurrentPage()
+		end)
+		if not okPage or typeof(page) ~= "table" then
+			say("GetCurrentPage GAGAL di halaman %d: %s", pageNo, tostring(page))
+			break
+		end
+		for _, entry in page :: any do
+			count += 1
+			if count <= 3 and pageNo == 1 then
+				local fields = {}
+				for k, v in entry :: any do
+					table.insert(fields, string.format("%s=%s", tostring(k), tostring(v)))
+				end
+				table.sort(fields)
+				say("  contoh entri: %s", table.concat(fields, " "))
+			end
+			local id = (entry :: any).AssetId or (entry :: any).Id
+			if typeof(id) == "number" then
+				ownedIds[id] = true
+			end
+		end
+		if pages.IsFinished then
+			break
+		end
+		if pageNo >= 20 then
+			say("BERHENTI di 20 halaman (inventory besar) -- ini sendiri sudah jawaban soal biaya")
+			break
+		end
+		local okNext, errNext = pcall(function()
+			pages:AdvanceToNextPageAsync()
+		end)
+		if not okNext then
+			say("AdvanceToNextPageAsync GAGAL di halaman %d: %s", pageNo, tostring(errNext))
+			break
+		end
+	end
+	say("JALUR B: %d entri dalam %d halaman, %.0f ms", count, pageNo, ms(tPages))
+
+	local hit, miss = 0, 0
+	for _, id in ids do
+		if ownedIds[id] then
+			hit += 1
+		else
+			miss += 1
+			say("  B: id=%d TIDAK ada di inventory (berarti belum dimiliki -- cocokkan dengan A)", id)
+		end
+	end
+	say("JALUR B vs item dipakai: dimiliki=%d tidak=%d (bandingkan dengan hasil A di tab Server)", hit, miss)
+end
+
+--------------------------------------------------------------------------------
+-- Q5 putaran 2 (#30). Putaran 1 menjawab: jalur A akurat tapi ~515 ms/item berurutan, jalur B
+-- sekali jalan 333 ms TAPI hanya 20 entri 1 halaman dan MELESET (item yang jelas dimiliki menurut
+-- A dilaporkan tidak ada). Tiga pertanyaan sisa, dan ketiganya menentukan bentuk panel:
+--   a. PlayerOwnsAsset SERENTAK: 16 sekaligus masih lolos, atau 429? (#28 no. 6: 16 panggilan
+--      favorit serentak GAGAL SEMUA -- belum tentu berlaku untuk MarketplaceService)
+--   b. Item dari BUNDLE tidak punya baris aset sendiri di inventory -> ada PlayerOwnsBundle?
+--   c. Inventory berhenti di 20 entri: memang sebesar itu satu halaman, dan IsFinished jujur?
+--------------------------------------------------------------------------------
+function M.own2(repeats: number?)
+	local desc, player = appliedDescription()
+	if desc == nil or player == nil then
+		return
+	end
+
+	if not RunService:IsClient() then
+		local marketplace = game:GetService("MarketplaceService")
+		-- (a) serentak. Daftar id digandakan sampai `want` supaya bebannya nyata walau look kecil.
+		local base = wornAssetIds(desc)
+		local want = repeats or 16
+		local ids: { number } = {}
+		while #ids < want and #base > 0 do
+			for _, id in base do
+				if #ids >= want then
+					break
+				end
+				table.insert(ids, id)
+			end
+		end
+		say("own2() di SERVER: %d panggilan SERENTAK", #ids)
+		local done, failed, owned = 0, 0, 0
+		local t0 = os.clock()
+		for i, id in ids do
+			task.spawn(function()
+				local ok, result = pcall(function()
+					return marketplace:PlayerOwnsAsset(player, id)
+				end)
+				if not ok then
+					failed += 1
+					say("  serentak #%d id=%d GAGAL: %s", i, id, tostring(result))
+				elseif result then
+					owned += 1
+				end
+				done += 1
+			end)
+		end
+		while done < #ids and ms(t0) < 20000 do
+			task.wait(0.05)
+		end
+		say("SERENTAK x%d: selesai=%d dimiliki=%d GAGAL=%d dalam %.0f ms", #ids, done, owned, failed, ms(t0))
+		say("-> GAGAL=0 berarti kepemilikan boleh diambil serentak (panel muncul dalam < 1 detik)")
+
+		-- (b) bundle: badan & animasi datang dari bundle, bukan aset satuan.
+		say("MarketplaceService.PlayerOwnsBundle = %s", has(marketplace, "PlayerOwnsBundle"))
+		local okBundle, resBundle = pcall(function()
+			return (marketplace :: any):PlayerOwnsBundle(player, 239) -- bundle "Woman" (#28 no. 4)
+		end)
+		say("PlayerOwnsBundle(239) ok=%s hasil=%s", tostring(okBundle), tostring(resBundle))
+		return
+	end
+
+	-- (c) seberapa jujur paging inventory.
+	local types = {}
+	for _, name in INVENTORY_TYPES do
+		local okType, value = pcall(function()
+			return (Enum.AvatarAssetType :: any)[name]
+		end)
+		if okType and value ~= nil then
+			table.insert(types, value)
+		end
+	end
+	local okInv, pages = pcall(function()
+		return (AvatarEditorService :: any):GetInventoryAsync(types)
+	end)
+	if not okInv then
+		say("GetInventoryAsync GAGAL: %s (jalankan perm() dulu)", tostring(pages))
+		return
+	end
+	local total, pageNo = 0, 0
+	while pageNo < 30 do
+		pageNo += 1
+		local okPage, page = pcall(function()
+			return pages:GetCurrentPage()
+		end)
+		if not okPage or typeof(page) ~= "table" then
+			say("halaman %d tidak terbaca: %s", pageNo, tostring(page))
+			break
+		end
+		total += #(page :: any)
+		say("halaman %d: %d entri, IsFinished=%s", pageNo, #(page :: any), tostring(pages.IsFinished))
+		-- SENGAJA memaksa maju walau IsFinished mengaku true: putaran 1 berhenti di 20 entri, dan
+		-- dugaan pertama saya adalah IsFinished-nya yang bohong. Kalau memang habis, ini melempar.
+		local okNext, errNext = pcall(function()
+			pages:AdvanceToNextPageAsync()
+		end)
+		if not okNext then
+			say("AdvanceToNextPageAsync berhenti di halaman %d: %s", pageNo, tostring(errNext))
+			break
+		end
+	end
+	say("PAGING: %d entri dalam %d halaman -- bandingkan dengan jumlah item di inventory web-mu", total, pageNo)
 end
 
 --------------------------------------------------------------------------------

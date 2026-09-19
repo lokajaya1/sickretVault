@@ -21,6 +21,10 @@ export type Deps = {
 	marketplace: any?, -- MarketplaceService
 	toEnum: ((enumName: string, itemName: string) -> any)?,
 	maxItems: number?, -- default Cart.DEFAULT_MAX (20, batas docs)
+	-- `spawn`/`wait` bisa diganti saat test: Lune tidak punya `task` sama sekali, jadi keduanya
+	-- hanya disentuh di dalam owned() dan hanya kalau tidak disuntik.
+	spawn: ((fn: () -> ()) -> ())?,
+	wait: ((seconds: number) -> ())?,
 }
 
 local CheckoutService = {}
@@ -31,6 +35,9 @@ export type CheckoutService = typeof(setmetatable(
 		_market: any,
 		_max: number,
 		_types: { [string]: any }, -- "Asset" -> Enum.MarketplaceProductType.AvatarAsset
+		_spawn: ((fn: () -> ()) -> ())?,
+		_wait: ((seconds: number) -> ())?,
+		_owned: { [number]: { [string]: boolean } }, -- userId -> kunci item yang TERBUKTI dimiliki
 	},
 	CheckoutService
 ))
@@ -59,6 +66,9 @@ function CheckoutService.new(deps: Deps?): CheckoutService
 		_market = d.marketplace or game:GetService("MarketplaceService"),
 		_max = max,
 		_types = types,
+		_spawn = d.spawn,
+		_wait = d.wait,
+		_owned = {},
 	}, CheckoutService)
 end
 
@@ -111,6 +121,119 @@ function CheckoutService.prompt(self: CheckoutService, player: any, raw: any): (
 	end
 	log.info("prompt", #lineItems, "item")
 	return true, nil
+end
+
+-- Batas yang dijaga server sendiri: satu look tidak pernah sedekat ini pun ke batasnya, dan ini
+-- yang menahan client meminta ratusan panggilan marketplace sekaligus.
+CheckoutService.MAX_OWNED_ASSETS = 40
+CheckoutService.MAX_OWNED_BUNDLES = 20
+local OWNED_TIMEOUT = 10 -- detik; jauh di atas 876 ms yang terukur untuk 16 panggilan serentak
+
+local function uniqueIds(raw: any, limit: number): { number }
+	local out: { number } = {}
+	if type(raw) ~= "table" then
+		return out
+	end
+	local seen: { [number]: boolean } = {}
+	for i = 1, math.min(#raw, limit) do
+		local id = raw[i]
+		if type(id) == "number" and id > 0 and id % 1 == 0 and id <= 2 ^ 53 and not seen[id] then
+			seen[id] = true
+			table.insert(out, id)
+		end
+	end
+	return out
+end
+
+-- Kepemilikan item yang SEDANG dipakai, untuk panel "Owned / Unowned" sebelum Save to Roblox.
+-- Diukur di Studio 19 Sep 2026: `PlayerOwnsAsset` ~515 ms per panggilan kalau berurutan (6 item =
+-- 3,1 detik), tapi **16 panggilan SERENTAK selesai dalam 876 ms tanpa satu pun gagal** -> diambil
+-- serentak. Jalur inventory client (`GetInventoryAsync`) sengaja TIDAK dipakai: ia minta izin per
+-- sesi DAN hasilnya tidak lengkap (item yang jelas dimiliki dilaporkan tidak ada).
+-- Yang TERBUKTI dimiliki di-cache per sesi (kepemilikan tidak hilang di tengah sesi); yang belum
+-- sengaja TIDAK di-cache supaya item yang baru saja dibeli langsung terbaca benar.
+-- Return dua peta { [id] = true/false }. Panggilan yang error dianggap "belum dimiliki" -- panel
+-- boleh salah ke arah aman (item itu cuma tidak ikut tersimpan), tidak boleh salah ke arah
+-- membuang item milik pemain diam-diam.
+function CheckoutService.owned(
+	self: CheckoutService,
+	player: any,
+	rawAssets: any,
+	rawBundles: any
+): ({ [number]: boolean }, { [number]: boolean })
+	local assetIds = uniqueIds(rawAssets, CheckoutService.MAX_OWNED_ASSETS)
+	local bundleIds = uniqueIds(rawBundles, CheckoutService.MAX_OWNED_BUNDLES)
+	local assets: { [number]: boolean } = {}
+	local bundles: { [number]: boolean } = {}
+
+	local userId = if type(player) == "table" or typeof(player) == "Instance" then player.UserId else 0
+	local cache = self._owned[userId]
+	if cache == nil then
+		cache = {}
+		self._owned[userId] = cache
+	end
+
+	local pending = 0
+	local function ask(id: number, isBundle: boolean)
+		local key = (if isBundle then "b" else "a") .. tostring(id)
+		if cache[key] then
+			if isBundle then
+				bundles[id] = true
+			else
+				assets[id] = true
+			end
+			return
+		end
+		pending += 1
+		local run = function()
+			local ok, result = pcall(function()
+				if isBundle then
+					return self._market:PlayerOwnsBundle(player, id)
+				end
+				return self._market:PlayerOwnsAsset(player, id)
+			end)
+			local has = ok and result == true
+			if not ok then
+				log.warn("cek kepemilikan gagal", id, result)
+			end
+			if has then
+				cache[key] = true
+			end
+			if isBundle then
+				bundles[id] = has
+			else
+				assets[id] = has
+			end
+			pending -= 1
+		end
+		local spawn = self._spawn or task.spawn
+		spawn(run)
+	end
+
+	for _, id in assetIds do
+		ask(id, false)
+	end
+	for _, id in bundleIds do
+		ask(id, true)
+	end
+
+	local waitFor = self._wait or task.wait
+	local waited = 0
+	while pending > 0 and waited < OWNED_TIMEOUT do
+		waitFor(0.05)
+		waited += 0.05
+	end
+	if pending > 0 then
+		log.warn("cek kepemilikan tidak selesai", pending, "sisa")
+	end
+	return assets, bundles
+end
+
+-- Pemain keluar -> cache kepemilikannya dibuang (dipanggil dari init.server, sejalan dengan
+-- limiter:reset dan wardrobe:forget).
+function CheckoutService.forget(self: CheckoutService, player: any)
+	local userId = if type(player) == "table" or typeof(player) == "Instance" then player.UserId else 0
+	self._owned[userId] = nil
 end
 
 return CheckoutService
