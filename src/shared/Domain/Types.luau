@@ -58,6 +58,7 @@ export type Intent =
 	| { op: "wearBundle", bundleId: number, partIds: { number }?, useBundleScales: boolean? }
 	| { op: "removeBundle", bundleId: number }
 	| { op: "setLayerOrder", assetId: number, order: number }
+	| { op: "removeKind", kind: string } -- Item Removal per kategori (OutfitState.KINDS)
 	| { op: "undo" }
 	| { op: "redo" }
 	| { op: "reset" }

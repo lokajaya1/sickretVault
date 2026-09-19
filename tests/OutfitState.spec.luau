@@ -114,5 +114,51 @@ return function()
 		eq(ms.accessories["123"], nil, ty .. " tidak tersimpan")
 	end
 
+	-- removeKind: kategori dibuang sekaligus, dan jumlahnya dilaporkan
+	do
+		local rk = OS.empty()
+		rk.accessories["1"] = { assetId = 1, assetType = "HairAccessory", isLayered = false }
+		rk.accessories["2"] = { assetId = 2, assetType = "Hat", isLayered = false }
+		rk.accessories["3"] = { assetId = 3, assetType = "JacketAccessory", isLayered = true, order = 7 }
+		rk.accessories["4"] = { assetId = 4, assetType = "EyebrowAccessory", isLayered = false }
+		rk.classic.Shirt = { id = 10 }
+		rk.bodyParts.Torso = { id = 11 }
+		rk.animations.IdleAnimation = { id = 12 }
+
+		local hair, nHair = OS.removeKind(rk, "hair")
+		assert(nHair == 1 and hair.accessories["1"] == nil, "hair harus terbuang")
+		assert(hair.accessories["2"] ~= nil, "topi tidak boleh ikut terbuang oleh kategori hair")
+
+		local acc, nAcc = OS.removeKind(rk, "accessories")
+		assert(nAcc == 1 and acc.accessories["2"] == nil, "accessories = rigid selain rambut/wajah")
+		assert(acc.accessories["1"] ~= nil and acc.accessories["4"] ~= nil, "rambut & alis terpisah")
+
+		local lay, nLay = OS.removeKind(rk, "layered")
+		assert(nLay == 1 and lay.accessories["3"] == nil, "layered harus terbuang")
+
+		local face, nFace = OS.removeKind(rk, "face")
+		assert(nFace == 1 and face.accessories["4"] == nil, "alis termasuk kategori face")
+
+		local cls, nCls = OS.removeKind(rk, "classic")
+		assert(nCls == 1 and cls.classic.Shirt.id == 0, "classic harus dikosongkan")
+
+		local body, nBody = OS.removeKind(rk, "bodyParts")
+		assert(nBody == 1 and body.bodyParts.Torso.id == 0, "bodyParts harus dikosongkan")
+
+		local anim, nAnim = OS.removeKind(rk, "animations")
+		assert(nAnim == 1 and anim.animations.IdleAnimation.id == 0, "animations harus dikosongkan")
+
+		local all, nAll = OS.removeKind(rk, "all")
+		assert(nAll == 7, "all harus membuang semuanya, dapat " .. tostring(nAll))
+		assert(next(all.accessories) == nil, "semua aksesori harus hilang")
+		assert(all.classic.Shirt.id == 0 and all.bodyParts.Torso.id == 0, "slot harus kosong")
+
+		local _, nEmpty = OS.removeKind(OS.empty(), "all")
+		assert(nEmpty == 0, "state kosong tidak membuang apa pun")
+
+		-- state asal TIDAK boleh ikut berubah (semua fungsi domain immutable)
+		assert(rk.accessories["1"] ~= nil and rk.classic.Shirt.id == 10, "state asal tidak disentuh")
+	end
+
 	print("PASS OutfitState.spec")
 end

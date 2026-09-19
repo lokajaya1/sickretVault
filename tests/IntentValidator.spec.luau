@@ -83,5 +83,14 @@ return function()
 	rejects({ op = "setLayerOrder", assetId = 1, order = 2.5 }, E.BAD_ORDER, "order pecahan")
 	rejects({ op = "setLayerOrder", assetId = 1 }, E.BAD_ORDER, "order hilang")
 
+	-- 7. removeKind: kategori wajib salah satu dari OutfitState.KINDS
+	do
+		local okKind = V.validate({ op = "removeKind", kind = "hair" })
+		assert(okKind ~= nil and okKind.kind == "hair", "kategori sah harus lolos beserta nilainya")
+	end
+	rejects({ op = "removeKind", kind = "rambut" }, E.BAD_KIND, "kategori ngawur")
+	rejects({ op = "removeKind", kind = 5 }, E.BAD_KIND, "kategori bukan string")
+	rejects({ op = "removeKind" }, E.BAD_KIND, "kategori hilang")
+
 	print("PASS IntentValidator.spec")
 end

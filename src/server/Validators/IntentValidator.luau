@@ -9,6 +9,7 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Types = require(Shared.Domain.Types)
+local OutfitState = require(Shared.Domain.OutfitState)
 local GameConfig = require(Shared.Config.GameConfig)
 
 type Intent = Types.Intent
@@ -16,12 +17,18 @@ type Intent = Types.Intent
 local Cfg = GameConfig.Intent
 
 -- op -> field yang diizinkan (selain `op`) dan apakah wajib
-local SCHEMA: { [string]: { [string]: "id" | "ids?" | "bool?" | "order" } } = {
+local KINDS: { [string]: boolean } = {}
+for _, k in OutfitState.KINDS do
+	KINDS[k] = true
+end
+
+local SCHEMA: { [string]: { [string]: "id" | "ids?" | "bool?" | "order" | "kind" } } = {
 	wear = { assetId = "id" },
 	remove = { assetId = "id" },
 	wearBundle = { bundleId = "id", partIds = "ids?", useBundleScales = "bool?" },
 	removeBundle = { bundleId = "id" },
 	setLayerOrder = { assetId = "id", order = "order" },
+	removeKind = { kind = "kind" },
 	undo = {},
 	redo = {},
 	reset = {},
@@ -38,6 +45,7 @@ IntentValidator.Errors = {
 	BAD_IDS = "BAD_IDS",
 	BAD_BOOL = "BAD_BOOL",
 	BAD_ORDER = "BAD_ORDER",
+	BAD_KIND = "BAD_KIND",
 }
 local E = IntentValidator.Errors
 
@@ -114,6 +122,11 @@ function IntentValidator.validate(raw: any): (Intent?, string?)
 		elseif kind == "order" then
 			if not isInt(v) or v < Cfg.MinLayerOrder or v > Cfg.MaxLayerOrder then
 				return nil, E.BAD_ORDER
+			end
+			out[field] = v
+		elseif kind == "kind" then
+			if type(v) ~= "string" or not KINDS[v] then
+				return nil, E.BAD_KIND
 			end
 			out[field] = v
 		elseif kind == "bool?" then

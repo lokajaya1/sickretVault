@@ -225,6 +225,89 @@ function OutfitState.remove(state: OutfitState, assetId: number, baseline: Outfi
 	return s
 end
 
+-- Kategori yang bisa dihapus sekaligus (pola "Item Removal" CAC). Dipakai UI tong sampah.
+-- "all" = lepas semua yang sedang dipakai (badan kembali ke bawaan), BUKAN kembali ke avatar asli
+-- pemain — itu tugas `reset`.
+OutfitState.KINDS = {
+	"all",
+	"accessories", -- rigid SELAIN rambut & wajah (keduanya punya kategori sendiri, seperti CAC)
+	"hair",
+	"classic", -- Shirt / Pants / TShirt / Face klasik
+	"layered", -- pakaian berlapis
+	"face", -- FaceAccessory / alis / bulu mata + Face klasik
+	"bodyParts",
+	"animations",
+}
+
+local FACE_ACCESSORIES = {
+	FaceAccessory = true,
+	EyebrowAccessory = true,
+	EyelashAccessory = true,
+}
+
+-- Apakah aksesori ini termasuk kategori `kind`?
+local function accessoryInKind(a: Accessory, kind: string): boolean
+	if kind == "all" then
+		return true
+	end
+	if kind == "layered" then
+		return a.isLayered == true or Map.Layered[a.assetType] == true
+	end
+	if kind == "hair" then
+		return a.assetType == "HairAccessory"
+	end
+	if kind == "face" then
+		return FACE_ACCESSORIES[a.assetType] == true
+	end
+	if kind == "accessories" then
+		return a.isLayered ~= true
+			and Map.Layered[a.assetType] ~= true
+			and a.assetType ~= "HairAccessory"
+			and FACE_ACCESSORIES[a.assetType] ~= true
+	end
+	return false
+end
+
+-- Hapus semua item satu kategori sekaligus. Return (state baru, berapa yang dibuang).
+-- Jumlah 0 = tidak ada yang berubah -> pemanggil membalas "NOTHING" tanpa menyentuh timeline undo.
+function OutfitState.removeKind(state: OutfitState, kind: string): (OutfitState, number)
+	local s = deepCopy(state)
+	local removed = 0
+
+	for key, a in s.accessories do
+		if accessoryInKind(a, kind) then
+			s.accessories[key] = nil
+			removed += 1
+		end
+	end
+
+	-- Kosongkan slot sebuah grup (id 0 = bawaan); `only` membatasi slot mana yang disentuh.
+	local function clearGroup(group: { [string]: Types.SlotValue }, only: { [string]: boolean }?)
+		for slot, v in group do
+			if (only == nil or only[slot] == true) and v.id ~= 0 then
+				group[slot] = { id = 0 }
+				removed += 1
+			end
+		end
+	end
+
+	if kind == "all" then
+		clearGroup(s.classic)
+		clearGroup(s.bodyParts)
+		clearGroup(s.animations)
+	elseif kind == "classic" then
+		clearGroup(s.classic)
+	elseif kind == "face" then
+		clearGroup(s.classic, { [Map.Classic.Face] = true })
+	elseif kind == "bodyParts" then
+		clearGroup(s.bodyParts)
+	elseif kind == "animations" then
+		clearGroup(s.animations)
+	end
+
+	return s, removed
+end
+
 -- Pakai sebagian / seluruh bagian bundle.
 -- partIds = nil -> semua part. Part dengan kind "unknown" diabaikan.
 function OutfitState.wearBundle(
