@@ -86,6 +86,9 @@ export type BodyPage = typeof(setmetatable(
 		_custom: TextBox,
 		_sliders: { [string]: Slider.Slider },
 		_slot: string,
+		_colorNodes: { GuiObject },
+		_scaleNodes: { GuiObject },
+		_section: string,
 		_on: Props,
 		_conns: { RBXScriptConnection },
 	},
@@ -105,8 +108,8 @@ local function make(className: string, props: { [string]: any }, children: { Ins
 	return x
 end
 
-local function heading(text: string, order: number, parent: Instance)
-	make("TextLabel", {
+local function heading(text: string, order: number, parent: Instance): TextLabel
+	return make("TextLabel", {
 		BackgroundTransparency = 1,
 		LayoutOrder = order,
 		Size = UDim2.new(1, 0, 0, 22),
@@ -158,11 +161,14 @@ function BodyPage.new(props: Props): BodyPage
 		_custom = nil :: any,
 		_sliders = {},
 		_slot = "all",
+		_colorNodes = {},
+		_scaleNodes = {},
+		_section = "color",
 		_on = props,
 		_conns = {},
 	}, BodyPage) :: any
 
-	heading("Skin Tone", 1, scroll)
+	local skinHead = heading("Skin Tone", 1, scroll)
 
 	local grid = make("Frame", {
 		BackgroundTransparency = 1,
@@ -294,7 +300,7 @@ function BodyPage.new(props: Props): BodyPage
 		)
 	end
 
-	heading("Scale", 6, scroll)
+	local scaleHead = heading("Scale", 6, scroll)
 	for i, s in SCALES do
 		local lim = props.limits[s.slot]
 		if lim then
@@ -316,7 +322,27 @@ function BodyPage.new(props: Props): BodyPage
 		end
 	end
 
+	self._colorNodes = { skinHead, grid, custom, advanced }
+	self._scaleNodes = { scaleHead }
+	self:setSection("color")
 	return self
+end
+
+-- "color" = palet + Custom + Advanced Colors; "scale" = lima slider. Satu ScrollingFrame,
+-- isinya yang ditukar -- bukan dua panel yang harus dijaga sinkron.
+function BodyPage.setSection(self: BodyPage, section: string)
+	self._section = section
+	local color = section ~= "scale"
+	for _, n in self._colorNodes do
+		n.Visible = color
+	end
+	for _, n in self._scaleNodes do
+		n.Visible = not color
+	end
+	for _, s in self._sliders do
+		s:setVisible(not color)
+	end
+	self._partRow.Visible = color and self._slot ~= "all"
 end
 
 function BodyPage._setAdvanced(self: BodyPage, on: boolean)

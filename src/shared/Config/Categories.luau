@@ -75,6 +75,13 @@ local list: { Category } = {
 
 	-- BACKGROUNDS
 	{ id = "backgrounds", label = "Backgrounds", assetTypes = { "AvatarBackground" } },
+
+	-- BODY. Bagian tubuh memakai tipe aset KLASIK, bukan bundle: bundle sudah punya kategorinya
+	-- sendiri (`bodies`, `heads`). Lengan & kaki digabung kiri+kanan seperti Catalog Avatar Creator.
+	{ id = "head_shapes", label = "Head Shapes", assetTypes = { "Head" } },
+	{ id = "torso", label = "Torso", assetTypes = { "Torso" } },
+	{ id = "arms", label = "Arms", assetTypes = { "LeftArm", "RightArm" } },
+	{ id = "legs", label = "Legs", assetTypes = { "LeftLeg", "RightLeg" } },
 }
 
 local byId: { [string]: Category } = {}

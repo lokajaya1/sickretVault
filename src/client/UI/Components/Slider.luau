@@ -265,6 +265,10 @@ function Slider.value(self: Slider): number
 	return self._v
 end
 
+function Slider.setVisible(self: Slider, on: boolean)
+	self._root.Visible = on
+end
+
 function Slider.destroy(self: Slider)
 	for _, c in self._conns do
 		c:Disconnect()

@@ -732,10 +732,34 @@ function ItemCard.setFavorite(self: ItemCard, value: boolean?)
 	self._star.TextTransparency = if value == nil then 0.35 else 0
 end
 
+-- Permintaan rbxthumb yang JATUH tidak pernah dicoba ulang oleh engine: ImageLabel-nya diam
+-- kosong selamanya, dan itu yang terlihat sebagai "dua baris kartu tanpa gambar" setelah
+-- menggulir cepat (puluhan kartu lahir sekaligus, sebagian permintaannya tidak terlayani).
+-- Menyetel Image ke "" lalu kembali ke URL yang sama memicu permintaan BARU.
+-- Berhenti kalau kartunya sudah dipakai ulang untuk item lain (self.item berganti) atau dibuang.
+function ItemCard._loadThumb(self: ItemCard, item: Item)
+	local url = thumbnail(item)
+	self._image.Image = url
+	task.spawn(function()
+		for _ = 1, 4 do
+			task.wait(1.5)
+			if self.item ~= item or self._image.Parent == nil or self._image.IsLoaded then
+				return
+			end
+			self._image.Image = ""
+			task.wait()
+			if self.item ~= item then
+				return
+			end
+			self._image.Image = url
+		end
+	end)
+end
+
 function ItemCard.setItem(self: ItemCard, item: Item)
 	self.item = item
 	self.instance.Name = "ItemCard_" .. tostring(item.id)
-	self._image.Image = thumbnail(item)
+	self:_loadThumb(item)
 	self._name.Text = item.name
 	local text, color, forSale = priceOf(item)
 	self._price.Text = text
