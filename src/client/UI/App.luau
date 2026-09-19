@@ -194,6 +194,7 @@ export type App = typeof(setmetatable(
 		_saveChooser: NamePrompt.NamePrompt, -- "How would you like to save your outfit?" (#30)
 		_saveReview: SaveReviewPanel.SaveReviewPanel, -- panel Owned / Unowned sebelum menyimpan
 		_reviewToken: number, -- jawaban kepemilikan yang datang terlambat dibuang
+		_reviewUnowned: { [number]: boolean }, -- assetId yang belum dimiliki (dicopot saat menyimpan)
 		_known: { [number]: any }, -- item katalog yang pernah tampil (nama & harga)
 		strip: WornStrip.WornStrip,
 		camera: TryOnCamera.TryOnCamera,
@@ -912,7 +913,9 @@ function App.mount(opts: Options?): App
 			self:buyAll(unownedList)
 		end,
 		onSave = function(kind)
-			self:saveToRoblox(kind)
+			-- Item tak dimiliki dicopot dari look sebelum prompt Roblox: PromptCreateOutfit
+			-- MENOLAK look yang memuatnya (diukur 19 Sep 2026), bukan menyimpannya sebagian.
+			self:saveToRoblox(kind, self._reviewUnowned)
 		end,
 		onClose = function()
 			self:_setChromeHidden(false)
@@ -1114,6 +1117,7 @@ function App.mount(opts: Options?): App
 		_saveChooser = saveChooser,
 		_saveReview = saveReview,
 		_reviewToken = 0,
+		_reviewUnowned = {},
 		_known = known,
 		strip = strip,
 		camera = camera,
@@ -1646,6 +1650,7 @@ function App.openSaveReview(self: App, kind: string)
 	-- satuan (harganya memang tidak ada), yang punya harga dan bisa dibeli adalah bundle-nya.
 	-- Tanpa ini kolom kanan penuh "Head", "Torso", "Left Arm" tanpa satu pun harga.
 	self:_setChromeHidden(true)
+	self._reviewUnowned = {}
 	local items = {}
 	local assets, bundles = {}, {}
 	local seenBundle: { [number]: boolean } = {}
@@ -1674,6 +1679,16 @@ function App.openSaveReview(self: App, kind: string)
 			return
 		end
 		if ok and type(res) == "table" then
+			-- Peta dari server memuat id BUNDLE untuk part bundle; yang dicopot nanti adalah
+			-- assetId, jadi part-part bundle yang tak dimiliki diterjemahkan di sini.
+			local unownedAssets: { [number]: boolean } = {}
+			for _, item in worn do
+				local key = item.source or item.id
+				if res.unowned[key] then
+					unownedAssets[item.id] = true
+				end
+			end
+			self._reviewUnowned = unownedAssets
 			self._saveReview:setOwnership(res.unowned, res.details, res.bundleDetails)
 		else
 			self._saveReview:fail(if type(res) == "string" then res else nil)
@@ -1681,9 +1696,9 @@ function App.openSaveReview(self: App, kind: string)
 	end)
 end
 
-function App.saveToRoblox(self: App, kind: string?)
+function App.saveToRoblox(self: App, kind: string?, unowned: { [number]: boolean }?)
 	task.spawn(function()
-		local ok, code = self.wardrobe:saveToRoblox(kind)
+		local ok, code = self.wardrobe:saveToRoblox(kind, unowned)
 		if ok then
 			self.toast:show(
 				if kind == "outfit" then "Saved as a new Roblox outfit" else "Your Roblox avatar was updated",
