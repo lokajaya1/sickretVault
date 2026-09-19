@@ -44,7 +44,7 @@ local LABEL_GAP = 4
 local BUTTONS: { { op: Action, text: string, icon: string } } = {
 	{ op = "roblox", text = "Save to Roblox", icon = "roblox" },
 	{ op = "cart", text = "Cart", icon = "cart" },
-	{ op = "reset", text = "Reset to My Avatar", icon = "avatarStand" },
+	{ op = "reset", text = "Reset to My Avatar", icon = "reset" },
 	{ op = "trash", text = "Remove Items", icon = "trash" },
 }
 

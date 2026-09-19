@@ -598,15 +598,7 @@ function App.mount(opts: Options?): App
 			elseif op == "cart" then
 				self:openCart()
 			elseif op == "reset" then
-				-- Reset membuang SELURUH hasil coba-coba dan mengembalikan avatar akun. Ia tidak
-				-- boleh berjalan dari satu ketukan tanpa pertanyaan -- pola CAC: kartu yang sama,
-				-- avatar terlihat, No / Yes.
-				-- Penanda sesi dinaikkan juga di sini: kunci cache pratinjau memuatnya, dan avatar
-				-- asli akun harus dibangun ulang kalau panelnya dibuka lagi setelah look berubah.
-				self._removeToken += 1
-				self._removeDialog:openConfirm("Reset to Roblox Avatar?", function()
-					outfit:send({ op = "reset" })
-				end)
+				self:confirmReset()
 			elseif op == "trash" then
 				self:openRemoveDialog()
 			end
@@ -1207,11 +1199,16 @@ function App.mount(opts: Options?): App
 			{ key = "avatarNew", text = "New Avatar", icon = "avatarAdd", muted = true },
 			{ key = "avatarStand", text = "My Avatar", icon = "avatarStand", muted = true },
 			{ key = "saveRoblox", text = "Save to Roblox", icon = "roblox" },
-			{ key = "swap", text = "Swap", icon = "swap", muted = true },
+			-- Dulu "Swap" (fitur yang belum ada, selalu menjawab "Soon"). Diganti Reset atas
+			-- permintaan 19 Sep 2026: kluster ini muncul saat katalog TERTUTUP, dan di situ bar
+			-- aksi tidak ada -- tanpa ini reset tidak bisa dijangkau sama sekali dari layar utama.
+			{ key = "reset", text = "Reset to My Avatar", icon = "reset" },
 		},
 		onActivated = function(key)
 			if key == "saveRoblox" then
 				self:openSaveChooser()
+			elseif key == "reset" then
+				self:confirmReset()
 			else
 				self.bottomRail:flash(key, "Soon", SOON_SECONDS)
 			end
@@ -1913,6 +1910,19 @@ end
 -- domain yang SAMA dengan yang dipakai server saat benar-benar membuang (OutfitState.removeKind
 -- atas state sekarang), bukan ditebak dari strip item -- kalau angkanya beda dari yang terjadi,
 -- pemain berhak menganggap tombolnya bohong.
+-- Reset membuang SELURUH hasil coba-coba dan mengembalikan avatar akun. Ia tidak boleh berjalan
+-- dari satu ketukan tanpa pertanyaan -- pola CAC: kartu yang sama, avatar (asli akun) terlihat,
+-- No / Yes. Dipakai DUA tombol: bar aksi (katalog terbuka) dan kluster kiri bawah (katalog
+-- tertutup), jadi ia satu fungsi -- bukan dua salinan yang bisa berbeda diam-diam.
+function App.confirmReset(self: App)
+	-- Penanda sesi dinaikkan: kunci cache pratinjau memuatnya, dan avatar asli akun harus dibangun
+	-- ulang kalau panelnya dibuka lagi setelah look berubah.
+	self._removeToken += 1
+	self._removeDialog:openConfirm("Reset to Roblox Avatar?", function()
+		self.outfit:send({ op = "reset" })
+	end)
+end
+
 function App.openRemoveDialog(self: App)
 	local state = self.outfit:getState()
 	if state == nil then

@@ -77,6 +77,7 @@ export type RemoveDialog = typeof(setmetatable(
 		_rows: { [string]: { button: TextButton, box: Frame, tick: Frame, label: TextLabel, text: string } },
 		_counts: { [string]: number },
 		_checked: { [string]: boolean },
+		_card: TextButton,
 		_confirm: TextButton,
 		_scrim: Frame,
 		_title: TextLabel,
@@ -248,6 +249,7 @@ function RemoveDialog.new(props: Props): RemoveDialog
 		_rows = {},
 		_counts = {},
 		_checked = {},
+		_card = card,
 		_confirm = nil :: any,
 		_scrim = scrim,
 		_title = title,
@@ -451,8 +453,64 @@ function RemoveDialog.new(props: Props): RemoveDialog
 			self._props.onRemove(kinds)
 		end)
 	)
+	table.insert(
+		conns,
+		card:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+			self:_layout()
+		end)
+	)
 	self._conns = conns
+	self:_layout()
 	return self
+end
+
+-- Kartu boleh menyempit (ponsel mendatar: tinggi layar ~390 px, kartu ~350 px) sementara isinya
+-- dihitung dalam PIKSEL. Tanpa penataan ulang, sepuluh baris + kepala + tombol butuh ~444 px dan
+-- yang terjadi bukan "mengecil" melainkan TUMPANG TINDIH: tombol Remove duduk di atas baris Face
+-- (terlihat di iPhone 13, 19 Sep 2026). Jadi tinggi baris dihitung dari ruang yang BENAR-BENAR ada,
+-- dan tulisannya ikut mengecil kalau barisnya jadi pendek.
+function RemoveDialog._layout(self: RemoveDialog)
+	local size = self._card.AbsoluteSize
+	if size.Y <= 0 then
+		return
+	end
+	local pad = if size.Y < 380 then Tokens.Space.S else PAD
+	local headH = if size.Y < 380 then 24 else HEAD_H
+	local footH = if size.Y < 380 then 32 else FOOT_H
+	local listTop = pad + headH + pad
+	local avail = size.Y - listTop - footH - pad * 2
+	local rowH = math.clamp(math.floor((avail - (#ROWS - 1) * ROW_GAP) / #ROWS), 16, ROW_H)
+	local listW = math.min(LIST_W, math.floor(size.X * 0.56))
+	local small = rowH < 26
+
+	self._title.Position = UDim2.fromOffset(pad, pad)
+	self._title.Size = UDim2.new(1, -pad * 2, 0, headH)
+	self._title.TextSize = if small then Tokens.TextSize.Button else Tokens.TextSize.Title
+
+	self._list.Position = UDim2.fromOffset(pad, listTop)
+	self._list.Size = UDim2.new(0, listW, 0, #ROWS * (rowH + ROW_GAP) - ROW_GAP)
+	for _, row in self._rows do
+		row.button.Size = UDim2.new(1, 0, 0, rowH)
+		row.label.TextSize = if small then Tokens.TextSize.Caption else Tokens.TextSize.Body
+		local box = if small then 13 else 16
+		row.box.Size = UDim2.fromOffset(box, box)
+		row.box.Position = UDim2.new(0, Tokens.Space.S, 0.5, 0)
+		row.tick.Size = UDim2.fromOffset(box - 7, box - 7)
+		row.label.Position = UDim2.new(0, Tokens.Space.S * 2 + box, 0.5, 0)
+		row.label.Size = UDim2.new(1, -(Tokens.Space.S * 3 + box), 1, 0)
+	end
+
+	self._scrim.Size = UDim2.new(0, listW + pad * 2, 1, 0)
+	self._divider.Position = UDim2.new(0, pad, 1, -(pad * 2 + footH))
+	self._divider.Size = UDim2.new(0, listW, 0, 1)
+	self._confirm.Position = UDim2.new(0, pad, 1, -pad)
+	self._confirm.Size = UDim2.new(0, listW, 0, footH)
+	self._confirm.TextSize = if small then Tokens.TextSize.Body else Tokens.TextSize.Button
+	for _, button in { self._noButton, self._yesButton } do
+		button.Position = UDim2.new(if button == self._noButton then 0.29 else 0.71, 0, 1, -pad)
+		button.Size = UDim2.new(0.38, 0, 0, footH)
+		button.TextSize = if small then Tokens.TextSize.Body else Tokens.TextSize.Button
+	end
 end
 
 function RemoveDialog._checkedKinds(self: RemoveDialog): { string }
@@ -529,6 +587,7 @@ function RemoveDialog.open(self: RemoveDialog, counts: { [string]: number })
 	self:_setMode(false)
 	self:_refresh()
 	self.instance.Visible = true
+	self:_layout()
 	self:_preview()
 end
 
@@ -541,6 +600,7 @@ function RemoveDialog.openConfirm(self: RemoveDialog, title: string, onYes: () -
 	self._title.Text = title
 	self:_setMode(true)
 	self.instance.Visible = true
+	self:_layout()
 	self:_preview()
 end
 

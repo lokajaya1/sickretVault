@@ -105,6 +105,14 @@ local function drawIcon(kind: string, parent: Instance)
 		bar(parent, 0.28, 0.45, 0.16, 0.08, 45)
 		bar(parent, 0.5, 0.64, 0.5, 0.08)
 		bar(parent, 0.72, 0.55, 0.16, 0.08, 45)
+	elseif kind == "reset" then
+		-- Sosok berdiri + panah memutar ke kiri: "kembalikan avatar". Ikon `avatarStand` sudah
+		-- dipakai baris "My Avatar" di kluster yang sama, jadi reset butuh ikonnya sendiri --
+		-- dua tombol bersebelahan dengan gambar sama tidak bisa dibedakan.
+		dot(parent, 0.6, 0.3, 0.2)
+		bar(parent, 0.6, 0.64, 0.34, 0.3)
+		bar(parent, 0.24, 0.46, 0.34, 0.09, -62)
+		bar(parent, 0.3, 0.22, 0.18, 0.09, 24)
 	elseif kind == "close" then
 		-- Silang DIGAMBAR, bukan huruf. Karakter silang (U+2715) tidak ada di font kita: di
 		-- Studio ia keluar sebagai kotak kosong (19 Sep 2026). Dua batang miring selalu jadi.
